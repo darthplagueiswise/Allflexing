@@ -1,5 +1,5 @@
 diff --git a/Classes/Core/Controllers/FLEXNavigationController.m b/Classes/Core/Controllers/FLEXNavigationController.m
-index ec695e8..2ba27d7 100644
+index ec695e8..a29909e 100644
 --- a/Classes/Core/Controllers/FLEXNavigationController.m
 +++ b/Classes/Core/Controllers/FLEXNavigationController.m
 @@ -10,6 +10,7 @@
@@ -26,7 +26,18 @@ index ec695e8..2ba27d7 100644
      
      if (@available(iOS 15.0, *)) {
          UISheetPresentationController *presenter = self.sheetPresentationController;
-@@ -134,17 +137,30 @@
+@@ -75,7 +78,9 @@
+         ];
+         presenter.prefersScrollingExpandsWhenScrolledToEdge = NO;
+         presenter.selectedDetentIdentifier = UISheetPresentationControllerDetentIdentifierLarge;
+-        presenter.largestUndimmedDetentIdentifier = UISheetPresentationControllerDetentIdentifierLarge;
++        // FLEX tools are modal while open. An undimmed large detent makes the
++        // host app visible and interactive through transparent table content.
++        presenter.largestUndimmedDetentIdentifier = nil;
+     }
+     
+     if (self.beingPresented && !self.didSetupPendingDismissButtons) {
+@@ -134,17 +139,30 @@
      
      // Check if a done item already exists
      for (UIBarButtonItem *item in navigationItem.rightBarButtonItems) {
@@ -334,6 +345,117 @@ index daf967d..77d41ce 100644
 +}
 +
  @end
+diff --git a/Classes/ExplorerInterface/FLEXWindow.m b/Classes/ExplorerInterface/FLEXWindow.m
+index 41cd5d0..f3da2c3 100644
+--- a/Classes/ExplorerInterface/FLEXWindow.m
++++ b/Classes/ExplorerInterface/FLEXWindow.m
+@@ -10,6 +10,52 @@
+ #import "FLEXUtility.h"
+ #import <objc/runtime.h>
+ 
++static UIViewController *FLEXVisibleChildController(UIViewController *controller) {
++    if ([controller isKindOfClass:UINavigationController.class]) {
++        return ((UINavigationController *)controller).visibleViewController;
++    }
++    if ([controller isKindOfClass:UITabBarController.class]) {
++        return ((UITabBarController *)controller).selectedViewController;
++    }
++    if ([controller isKindOfClass:UISplitViewController.class]) {
++        return ((UISplitViewController *)controller).viewControllers.lastObject;
++    }
++    for (UIViewController *child in controller.childViewControllers.reverseObjectEnumerator) {
++        if (child.isViewLoaded && child.view.window && !child.view.hidden) {
++            return child;
++        }
++    }
++    return nil;
++}
++
++/// Finds the root of the deepest presentation, including a presentation made
++/// by a visible child of another presented controller. The stock FLEX delegate
++/// only knows about the first tool sheet, while AllFLEXing can present its
++/// workspace from the globals table inside that sheet.
++static UIViewController *FLEXTopmostPresentedController(UIViewController *root) {
++    UIViewController *cursor = root;
++    UIViewController *topmostPresented = nil;
++    for (NSUInteger depth = 0; cursor && depth < 32; depth++) {
++        UIViewController *presented = cursor.presentedViewController;
++        if (presented && !presented.isBeingDismissed) {
++            topmostPresented = presented;
++            cursor = presented;
++            continue;
++        }
++        UIViewController *child = FLEXVisibleChildController(cursor);
++        if (!child || child == cursor) {
++            break;
++        }
++        cursor = child;
++    }
++    return topmostPresented;
++}
++
++@interface FLEXWindow ()
++- (BOOL)flex_pointIsInsidePresentedHierarchy:(CGPoint)point
++                                    withEvent:(UIEvent *)event;
++@end
++
+ @implementation FLEXWindow
+ 
+ - (id)initWithFrame:(CGRect)frame {
+@@ -24,9 +70,53 @@
+ }
+ 
+ - (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
++    // Capture the complete visible frame of the deepest modal before falling
++    // back to FLEX's pass-through toolbar policy. This includes the floating
++    // UITabBar of a nested page sheet, which otherwise forwards touches to the
++    // host application's window even though it is visibly above that window.
++    if ([self flex_pointIsInsidePresentedHierarchy:point withEvent:event]) {
++        return YES;
++    }
+     return [self.eventDelegate shouldHandleTouchAtPoint:point];
+ }
+ 
++- (BOOL)flex_pointIsInsidePresentedHierarchy:(CGPoint)point
++                                    withEvent:(UIEvent *)event {
++    UIViewController *presented = FLEXTopmostPresentedController(self.rootViewController);
++    UIPresentationController *presentation = presented.presentationController;
++    UIView *presentedView = presentation.presentedView ?: presented.viewIfLoaded;
++    if (!presentedView || presentedView.hidden || presentedView.alpha < 0.01) {
++        return NO;
++    }
++
++    // Modal presentations own their backdrop as well as the presented frame.
++    // A sheet becomes intentionally nonmodal only when it explicitly declares
++    // an undimmed detent. Keep every other presentation container in FLEX's
++    // window so UIKit's dimming/dismissal view receives the event rather than
++    // the host app below it.
++    BOOL ownsModalBackdrop = YES;
++    if ([presentation isKindOfClass:UISheetPresentationController.class]) {
++        ownsModalBackdrop =
++            ((UISheetPresentationController *)presentation)
++                .largestUndimmedDetentIdentifier == nil;
++    }
++    if (ownsModalBackdrop) {
++        UIView *container = presentation.containerView;
++        if (container) {
++            CGPoint containerPoint = [container convertPoint:point fromView:self];
++            if ([container pointInside:containerPoint withEvent:event]) {
++                return YES;
++            }
++        }
++    }
++
++    CGPoint localPoint = [presentedView convertPoint:point fromView:self];
++    if (![presentedView pointInside:localPoint withEvent:event]) {
++        return NO;
++    }
++    return [presentedView hitTest:localPoint withEvent:event] != nil;
++}
++
+ - (BOOL)shouldAffectStatusBarAppearance {
+     return [self isKeyWindow];
+ }
 diff --git a/Classes/GlobalStateExplorers/Globals/FLEXGlobalsViewController.m b/Classes/GlobalStateExplorers/Globals/FLEXGlobalsViewController.m
 index 569b563..380ef10 100644
 --- a/Classes/GlobalStateExplorers/Globals/FLEXGlobalsViewController.m

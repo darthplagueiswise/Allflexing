@@ -195,6 +195,12 @@ Stock iOS cannot relaunch a jailed app, so the user opens it again manually.
 - Merge/split morphing animates frames inside the shared container.
 - Navigable FLEX menu rows and Hook Center cards receive bounded reusable
   `UIGlassEffect` surfaces; passive code/log rows remain content.
+- The content canvas remains an opaque adaptive system surface behind those
+  effects. A clear table must never expose the host application through the
+  FLEX overlay window.
+- Navigation, toolbar, and tab-bar chrome stays system-owned when running the
+  SDK 26 build. In particular, no custom `UIBarAppearance.backgroundEffect`
+  replaces the native floating tab bar and its interactive/minimize behavior.
 - The global menu uses the iOS 26 integrated search placement in its toolbar,
   yielding the native floating search control and its compact/editing morph.
 - Standard bars clear legacy appearances and custom effects use adaptive
@@ -202,6 +208,10 @@ Stock iOS cannot relaunch a jailed app, so the user opens it again manually.
 - Custom cell accessories receive an explicit fitting frame before assignment,
   preventing switches from overlapping metadata text.
 - Action sheets are anchored to their source cell/item for native transitions.
+- Tool sheets keep the default modal dimming layer. FLEXWindow resolves nested
+  presentations through visible navigation/tab children and owns both the
+  deepest presented frame and its modal dimming container, so workspace tabs
+  cannot pass touches to the host window.
 - Reduce Motion suppresses optional toolbar and custom material morphing
   animations.
 - No global `UIViewController` lifecycle hook or recursive view-tree scan is

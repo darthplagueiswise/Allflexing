@@ -537,6 +537,23 @@ Liquid Glass é hierarquia e comportamento, não apenas blur.
   linhas navegáveis e os cards/métricas do Hook Center usam `UIGlassEffect`
   explícito; fundos opacos `secondarySystemGroupedBackgroundColor` não são a
   apresentação final quando glass está habilitado.
+- Liquid Glass pertence à camada de controles. Tabelas e controllers de
+  conteúdo mantêm uma superfície-base opaca adaptativa (preta no dark mode,
+  branca no light mode); nunca deixar a `FLEXWindow` transparente até o app
+  hospedeiro. Células e cards glass usam preenchimento de baixa opacidade e
+  borda adaptativa sobre essa base para preservar lensing e legibilidade.
+- Quando compiladas no SDK 26.2, navigation bars, toolbars e tab bars usam o
+  tratamento Liquid Glass nativo do UIKit. Não substituir o material da
+  `UITabBar` por `UIBarAppearance.backgroundEffect`: essa propriedade aceita o
+  contrato antigo de blur e a personalização suprime o chrome, o agrupamento e
+  as transições nativas do iOS 26.
+- Toda sheet de ferramenta é modal e mantém
+  `largestUndimmedDetentIdentifier = nil`. A `FLEXWindow` deve capturar o frame
+  da apresentação visível mais profunda, inclusive sheets abertas por um child
+  controller e a tab bar flutuante do workspace. Enquanto existir dimming
+  modal, a região do container também pertence à janela do FLEX — inclusive em
+  alertas e apresentações abertas dentro do workspace; nenhum toque pode
+  atravessar para o app hospedeiro.
 - O submódulo FLEX permanece fixado em commit conhecido. Alterações de
   apresentação indispensáveis são armazenadas num patch versionado, verificadas
   e aplicadas idempotentemente antes do build. O build deve falhar se a base não

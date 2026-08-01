@@ -86,14 +86,10 @@
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
-
-    UITabBarAppearance *appearance = [UITabBarAppearance new];
-    [appearance configureWithDefaultBackground];
-    self.tabBar.standardAppearance = appearance;
-    if (@available(iOS 15.0, *)) {
-        self.tabBar.scrollEdgeAppearance = nil;
-    }
+    self.view.backgroundColor = UIColor.systemBackgroundColor;
+    self.view.opaque = YES;
+    [FLEXLiquidGlass styleTabBar:self.tabBar];
+    self.tabBar.accessibilityIdentifier = @"AllFLEXing.RuntimeWorkspace.TabBar";
     if (@available(iOS 26.0, *)) {
         self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorOnScrollDown;
     }
@@ -110,6 +106,9 @@
         sheet.selectedDetentIdentifier = UISheetPresentationControllerDetentIdentifierLarge;
         sheet.prefersScrollingExpandsWhenScrolledToEdge = NO;
         sheet.prefersGrabberVisible = YES;
+        // This is a modal control surface. Keeping the default noninteractive
+        // dimming layer prevents taps outside/through it from reaching the host.
+        sheet.largestUndimmedDetentIdentifier = nil;
     }
 }
 

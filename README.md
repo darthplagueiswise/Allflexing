@@ -117,6 +117,14 @@ Navigable menu rows and Hook Center cards are explicit reusable
 `UIGlassEffect` surfaces with adaptive corners, matching the control-card
 hierarchy instead of opaque grouped cells. Passive code/log rows remain content,
 avoiding indiscriminate glass-on-glass composition.
+The table canvas itself remains an opaque adaptive black/white content surface;
+it never exposes the host app through the FLEX overlay. Tool sheets retain the
+modal dimming layer, and FLEXWindow follows nested presentations so the whole
+workspace—including its floating tab bar—owns its touches instead of forwarding
+them to the host window.
+Navigation and tab bars keep UIKit 26's system-owned Liquid Glass appearance;
+the project does not cover the native floating tab bar with a legacy
+`UIBarAppearance` blur.
 Effect materialization animates the `effect` property, while merge/split
 morphing animates frames inside a shared container. Standard UIKit behavior
 inherits Reduce Motion, Reduce Transparency, Increased Contrast, VoiceOver, and

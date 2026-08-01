@@ -33,7 +33,16 @@ grep -q 'FLEXScopeCarousel.m' patches/flex-uikit26-liquid-glass.patch
 grep -q 'FLEXExplorerToolbar.m' patches/flex-uikit26-liquid-glass.patch
 grep -q 'FLEXNavigationController.m' patches/flex-uikit26-liquid-glass.patch
 grep -q 'FLEXGlobalsViewController.m' patches/flex-uikit26-liquid-glass.patch
+grep -q 'FLEXWindow.m' patches/flex-uikit26-liquid-glass.patch
 grep -q 'searchBarPlacementBarButtonItem' patches/flex-uikit26-liquid-glass.patch
+grep -q 'flex_pointIsInsidePresentedHierarchy' patches/flex-uikit26-liquid-glass.patch
+grep -q 'ownsModalBackdrop' patches/flex-uikit26-liquid-glass.patch
+grep -q 'largestUndimmedDetentIdentifier = nil' patches/flex-uikit26-liquid-glass.patch
+if grep -q '^+.*largestUndimmedDetentIdentifier = UISheetPresentationControllerDetentIdentifierLarge' \
+    patches/flex-uikit26-liquid-glass.patch; then
+    echo "error: FLEX tool sheets must not expose an interactive undimmed host" >&2
+    exit 1
+fi
 grep -q 'include modules/HookRuntime/Module.mk' libflex/Makefile
 grep -q 'include modules/HookProviders/Module.mk' libflex/Makefile
 grep -q 'include modules/LiquidGlassUI/Module.mk' libflex/Makefile
@@ -51,6 +60,12 @@ grep -q 'materializeGlassView' libflex/AllFLEXing/FLEXLiquidGlass.m
 grep -q 'FLEXGlassCellBackgroundView' libflex/AllFLEXing/FLEXLiquidGlass.m
 grep -q 'styleTableCell' libflex/AllFLEXing/FLEXLiquidGlass.m
 grep -q 'kFLEXGlassSearchBackgroundKey' libflex/AllFLEXing/FLEXLiquidGlass.m
+grep -q 'FLEXGlassBaseSurfaceColor' libflex/AllFLEXing/FLEXLiquidGlass.m
+grep -q 'FLEXGlassPanelFillColor' libflex/AllFLEXing/FLEXLiquidGlass.m
+grep -q 'tableView.opaque = YES' libflex/AllFLEXing/FLEXLiquidGlass.m
+grep -q 'navigationController.view.opaque = YES' libflex/AllFLEXing/FLEXLiquidGlass.m
+grep -q 'styleTabBar' libflex/AllFLEXing/FLEXLiquidGlass.m
+grep -q 'UITabBarController compiled with SDK 26 owns' libflex/AllFLEXing/FLEXLiquidGlass.m
 test -f libflex/AllFLEXing/FLEXHookWorkspaceController.m
 grep -q 'setViewControllers:self.workspaceNavigationControllers' libflex/AllFLEXing/FLEXHookWorkspaceController.m
 if grep -q 'self\.tabs[[:space:]]*=' libflex/AllFLEXing/FLEXHookWorkspaceController.m; then
@@ -58,6 +73,14 @@ if grep -q 'self\.tabs[[:space:]]*=' libflex/AllFLEXing/FLEXHookWorkspaceControl
     exit 1
 fi
 grep -q 'UITabBarMinimizeBehaviorOnScrollDown' libflex/AllFLEXing/FLEXHookWorkspaceController.m
+grep -q 'AllFLEXing.RuntimeWorkspace.TabBar' libflex/AllFLEXing/FLEXHookWorkspaceController.m
+grep -q 'styleTabBar:self.tabBar' libflex/AllFLEXing/FLEXHookWorkspaceController.m
+if grep -q 'appearance\.backgroundEffect.*glassEffect' \
+    libflex/AllFLEXing/FLEXHookWorkspaceController.m; then
+    echo "error: do not replace UIKit 26 native tab-bar glass with UIBarAppearance material" >&2
+    exit 1
+fi
+grep -q 'sheet.largestUndimmedDetentIdentifier = nil' libflex/AllFLEXing/FLEXHookWorkspaceController.m
 grep -q 'setContentScrollView' libflex/AllFLEXing/FLEXHookToggles.m
 grep -q 'menu:\[self scopeMenu\]' libflex/AllFLEXing/FLEXRuntimeBrowserController.m
 grep -q 'UIContentUnavailableConfiguration' libflex/AllFLEXing/FLEXRuntimeBrowserController.m

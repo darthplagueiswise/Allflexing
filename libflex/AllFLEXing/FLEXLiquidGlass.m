@@ -21,9 +21,53 @@ static const void *kFLEXGlassSearchBackgroundKey =
     &kFLEXGlassSearchBackgroundKey;
 static const void *kFLEXGlassPanelBackgroundKey =
     &kFLEXGlassPanelBackgroundKey;
+static const void *kFLEXOriginalNavigationAppearancesKey =
+    &kFLEXOriginalNavigationAppearancesKey;
+static const void *kFLEXNavigationFallbackInstalledKey =
+    &kFLEXNavigationFallbackInstalledKey;
+static const void *kFLEXOriginalToolbarAppearancesKey =
+    &kFLEXOriginalToolbarAppearancesKey;
+static const void *kFLEXToolbarFallbackInstalledKey =
+    &kFLEXToolbarFallbackInstalledKey;
+static const void *kFLEXOriginalTabBarAppearancesKey =
+    &kFLEXOriginalTabBarAppearancesKey;
+static const void *kFLEXTabBarFallbackInstalledKey =
+    &kFLEXTabBarFallbackInstalledKey;
 
 static NSTimeInterval FLEXGlassDuration(NSTimeInterval duration) {
     return UIAccessibilityIsReduceMotionEnabled() ? 0.0 : duration;
+}
+
+static UIColor *FLEXGlassBaseSurfaceColor(void) {
+    return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
+        return traits.userInterfaceStyle == UIUserInterfaceStyleDark
+            ? UIColor.blackColor : UIColor.whiteColor;
+    }];
+}
+
+static UIColor *FLEXGlassPanelFillColor(void) {
+    return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
+        return traits.userInterfaceStyle == UIUserInterfaceStyleDark
+            ? [UIColor colorWithWhite:1.0 alpha:0.085]
+            : [UIColor colorWithWhite:0.0 alpha:0.045];
+    }];
+}
+
+static UIColor *FLEXGlassBorderColor(void) {
+    return [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *traits) {
+        return traits.userInterfaceStyle == UIUserInterfaceStyleDark
+            ? [UIColor colorWithWhite:1.0 alpha:0.14]
+            : [UIColor colorWithWhite:0.0 alpha:0.10];
+    }];
+}
+
+static id _Nullable FLEXGlassUnwrapAppearance(id object) {
+    return object == NSNull.null ? nil : object;
+}
+
+static CGColorRef FLEXGlassResolvedCGColor(UIColor *color,
+                                           UITraitCollection *traits) {
+    return [[color resolvedColorWithTraitCollection:traits] CGColor];
 }
 
 static UIViewController *FLEXVisibleController(UIViewController *controller) {
@@ -58,14 +102,22 @@ static UIViewController *FLEXVisibleController(UIViewController *controller) {
         self.userInteractionEnabled = NO;
         _glassView = [FLEXLiquidGlass glassViewInteractive:YES tint:nil];
         _glassView.userInteractionEnabled = NO;
+        _glassView.contentView.backgroundColor = FLEXGlassPanelFillColor();
         _glassView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
                                      UIViewAutoresizingFlexibleHeight;
         _glassView.layer.borderWidth = 1.0 / UIScreen.mainScreen.scale;
-        _glassView.layer.borderColor =
-            [UIColor.separatorColor colorWithAlphaComponent:0.34].CGColor;
+        _glassView.layer.borderColor = FLEXGlassResolvedCGColor(
+            FLEXGlassBorderColor(), self.traitCollection);
         [self addSubview:_glassView];
     }
     return self;
+}
+
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
+    self.glassView.contentView.backgroundColor = FLEXGlassPanelFillColor();
+    self.glassView.layer.borderColor = FLEXGlassResolvedCGColor(
+        FLEXGlassBorderColor(), self.traitCollection);
 }
 
 - (void)layoutSubviews {
@@ -217,28 +269,66 @@ static UIViewController *FLEXVisibleController(UIViewController *controller) {
         return;
     }
 
-    navigationController.navigationBar.translucent = YES;
-    navigationController.navigationBar.prefersLargeTitles = YES;
-    if (self.isGlassAvailable && self.isEnabled) {
-        // A fresh default appearance removes FLEX's legacy opaque background
-        // without suppressing UIKit 26's native scroll-edge and glass behavior.
-        UINavigationBarAppearance *appearance = [UINavigationBarAppearance new];
-        [appearance configureWithDefaultBackground];
-        navigationController.navigationBar.standardAppearance = appearance;
-        navigationController.navigationBar.scrollEdgeAppearance = nil;
-        navigationController.navigationBar.compactAppearance = nil;
+    BOOL usesGlass = self.isGlassAvailable && self.isEnabled;
+    UINavigationBar *bar = navigationController.navigationBar;
+    bar.translucent = YES;
+    bar.prefersLargeTitles = YES;
+    navigationController.view.backgroundColor = usesGlass
+        ? FLEXGlassBaseSurfaceColor() : UIColor.systemBackgroundColor;
+    navigationController.view.opaque = YES;
+
+    NSArray *saved = objc_getAssociatedObject(
+        bar, kFLEXOriginalNavigationAppearancesKey);
+    if (!saved) {
+        id compactScroll = NSNull.null;
         if (@available(iOS 15.0, *)) {
-            navigationController.navigationBar.compactScrollEdgeAppearance = nil;
+            compactScroll = bar.compactScrollEdgeAppearance ?: NSNull.null;
+        }
+        saved = @[
+            bar.standardAppearance ?: NSNull.null,
+            bar.scrollEdgeAppearance ?: NSNull.null,
+            bar.compactAppearance ?: NSNull.null,
+            compactScroll,
+        ];
+        objc_setAssociatedObject(bar,
+                                 kFLEXOriginalNavigationAppearancesKey,
+                                 saved,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    BOOL installedFallback = [objc_getAssociatedObject(
+        bar, kFLEXNavigationFallbackInstalledKey) boolValue];
+    if (usesGlass) {
+        // UIKit 26 supplies the native glass grouping, edge effects and button
+        // morphing. Restoring the bar's system appearance is intentional:
+        // injecting UIGlassEffect through UIBarAppearance is unsupported and
+        // replacing this appearance suppresses the SDK 26 treatment.
+        if (installedFallback) {
+            UINavigationBarAppearance *standard = FLEXGlassUnwrapAppearance(saved[0]);
+            bar.standardAppearance = standard ?: [UINavigationBarAppearance new];
+            bar.scrollEdgeAppearance = FLEXGlassUnwrapAppearance(saved[1]);
+            bar.compactAppearance = FLEXGlassUnwrapAppearance(saved[2]);
+            if (@available(iOS 15.0, *)) {
+                bar.compactScrollEdgeAppearance = FLEXGlassUnwrapAppearance(saved[3]);
+            }
+            objc_setAssociatedObject(bar,
+                                     kFLEXNavigationFallbackInstalledKey,
+                                     @NO,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }
     } else {
         UINavigationBarAppearance *appearance = [UINavigationBarAppearance new];
         [appearance configureWithDefaultBackground];
-        navigationController.navigationBar.standardAppearance = appearance;
-        navigationController.navigationBar.scrollEdgeAppearance = appearance;
-        navigationController.navigationBar.compactAppearance = appearance;
+        bar.standardAppearance = appearance;
+        bar.scrollEdgeAppearance = appearance;
+        bar.compactAppearance = appearance;
         if (@available(iOS 15.0, *)) {
-            navigationController.navigationBar.compactScrollEdgeAppearance = appearance;
+            bar.compactScrollEdgeAppearance = appearance;
         }
+        objc_setAssociatedObject(bar,
+                                 kFLEXNavigationFallbackInstalledKey,
+                                 @YES,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     [self styleToolbar:navigationController.toolbar];
 }
@@ -248,12 +338,97 @@ static UIViewController *FLEXVisibleController(UIViewController *controller) {
         return;
     }
     toolbar.translucent = YES;
-    UIToolbarAppearance *appearance = [UIToolbarAppearance new];
-    [appearance configureWithDefaultBackground];
-    toolbar.standardAppearance = appearance;
-    if (@available(iOS 15.0, *)) {
-        toolbar.scrollEdgeAppearance = self.isGlassAvailable && self.isEnabled
-            ? nil : appearance;
+    NSArray *saved = objc_getAssociatedObject(
+        toolbar, kFLEXOriginalToolbarAppearancesKey);
+    if (!saved) {
+        id scrollEdge = NSNull.null;
+        if (@available(iOS 15.0, *)) {
+            scrollEdge = toolbar.scrollEdgeAppearance ?: NSNull.null;
+        }
+        saved = @[toolbar.standardAppearance ?: NSNull.null, scrollEdge];
+        objc_setAssociatedObject(toolbar,
+                                 kFLEXOriginalToolbarAppearancesKey,
+                                 saved,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    BOOL usesGlass = self.isGlassAvailable && self.isEnabled;
+    BOOL installedFallback = [objc_getAssociatedObject(
+        toolbar, kFLEXToolbarFallbackInstalledKey) boolValue];
+    if (usesGlass) {
+        if (installedFallback) {
+            UIToolbarAppearance *standard = FLEXGlassUnwrapAppearance(saved[0]);
+            toolbar.standardAppearance = standard ?: [UIToolbarAppearance new];
+            if (@available(iOS 15.0, *)) {
+                toolbar.scrollEdgeAppearance = FLEXGlassUnwrapAppearance(saved[1]);
+            }
+            objc_setAssociatedObject(toolbar,
+                                     kFLEXToolbarFallbackInstalledKey,
+                                     @NO,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    } else {
+        UIToolbarAppearance *appearance = [UIToolbarAppearance new];
+        [appearance configureWithDefaultBackground];
+        toolbar.standardAppearance = appearance;
+        if (@available(iOS 15.0, *)) {
+            toolbar.scrollEdgeAppearance = appearance;
+        }
+        objc_setAssociatedObject(toolbar,
+                                 kFLEXToolbarFallbackInstalledKey,
+                                 @YES,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
++ (void)styleTabBar:(UITabBar *)tabBar {
+    if (!tabBar) {
+        return;
+    }
+    tabBar.translucent = YES;
+    NSArray *saved = objc_getAssociatedObject(
+        tabBar, kFLEXOriginalTabBarAppearancesKey);
+    if (!saved) {
+        id scrollEdge = NSNull.null;
+        if (@available(iOS 15.0, *)) {
+            scrollEdge = tabBar.scrollEdgeAppearance ?: NSNull.null;
+        }
+        saved = @[tabBar.standardAppearance ?: NSNull.null, scrollEdge];
+        objc_setAssociatedObject(tabBar,
+                                 kFLEXOriginalTabBarAppearancesKey,
+                                 saved,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+
+    BOOL usesGlass = self.isGlassAvailable && self.isEnabled;
+    BOOL installedFallback = [objc_getAssociatedObject(
+        tabBar, kFLEXTabBarFallbackInstalledKey) boolValue];
+    if (usesGlass) {
+        // UITabBarController compiled with SDK 26 owns the floating glass bar,
+        // its interactive response and minimize transition. Do not cover it
+        // with a manually injected effect view or UIBarAppearance material.
+        if (installedFallback) {
+            UITabBarAppearance *standard = FLEXGlassUnwrapAppearance(saved[0]);
+            tabBar.standardAppearance = standard ?: [UITabBarAppearance new];
+            if (@available(iOS 15.0, *)) {
+                tabBar.scrollEdgeAppearance = FLEXGlassUnwrapAppearance(saved[1]);
+            }
+            objc_setAssociatedObject(tabBar,
+                                     kFLEXTabBarFallbackInstalledKey,
+                                     @NO,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    } else {
+        UITabBarAppearance *appearance = [UITabBarAppearance new];
+        [appearance configureWithDefaultBackground];
+        tabBar.standardAppearance = appearance;
+        if (@available(iOS 15.0, *)) {
+            tabBar.scrollEdgeAppearance = appearance;
+        }
+        objc_setAssociatedObject(tabBar,
+                                 kFLEXTabBarFallbackInstalledKey,
+                                 @YES,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 }
 
@@ -262,8 +437,12 @@ static UIViewController *FLEXVisibleController(UIViewController *controller) {
         return;
     }
     BOOL usesGlass = self.isGlassAvailable && self.isEnabled;
+    // Liquid Glass is the control/navigation layer, not the content canvas.
+    // A clear UITableView in FLEX's overlay window exposes the host app and can
+    // make the sheet look absent. Keep a real opaque base behind glass rows.
     tableView.backgroundColor = usesGlass
-        ? UIColor.clearColor : UIColor.systemGroupedBackgroundColor;
+        ? FLEXGlassBaseSurfaceColor() : UIColor.systemGroupedBackgroundColor;
+    tableView.opaque = YES;
     tableView.separatorStyle = usesGlass
         ? UITableViewCellSeparatorStyleNone : UITableViewCellSeparatorStyleSingleLine;
     tableView.separatorColor = UIColor.separatorColor;
@@ -414,6 +593,10 @@ static UIViewController *FLEXVisibleController(UIViewController *controller) {
     if (!glass) {
         glass = [self glassViewInteractive:interactive tint:nil];
         glass.userInteractionEnabled = NO;
+        glass.contentView.backgroundColor = FLEXGlassPanelFillColor();
+        glass.layer.borderWidth = 1.0 / UIScreen.mainScreen.scale;
+        glass.layer.borderColor = FLEXGlassResolvedCGColor(
+            FLEXGlassBorderColor(), view.traitCollection);
         glass.translatesAutoresizingMaskIntoConstraints = NO;
         [view insertSubview:glass atIndex:0];
         [NSLayoutConstraint activateConstraints:@[
@@ -428,6 +611,9 @@ static UIViewController *FLEXVisibleController(UIViewController *controller) {
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     glass.hidden = NO;
+    glass.contentView.backgroundColor = FLEXGlassPanelFillColor();
+    glass.layer.borderColor = FLEXGlassResolvedCGColor(
+        FLEXGlassBorderColor(), view.traitCollection);
     view.backgroundColor = UIColor.clearColor;
     [self configureCornersForView:view radius:radius capsule:NO];
     [self configureCornersForView:glass radius:radius capsule:NO];
@@ -444,6 +630,7 @@ static UIViewController *FLEXVisibleController(UIViewController *controller) {
         return;
     }
     [self styleNavigationController:viewController.navigationController];
+    [self styleTabBar:viewController.tabBarController.tabBar];
     if ([viewController isKindOfClass:UITableViewController.class]) {
         [self styleTableView:((UITableViewController *)viewController).tableView];
     }

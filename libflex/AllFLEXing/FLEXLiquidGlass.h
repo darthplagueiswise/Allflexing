@@ -25,6 +25,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (void)styleNavigationController:(nullable UINavigationController *)navigationController;
 + (void)styleToolbar:(nullable UIToolbar *)toolbar;
++ (void)styleTabBar:(nullable UITabBar *)tabBar;
 + (void)styleTableView:(nullable UITableView *)tableView;
 + (void)styleTableCell:(nullable UITableViewCell *)cell;
 + (void)styleSearchBar:(nullable UISearchBar *)searchBar;
