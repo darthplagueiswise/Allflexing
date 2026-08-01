@@ -49,6 +49,7 @@ ALLFLEXING_TARGET_FLAGS := \
 $(TWEAK_NAME)_CFLAGS += -fobjc-arc $(IMPORTS) $(ALLFLEXING_TARGET_FLAGS)
 $(TWEAK_NAME)_CFLAGS += -Wno-unsupported-availability-guard -Wno-deprecated-declarations
 $(TWEAK_NAME)_CFLAGS += -Wno-nullability-completeness -Wno-unused-function
+$(TWEAK_NAME)_CFLAGS += -Wno-unused-but-set-variable
 $(TWEAK_NAME)_CCFLAGS += -std=gnu++11
 
 # A certificate-sideloaded host resolves this from its Frameworks directory.
