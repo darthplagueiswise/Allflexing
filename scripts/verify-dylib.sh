@@ -14,6 +14,18 @@ for tool in file lipo otool vtool nm strings; do
     }
 done
 
+require_text() {
+    local label="$1"
+    local needle="$2"
+    local haystack="$3"
+
+    if ! grep -Fq -- "$needle" <<<"$haystack"; then
+        echo "error: missing $label: $needle" >&2
+        return 1
+    fi
+    echo "verified $label: $needle"
+}
+
 file "$dylib"
 architectures="$(lipo -archs "$dylib")"
 echo "architectures: $architectures"
@@ -52,14 +64,18 @@ if grep -Eiq '/var/jb|\.jbroot' <<<"$load_commands"; then
 fi
 
 symbols="$(nm -gj "$dylib")"
-grep -q '_FLEXFlag' <<<"$symbols"
-grep -q '_OBJC_CLASS_\$_FLEXHookPersistence' <<<"$symbols"
-grep -q '_OBJC_CLASS_\$_FLEXLiquidGlass' <<<"$symbols"
-grep -q '_OBJC_CLASS_\$_FLEXSymbolRebind' <<<"$symbols"
+echo "global symbols: $(wc -l <<<"$symbols" | tr -d ' ')"
+require_text "public flag API" "_FLEXFlag" "$symbols"
+require_text "libFLEX compatibility API" "_FLXGetManager" "$symbols"
+require_text "libFLEX compatibility API" "_FLXRevealSEL" "$symbols"
+require_text "libFLEX compatibility API" "_FLXWindowClass" "$symbols"
 
 string_dump="$(strings "$dylib")"
-grep -q 'UIGlassEffect' <<<"$string_dump"
-grep -q 'UIGlassContainerEffect' <<<"$string_dump"
-grep -q 'Hook Toggles' <<<"$string_dump"
+require_text "hook persistence class" "FLEXHookPersistence" "$string_dump"
+require_text "symbol rebind class" "FLEXSymbolRebind" "$string_dump"
+require_text "Liquid Glass class" "FLEXLiquidGlass" "$string_dump"
+require_text "UIKit 26 API" "UIGlassEffect" "$string_dump"
+require_text "UIKit 26 container API" "UIGlassContainerEffect" "$string_dump"
+require_text "FLEX menu entry" "Hook Toggles" "$string_dump"
 
 echo "AllFLEXing Mach-O verification: OK"

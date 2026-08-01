@@ -73,6 +73,7 @@ jobs:
           bash scripts/validate-sdk26-liquidglass.sh
 
       - name: Build standalone package
+        id: build
         run: |
           cd main
           make clean
@@ -84,6 +85,7 @@ jobs:
           bash scripts/verify-dylib.sh .theos/obj/AllFLEXing.dylib
 
       - name: Collect artifacts
+        if: always() && steps.build.outcome == 'success'
         run: |
           cd main
           mkdir -p release
@@ -94,6 +96,7 @@ jobs:
           shasum -a 256 release/AllFLEXing.dylib release/AllFLEXing.deb
 
       - name: Upload build
+        if: always() && steps.build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: AllFLEXing-sdk26.2-arm64-${{ github.run_number }}

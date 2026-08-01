@@ -135,15 +135,15 @@ static const void *kAllFLEXingRevealGestureKey = &kAllFLEXingRevealGestureKey;
 @end
 
 // Compatibility exports retained from the former libFLEX target.
-id FLXGetManager(void) {
+__attribute__((visibility("default"))) id FLXGetManager(void) {
     return FLEXManager.sharedManager;
 }
 
-SEL FLXRevealSEL(void) {
+__attribute__((visibility("default"))) SEL FLXRevealSEL(void) {
     return @selector(showExplorer);
 }
 
-Class FLXWindowClass(void) {
+__attribute__((visibility("default"))) Class FLXWindowClass(void) {
     return FLEXWindow.class;
 }
 

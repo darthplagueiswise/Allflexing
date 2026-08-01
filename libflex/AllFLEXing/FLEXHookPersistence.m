@@ -208,6 +208,6 @@ NSNotificationName const FLEXHookFlagsDidChangeNotification = @"FLEXHookFlagsDid
 
 @end
 
-BOOL FLEXFlag(NSString *identifier) {
+__attribute__((visibility("default"))) BOOL FLEXFlag(NSString *identifier) {
     return [FLEXHookPersistence.sharedManager boolForFlag:identifier];
 }
