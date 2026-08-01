@@ -23,12 +23,27 @@ typedef struct {
     atomic_llong forceInt64;
     atomic_uintptr_t forcePointer;
     atomic_ullong hits;
+    atomic_ullong overrideHits;
     void *original;
     FLEXHookABI abi;
     char identifier[256];
 } FLEXCHookSlot;
 
 static FLEXCHookSlot gFLEXCHookSlots[FLEX_C_SLOT_COUNT];
+
+static void FLEXCHookRecordHit(FLEXCHookSlot *slot, BOOL overridden) {
+    atomic_fetch_add_explicit(&slot->hits, 1, memory_order_relaxed);
+    if (overridden && atomic_fetch_add_explicit(
+            &slot->overrideHits, 1, memory_order_relaxed
+        ) == 0) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [NSNotificationCenter.defaultCenter
+                postNotificationName:FLEXHookRegistryDidChangeNotification
+                              object:nil
+                            userInfo:@{ @"reason": @"first-observed-c-call" }];
+        });
+    }
+}
 
 static NSString *FLEXCHookUUIDForHeader(const struct mach_header_64 *header) {
     if (!header || header->magic != MH_MAGIC_64) {
@@ -150,42 +165,46 @@ static void *FLEXCHookResolveSymbolForLocator(NSString *symbol,
 
 static bool FLEXCallBool0(NSUInteger index) {
     FLEXCHookSlot *slot = &gFLEXCHookSlots[index];
+    BOOL enabled = atomic_load_explicit(&slot->enabled, memory_order_acquire);
+    FLEXCHookRecordHit(slot, enabled);
+    if (enabled) {
+        return atomic_load_explicit(&slot->forceBool, memory_order_relaxed);
+    }
     bool (*original)(void) = (bool (*)(void))slot->original;
-    bool native = original ? original() : false;
-    atomic_fetch_add_explicit(&slot->hits, 1, memory_order_relaxed);
-    return atomic_load_explicit(&slot->enabled, memory_order_acquire)
-        ? atomic_load_explicit(&slot->forceBool, memory_order_relaxed)
-        : native;
+    return original ? original() : false;
 }
 
 static bool FLEXCallBoolPointer(NSUInteger index, void *argument) {
     FLEXCHookSlot *slot = &gFLEXCHookSlots[index];
+    BOOL enabled = atomic_load_explicit(&slot->enabled, memory_order_acquire);
+    FLEXCHookRecordHit(slot, enabled);
+    if (enabled) {
+        return atomic_load_explicit(&slot->forceBool, memory_order_relaxed);
+    }
     bool (*original)(void *) = (bool (*)(void *))slot->original;
-    bool native = original ? original(argument) : false;
-    atomic_fetch_add_explicit(&slot->hits, 1, memory_order_relaxed);
-    return atomic_load_explicit(&slot->enabled, memory_order_acquire)
-        ? atomic_load_explicit(&slot->forceBool, memory_order_relaxed)
-        : native;
+    return original ? original(argument) : false;
 }
 
 static int64_t FLEXCallInt64NoArgs(NSUInteger index) {
     FLEXCHookSlot *slot = &gFLEXCHookSlots[index];
+    BOOL enabled = atomic_load_explicit(&slot->enabled, memory_order_acquire);
+    FLEXCHookRecordHit(slot, enabled);
+    if (enabled) {
+        return atomic_load_explicit(&slot->forceInt64, memory_order_relaxed);
+    }
     int64_t (*original)(void) = (int64_t (*)(void))slot->original;
-    int64_t native = original ? original() : 0;
-    atomic_fetch_add_explicit(&slot->hits, 1, memory_order_relaxed);
-    return atomic_load_explicit(&slot->enabled, memory_order_acquire)
-        ? atomic_load_explicit(&slot->forceInt64, memory_order_relaxed)
-        : native;
+    return original ? original() : 0;
 }
 
 static void *FLEXCallPointerNoArgs(NSUInteger index) {
     FLEXCHookSlot *slot = &gFLEXCHookSlots[index];
+    BOOL enabled = atomic_load_explicit(&slot->enabled, memory_order_acquire);
+    FLEXCHookRecordHit(slot, enabled);
+    if (enabled) {
+        return (void *)atomic_load_explicit(&slot->forcePointer, memory_order_relaxed);
+    }
     void *(*original)(void) = (void *(*)(void))slot->original;
-    void *native = original ? original() : NULL;
-    atomic_fetch_add_explicit(&slot->hits, 1, memory_order_relaxed);
-    return atomic_load_explicit(&slot->enabled, memory_order_acquire)
-        ? (void *)atomic_load_explicit(&slot->forcePointer, memory_order_relaxed)
-        : native;
+    return original ? original() : NULL;
 }
 
 #define FLEX_BOOL0_STUB(N, INDEX) static bool FLEXCBool0_##N(void) { return FLEXCallBool0(INDEX); }
@@ -278,8 +297,9 @@ static NSInteger FLEXReserveSlot(FLEXHookEntry *entry) {
             atomic_init(&slot->enabled, false);
             atomic_init(&slot->forceBool, entry.forceValue);
             atomic_init(&slot->forceInt64, entry.forceValue ? 1 : 0);
-            atomic_init(&slot->forcePointer, entry.forceValue ? 1 : 0);
+            atomic_init(&slot->forcePointer, 0);
             atomic_init(&slot->hits, 0);
+            atomic_init(&slot->overrideHits, 0);
             atomic_store_explicit(&slot->allocated, true, memory_order_release);
             entry.runtimeSlot = (NSInteger)index;
             return (NSInteger)index;
@@ -409,7 +429,9 @@ static NSInteger FLEXReserveSlot(FLEXHookEntry *entry) {
     FLEXCHookSlot *slot = &gFLEXCHookSlots[entry.runtimeSlot];
     atomic_store_explicit(&slot->forceBool, entry.forceValue, memory_order_relaxed);
     atomic_store_explicit(&slot->forceInt64, entry.forceValue ? 1 : 0, memory_order_relaxed);
-    atomic_store_explicit(&slot->forcePointer, entry.forceValue ? 1 : 0, memory_order_relaxed);
+    // Returning address 0x1 for a generic pointer target is never safe. Until
+    // typed value storage exists, pointer overrides can only return NULL.
+    atomic_store_explicit(&slot->forcePointer, 0, memory_order_relaxed);
     atomic_store_explicit(&slot->enabled, enabled, memory_order_release);
 }
 
@@ -420,6 +442,17 @@ static NSInteger FLEXReserveSlot(FLEXHookEntry *entry) {
     }
     return (NSUInteger)atomic_load_explicit(
         &gFLEXCHookSlots[entry.runtimeSlot].hits,
+        memory_order_relaxed
+    );
+}
+
++ (NSUInteger)overrideHitCountForEntry:(FLEXHookEntry *)entry {
+    if (!entry || entry.runtimeSlot == NSNotFound ||
+        entry.runtimeSlot < 0 || entry.runtimeSlot >= FLEX_C_SLOT_COUNT) {
+        return 0;
+    }
+    return (NSUInteger)atomic_load_explicit(
+        &gFLEXCHookSlots[entry.runtimeSlot].overrideHits,
         memory_order_relaxed
     );
 }

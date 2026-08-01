@@ -87,8 +87,11 @@ only when:
 Each signature receives a separate `imp_implementationWithBlock` replacement.
 A row switch resolves the class, selector, `Method`, and current type encoding
 again in a transaction scoped to that entry.
-The original IMP is kept exactly once, hit counts are recorded, and an OFF gate
-returns the native result.
+The original IMP is kept exactly once. An ON gate returns the forced value
+without executing the original first; an OFF gate calls the original. Total
+replacement calls and calls actually overridden are counted separately. A safe
+direct getter probe fails closed if a provider accepts installation but dispatch
+does not cross the replacement.
 
 The same resolver is used contextually by the normal FLEX object explorer.
 Hookable BOOL methods and BOOL properties receive a native switch beside their
@@ -111,7 +114,8 @@ Supported initial typed slot pools are:
 
 Each profile has eight static arm64-compatible replacement slots. Every slot
 holds an original pointer/trampoline, atomic enable/force state, and atomic hit
-counter.
+counter. Generic pointer-return stubs can force only `NULL`; fabricating a
+non-null pointer is intentionally unsupported.
 
 Auto selects fishhook when the selected image has a confirmed import slot. It
 selects `MSHookFunction` only when no bind slot applies and the symbol resolves
@@ -125,6 +129,7 @@ Every runtime target uses one shared `FLEXHookEntry` with separate:
 - persisted desired intent;
 - physical installation state;
 - effective runtime gate;
+- Armed state versus runtime-observed overridden calls;
 - availability/hookability;
 - ABI and backend;
 - locator and image identity;
@@ -177,7 +182,8 @@ Stock iOS cannot relaunch a jailed app, so the user opens it again manually.
 ## Liquid Glass hierarchy
 
 - The runtime workspace uses UIKit tabs in compact width and the adaptive
-  tab/sidebar mode in regular width. Each surface owns its navigation stack.
+  tab/sidebar mode in regular width. It installs concrete navigation-controller
+  children directly; it does not depend on lazy `UITab` providers.
 - Standard UIKit 26 bars, search, menus, popovers, switches, and toolbar actions
   provide the primary control layer and automatic morphing from source items.
 - The FLEX explorer toolbar owns one explicit `UIGlassEffect`; its description
@@ -187,7 +193,10 @@ Stock iOS cannot relaunch a jailed app, so the user opens it again manually.
   glass behind every label.
 - Effect materialization animates `effect`, not just alpha.
 - Merge/split morphing animates frames inside the shared container.
-- Runtime tables/cells remain content and do not receive a glass panel each.
+- Navigable FLEX menu rows and Hook Center cards receive bounded reusable
+  `UIGlassEffect` surfaces; passive code/log rows remain content.
+- The global menu uses the iOS 26 integrated search placement in its toolbar,
+  yielding the native floating search control and its compact/editing morph.
 - Standard bars clear legacy appearances and custom effects use adaptive
   `UICornerConfiguration` on iOS 26.
 - Custom cell accessories receive an explicit fitting frame before assignment,

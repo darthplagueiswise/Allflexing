@@ -1,5 +1,5 @@
 diff --git a/Classes/Core/Controllers/FLEXNavigationController.m b/Classes/Core/Controllers/FLEXNavigationController.m
-index ec695e8..4ce004a 100644
+index ec695e8..2ba27d7 100644
 --- a/Classes/Core/Controllers/FLEXNavigationController.m
 +++ b/Classes/Core/Controllers/FLEXNavigationController.m
 @@ -10,6 +10,7 @@
@@ -26,11 +26,82 @@ index ec695e8..4ce004a 100644
      
      if (@available(iOS 15.0, *)) {
          UISheetPresentationController *presenter = self.sheetPresentationController;
+@@ -134,17 +137,30 @@
+     
+     // Check if a done item already exists
+     for (UIBarButtonItem *item in navigationItem.rightBarButtonItems) {
+-        if (item.style == UIBarButtonItemStyleDone) {
++        BOOL isDismissItem = item.style == UIBarButtonItemStyleDone;
++        if (@available(iOS 26.0, *)) {
++            isDismissItem = isDismissItem || item.style == UIBarButtonItemStyleProminent;
++        }
++        if (isDismissItem) {
+             return;
+         }
+     }
+     
+     // Give root view controllers a Done button if it does not already have one
+-    UIBarButtonItem *done = [[UIBarButtonItem alloc]
+-        initWithBarButtonSystemItem:UIBarButtonSystemItemDone
+-        target:self
+-        action:@selector(dismissAnimated)
+-    ];
++    UIBarButtonItem *done = nil;
++    if (@available(iOS 26.0, *)) {
++        done = [[UIBarButtonItem alloc]
++            initWithImage:[UIImage systemImageNamed:@"checkmark"]
++                    style:UIBarButtonItemStyleProminent
++                   target:self
++                   action:@selector(dismissAnimated)];
++        done.accessibilityLabel = @"Done";
++    } else {
++        done = [[UIBarButtonItem alloc]
++            initWithBarButtonSystemItem:UIBarButtonSystemItemDone
++                                 target:self
++                                 action:@selector(dismissAnimated)];
++    }
+     
+     // Prepend the button if other buttons exist already
+     NSArray *existingItems = navigationItem.rightBarButtonItems;
 diff --git a/Classes/Core/Controllers/FLEXTableViewController.m b/Classes/Core/Controllers/FLEXTableViewController.m
-index 79ef6f4..088f110 100644
+index 79ef6f4..684f857 100644
 --- a/Classes/Core/Controllers/FLEXTableViewController.m
 +++ b/Classes/Core/Controllers/FLEXTableViewController.m
-@@ -336,10 +336,17 @@ CGFloat const kFLEXDebounceForExpensiveIO = 0.5;
+@@ -14,6 +14,7 @@
+ #import "FLEXTableView.h"
+ #import "FLEXUtility.h"
+ #import "FLEXResources.h"
++#import "FLEXLiquidGlass.h"
+ #import "UIBarButtonItem+FLEX.h"
+ #import <objc/runtime.h>
+ 
+@@ -104,6 +105,7 @@ CGFloat const kFLEXDebounceForExpensiveIO = 0.5;
+         self.searchController.hidesNavigationBarDuringPresentation = NO;
+         /// Not necessary in iOS 13; remove this when iOS 13 is the minimum deployment target
+         self.searchController.searchBar.delegate = self;
++        [FLEXLiquidGlass styleSearchBar:self.searchController.searchBar];
+ 
+         self.automaticallyShowsSearchBarCancelButton = YES;
+ 
+@@ -233,6 +235,7 @@ CGFloat const kFLEXDebounceForExpensiveIO = 0.5;
+     [super viewDidLoad];
+     
+     self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
++    [FLEXLiquidGlass styleTableView:self.tableView];
+     
+     // Toolbar
+     self.navigationController.toolbarHidden = self.toolbarItems.count > 0;
+@@ -252,6 +255,9 @@ CGFloat const kFLEXDebounceForExpensiveIO = 0.5;
+ 
+ - (void)viewWillAppear:(BOOL)animated {
+     [super viewWillAppear:animated];
++    [FLEXLiquidGlass styleNavigationController:self.navigationController];
++    [FLEXLiquidGlass styleTableView:self.tableView];
++    [FLEXLiquidGlass styleSearchBar:self.searchController.searchBar];
+     
+     if (@available(iOS 11.0, *)) {
+         // When going back, make the search bar reappear instead of hiding
+@@ -336,10 +342,17 @@ CGFloat const kFLEXDebounceForExpensiveIO = 0.5;
          self.openTabsToolbarItem,
      ];
      
@@ -52,6 +123,25 @@ index 79ef6f4..088f110 100644
      }
      
      // Disable tabs entirely when not presented by FLEXExplorerViewController
+@@ -610,6 +623,18 @@ static UITextField *kDummyTextField = nil;
+ 
+ #pragma mark Table View
+ 
++- (void)tableView:(UITableView *)tableView
++  willDisplayCell:(UITableViewCell *)cell
++forRowAtIndexPath:(NSIndexPath *)indexPath {
++    (void)tableView;
++    (void)indexPath;
++    // Treat navigable rows as controls. Passive code/log/value rows remain in
++    // the content plane unless their owning AllFLEXing screen opts in itself.
++    if (cell.selectionStyle != UITableViewCellSelectionStyleNone) {
++        [FLEXLiquidGlass styleTableCell:cell];
++    }
++}
++
+ /// Not having a title in the first section looks weird with a rounded-corner table view style
+ - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+     if (@available(iOS 13, *)) {
 diff --git a/Classes/Core/Views/Carousel/FLEXCarouselCell.m b/Classes/Core/Views/Carousel/FLEXCarouselCell.m
 index aabfbec..cca1652 100644
 --- a/Classes/Core/Views/Carousel/FLEXCarouselCell.m
@@ -244,6 +334,40 @@ index daf967d..77d41ce 100644
 +}
 +
  @end
+diff --git a/Classes/GlobalStateExplorers/Globals/FLEXGlobalsViewController.m b/Classes/GlobalStateExplorers/Globals/FLEXGlobalsViewController.m
+index 569b563..380ef10 100644
+--- a/Classes/GlobalStateExplorers/Globals/FLEXGlobalsViewController.m
++++ b/Classes/GlobalStateExplorers/Globals/FLEXGlobalsViewController.m
+@@ -169,6 +169,14 @@
+ 
+     self.title = @"💪  FLEX";
+     self.showsSearchBar = YES;
++    if (@available(iOS 26.0, *)) {
++        // UIKit can move integrated search into the iPhone toolbar where it
++        // becomes a native floating Liquid Glass control and morphs between
++        // compact and editing states.
++        self.navigationItem.preferredSearchBarPlacement =
++            UINavigationItemSearchBarPlacementIntegrated;
++        self.navigationItem.searchBarPlacementAllowsToolbarIntegration = YES;
++    }
+     self.searchBarDebounceInterval = kFLEXDebounceInstant;
+     self.navigationItem.backBarButtonItem = [UIBarButtonItem flex_backItemWithTitle:@"Back"];
+     
+@@ -178,7 +186,13 @@
+ - (void)viewWillAppear:(BOOL)animated {
+     [super viewWillAppear:animated];
+     
+-    [self disableToolbar];
++    if (@available(iOS 26.0, *)) {
++        self.toolbarItems = @[self.navigationItem.searchBarPlacementBarButtonItem];
++        self.navigationController.toolbarHidden = NO;
++        self.navigationController.hidesBarsOnSwipe = NO;
++    } else {
++        [self disableToolbar];
++    }
+     
+     if (self.manuallyDeselectOnAppear) {
+         [self.tableView deselectRowAtIndexPath:self.tableView.indexPathForSelectedRow animated:YES];
 diff --git a/Classes/Toolbar/FLEXExplorerToolbar.m b/Classes/Toolbar/FLEXExplorerToolbar.m
 index 022999e..c2f2cee 100644
 --- a/Classes/Toolbar/FLEXExplorerToolbar.m

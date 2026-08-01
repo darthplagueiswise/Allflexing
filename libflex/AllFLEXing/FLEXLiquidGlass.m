@@ -13,6 +13,14 @@
 
 static const void *kFLEXOriginalButtonConfigurationKey =
     &kFLEXOriginalButtonConfigurationKey;
+static const void *kFLEXGlassCellBackgroundKey =
+    &kFLEXGlassCellBackgroundKey;
+static const void *kFLEXGlassCellSelectionKey =
+    &kFLEXGlassCellSelectionKey;
+static const void *kFLEXGlassSearchBackgroundKey =
+    &kFLEXGlassSearchBackgroundKey;
+static const void *kFLEXGlassPanelBackgroundKey =
+    &kFLEXGlassPanelBackgroundKey;
 
 static NSTimeInterval FLEXGlassDuration(NSTimeInterval duration) {
     return UIAccessibilityIsReduceMotionEnabled() ? 0.0 : duration;
@@ -36,6 +44,39 @@ static UIViewController *FLEXVisibleController(UIViewController *controller) {
     }
     return controller;
 }
+
+@interface FLEXGlassCellBackgroundView : UIView
+@property (nonatomic) UIVisualEffectView *glassView;
+@end
+
+@implementation FLEXGlassCellBackgroundView
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.backgroundColor = UIColor.clearColor;
+        self.userInteractionEnabled = NO;
+        _glassView = [FLEXLiquidGlass glassViewInteractive:YES tint:nil];
+        _glassView.userInteractionEnabled = NO;
+        _glassView.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+                                     UIViewAutoresizingFlexibleHeight;
+        _glassView.layer.borderWidth = 1.0 / UIScreen.mainScreen.scale;
+        _glassView.layer.borderColor =
+            [UIColor.separatorColor colorWithAlphaComponent:0.34].CGColor;
+        [self addSubview:_glassView];
+    }
+    return self;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    self.glassView.frame = CGRectInset(self.bounds, 0.0, 2.0);
+    [FLEXLiquidGlass configureCornersForView:self.glassView
+                                      radius:18.0
+                                     capsule:NO];
+}
+
+@end
 
 @implementation FLEXLiquidGlass
 
@@ -220,21 +261,93 @@ static UIViewController *FLEXVisibleController(UIViewController *controller) {
     if (!tableView) {
         return;
     }
-    // Tables are content. They deliberately remain opaque system content and
-    // never receive a glass backdrop per cell or per section.
-    tableView.backgroundColor = UIColor.systemGroupedBackgroundColor;
+    BOOL usesGlass = self.isGlassAvailable && self.isEnabled;
+    tableView.backgroundColor = usesGlass
+        ? UIColor.clearColor : UIColor.systemGroupedBackgroundColor;
+    tableView.separatorStyle = usesGlass
+        ? UITableViewCellSeparatorStyleNone : UITableViewCellSeparatorStyleSingleLine;
     tableView.separatorColor = UIColor.separatorColor;
     tableView.cellLayoutMarginsFollowReadableWidth = YES;
     tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
+}
+
++ (void)styleTableCell:(UITableViewCell *)cell {
+    if (!cell) {
+        return;
+    }
+
+    BOOL usesGlass = self.isGlassAvailable && self.isEnabled;
+    FLEXGlassCellBackgroundView *background =
+        objc_getAssociatedObject(cell, kFLEXGlassCellBackgroundKey);
+    if (!usesGlass) {
+        if (background && cell.backgroundView == background) {
+            cell.backgroundView = nil;
+        }
+        cell.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+        cell.contentView.backgroundColor = UIColor.clearColor;
+        return;
+    }
+
+    if (!background) {
+        background = [FLEXGlassCellBackgroundView new];
+        objc_setAssociatedObject(cell,
+                                 kFLEXGlassCellBackgroundKey,
+                                 background,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    cell.backgroundColor = UIColor.clearColor;
+    cell.contentView.backgroundColor = UIColor.clearColor;
+    cell.backgroundView = background;
+
+    UIView *selection = objc_getAssociatedObject(cell, kFLEXGlassCellSelectionKey);
+    if (!selection) {
+        selection = [UIView new];
+        selection.backgroundColor = [UIColor.systemBlueColor colorWithAlphaComponent:0.18];
+        [self configureCornersForView:selection radius:18.0 capsule:NO];
+        objc_setAssociatedObject(cell,
+                                 kFLEXGlassCellSelectionKey,
+                                 selection,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    cell.selectedBackgroundView = selection;
 }
 
 + (void)styleSearchBar:(UISearchBar *)searchBar {
     if (!searchBar) {
         return;
     }
-    // Standard UISearchBar owns its Liquid Glass presentation on iOS 26.
     searchBar.searchBarStyle = UISearchBarStyleMinimal;
     searchBar.backgroundImage = nil;
+    UISearchTextField *field = searchBar.searchTextField;
+    UIVisualEffectView *glass =
+        objc_getAssociatedObject(field, kFLEXGlassSearchBackgroundKey);
+    if (!(self.isGlassAvailable && self.isEnabled)) {
+        glass.hidden = YES;
+        field.backgroundColor = UIColor.tertiarySystemFillColor;
+        return;
+    }
+
+    if (!glass) {
+        glass = [self glassViewInteractive:YES tint:nil];
+        glass.userInteractionEnabled = NO;
+        glass.translatesAutoresizingMaskIntoConstraints = NO;
+        [field insertSubview:glass atIndex:0];
+        [NSLayoutConstraint activateConstraints:@[
+            [glass.leadingAnchor constraintEqualToAnchor:field.leadingAnchor],
+            [glass.trailingAnchor constraintEqualToAnchor:field.trailingAnchor],
+            [glass.topAnchor constraintEqualToAnchor:field.topAnchor],
+            [glass.bottomAnchor constraintEqualToAnchor:field.bottomAnchor],
+        ]];
+        objc_setAssociatedObject(field,
+                                 kFLEXGlassSearchBackgroundKey,
+                                 glass,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    glass.hidden = NO;
+    field.backgroundColor = UIColor.clearColor;
+    field.background = nil;
+    field.borderStyle = UITextBorderStyleNone;
+    [self configureCornersForView:glass radius:22.0 capsule:YES];
 }
 
 + (void)styleButton:(UIButton *)button prominent:(BOOL)prominent {
@@ -243,6 +356,13 @@ static UIViewController *FLEXVisibleController(UIViewController *controller) {
     }
 #if ALLFLEXING_HAS_UIKIT_GLASS
     if (@available(iOS 26.0, *)) {
+        if (!(self.isGlassAvailable && self.isEnabled)) {
+            id saved = objc_getAssociatedObject(button, kFLEXOriginalButtonConfigurationKey);
+            if (saved) {
+                button.configuration = saved == NSNull.null ? nil : saved;
+            }
+            return;
+        }
         if (!objc_getAssociatedObject(button, kFLEXOriginalButtonConfigurationKey)) {
             objc_setAssociatedObject(
                 button,
@@ -271,6 +391,46 @@ static UIViewController *FLEXVisibleController(UIViewController *controller) {
 #endif
     button.backgroundColor = UIColor.tertiarySystemFillColor;
     [self configureCornersForView:button radius:12.0 capsule:NO];
+}
+
++ (void)stylePanelView:(UIView *)view
+            interactive:(BOOL)interactive
+                  radius:(CGFloat)radius {
+    if (!view) {
+        return;
+    }
+    BOOL usesGlass = self.isGlassAvailable && self.isEnabled;
+    UIVisualEffectView *glass =
+        objc_getAssociatedObject(view, kFLEXGlassPanelBackgroundKey);
+    if (!usesGlass) {
+        if (glass) {
+            glass.hidden = YES;
+        }
+        view.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+        [self configureCornersForView:view radius:radius capsule:NO];
+        return;
+    }
+
+    if (!glass) {
+        glass = [self glassViewInteractive:interactive tint:nil];
+        glass.userInteractionEnabled = NO;
+        glass.translatesAutoresizingMaskIntoConstraints = NO;
+        [view insertSubview:glass atIndex:0];
+        [NSLayoutConstraint activateConstraints:@[
+            [glass.leadingAnchor constraintEqualToAnchor:view.leadingAnchor],
+            [glass.trailingAnchor constraintEqualToAnchor:view.trailingAnchor],
+            [glass.topAnchor constraintEqualToAnchor:view.topAnchor],
+            [glass.bottomAnchor constraintEqualToAnchor:view.bottomAnchor],
+        ]];
+        objc_setAssociatedObject(view,
+                                 kFLEXGlassPanelBackgroundKey,
+                                 glass,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    glass.hidden = NO;
+    view.backgroundColor = UIColor.clearColor;
+    [self configureCornersForView:view radius:radius capsule:NO];
+    [self configureCornersForView:glass radius:radius capsule:NO];
 }
 
 + (void)applyToViewController:(UIViewController *)viewController {

@@ -106,6 +106,7 @@ typedef NS_ENUM(NSInteger, FLEXHookDetailSection) {
     cell.accessoryView = nil;
     cell.selectionStyle = UITableViewCellSelectionStyleDefault;
     cell.textLabel.textColor = UIColor.labelColor;
+    [FLEXLiquidGlass styleTableCell:cell];
     return cell;
 }
 
@@ -180,14 +181,20 @@ typedef NS_ENUM(NSInteger, FLEXHookDetailSection) {
                 ? UITableViewCellSelectionStyleDefault
                 : UITableViewCellSelectionStyleNone;
         } else if (indexPath.row == 2) {
+            BOOL pointerResult = entry.abi == FLEXHookABICPointerNoArguments;
+            NSString *forcedResult = pointerResult
+                ? @"NULL"
+                : (entry.abi == FLEXHookABICInt64NoArguments
+                    ? (entry.forceValue ? @"1" : @"0")
+                    : (entry.forceValue ? @"TRUE" : @"FALSE"));
             [self configureCell:cell
                            text:@"Forced result"
-                      secondary:entry.forceValue ? @"TRUE" : @"FALSE"
+                      secondary:forcedResult
                           image:@"arrow.triangle.branch"
                            tint:UIColor.systemPurpleColor];
             UISwitch *toggle = [UISwitch new];
             toggle.on = entry.forceValue;
-            toggle.enabled = entry.abi != FLEXHookABIUnknown;
+            toggle.enabled = entry.abi != FLEXHookABIUnknown && !pointerResult;
             [toggle sizeToFit];
             [toggle addTarget:self
                        action:@selector(forceChanged:)
@@ -220,8 +227,9 @@ typedef NS_ENUM(NSInteger, FLEXHookDetailSection) {
         if (indexPath.row == 0) {
             value = entry.statusSummary;
         } else if (indexPath.row == 1) {
-            value = [NSString stringWithFormat:@"%lu",
-                (unsigned long)entry.hitCount];
+            value = [NSString stringWithFormat:@"%lu total · %lu overridden",
+                (unsigned long)entry.hitCount,
+                (unsigned long)entry.overrideHitCount];
         } else {
             value = FLEXHookRegistry.sharedRegistry.providerName;
         }
@@ -379,6 +387,9 @@ typedef NS_ENUM(NSInteger, FLEXHookDetailSection) {
 - (void)enabledChanged:(UISwitch *)toggle {
     FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
     BOOL requestedState = toggle.isOn;
+    if (requestedState && !self.entry.userConfigured) {
+        [registry stageForceValue:YES forEntryIdentifier:self.entry.identifier];
+    }
     [registry stageEnabled:requestedState forEntryIdentifier:self.entry.identifier];
     if (self.entry.pendingEnabled != requestedState) {
         [toggle setOn:self.entry.pendingEnabled animated:YES];

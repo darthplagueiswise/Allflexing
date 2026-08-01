@@ -24,12 +24,17 @@
 - (UINavigationController *)navigationControllerWithRoot:(UIViewController *)root
                                                    title:(NSString *)title
                                                   symbol:(NSString *)symbol {
-    root.tabBarItem = [[UITabBarItem alloc]
+    UITabBarItem *tabBarItem = [[UITabBarItem alloc]
         initWithTitle:title
                 image:[UIImage systemImageNamed:symbol]
         selectedImage:nil];
+    root.tabBarItem = tabBarItem;
     UINavigationController *navigationController =
         [[UINavigationController alloc] initWithRootViewController:root];
+    // UITabBarController owns these navigation controllers, not their roots.
+    // Assign the item to the actual child so the classic controller path keeps
+    // selection and containment synchronized on every supported iOS version.
+    navigationController.tabBarItem = tabBarItem;
     navigationController.navigationBar.prefersLargeTitles = YES;
     [FLEXLiquidGlass styleNavigationController:navigationController];
     root.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc]
@@ -64,35 +69,18 @@
         settingsNavigation,
     ];
 
+    // Use UIKit's direct child-controller contract. The previous lazy UITab
+    // provider path rendered the tab items on iOS 26 but could leave the same
+    // child visible after selection when this controller was presented inside
+    // FLEX's injected sheet hierarchy.
+    [self setViewControllers:self.workspaceNavigationControllers animated:NO];
+    self.selectedIndex = 0;
     if (@available(iOS 18.0, *)) {
-        NSArray<NSString *> *titles = @[@"Center", @"Objective-C", @"C Runtime", @"Settings"];
-        NSArray<NSString *> *symbols = @[@"bolt.shield.fill", @"curlybraces", @"function", @"gearshape.fill"];
-        NSArray<NSString *> *identifiers = @[
-            @"allflexing.center",
-            @"allflexing.objective-c",
-            @"allflexing.c-runtime",
-            @"allflexing.settings",
-        ];
-        NSMutableArray<UITab *> *tabs = [NSMutableArray arrayWithCapacity:titles.count];
-        [titles enumerateObjectsUsingBlock:^(NSString *title, NSUInteger index, BOOL *stop) {
-            (void)stop;
-            UINavigationController *navigationController =
-                self.workspaceNavigationControllers[index];
-            UITab *tab = [[UITab alloc]
-                initWithTitle:title
-                        image:[UIImage systemImageNamed:symbols[index]]
-                   identifier:identifiers[index]
-       viewControllerProvider:^UIViewController *(__unused UITab *selectedTab) {
-                return navigationController;
-            }];
-            tab.preferredPlacement = UITabPlacementFixed;
-            [tabs addObject:tab];
-        }];
-        self.tabs = tabs;
+        // The mode remains adaptive, but ownership stays on the concrete child
+        // array above. Compact width gets a tab bar; regular width can expose
+        // the system sidebar without a lazy provider changing containment.
         self.mode = UITabBarControllerModeTabSidebar;
         self.customizationIdentifier = @"com.allflexing.runtime-workspace";
-    } else {
-        self.viewControllers = self.workspaceNavigationControllers;
     }
 }
 

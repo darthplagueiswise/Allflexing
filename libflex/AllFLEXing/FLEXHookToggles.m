@@ -32,8 +32,7 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
 - (instancetype)init {
     self = [super initWithFrame:CGRectZero];
     if (self) {
-        self.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
-        [FLEXLiquidGlass configureCornersForView:self radius:18.0 capsule:NO];
+        [FLEXLiquidGlass stylePanelView:self interactive:NO radius:18.0];
 
         _valueLabel = [UILabel new];
         _valueLabel.font = [UIFont monospacedDigitSystemFontOfSize:22.0
@@ -65,6 +64,7 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
 }
 
 - (void)setValue:(NSString *)value caption:(NSString *)caption tint:(UIColor *)tint {
+    [FLEXLiquidGlass stylePanelView:self interactive:NO radius:18.0];
     self.valueLabel.text = value;
     self.valueLabel.textColor = tint;
     self.captionLabel.text = caption;
@@ -167,13 +167,14 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
         ? UIColor.systemGreenColor : UIColor.systemOrangeColor;
     self.summaryLabel.text = registry.safeMode
         ? @"Safe mode is active. Review the blocked target before applying another batch."
-        : @"Validated Objective-C and C targets share one registry, live gates, persistence and diagnostics.";
-    [self.activeMetric setValue:[NSString stringWithFormat:@"%lu", (unsigned long)registry.activeCount]
-                         caption:@"Effective"
-                            tint:UIColor.systemGreenColor];
-    [self.pendingMetric setValue:[NSString stringWithFormat:@"%lu", (unsigned long)registry.pendingCount]
-                          caption:@"Pending"
-                             tint:UIColor.systemBlueColor];
+        : @"Armed means the replacement is installed. Observed means a real runtime call crossed it; only then is the override proven in this process.";
+    [self.activeMetric setValue:[NSString stringWithFormat:@"%lu", (unsigned long)registry.armedCount]
+                         caption:@"Armed"
+                            tint:UIColor.systemBlueColor];
+    [self.pendingMetric setValue:[NSString stringWithFormat:@"%lu", (unsigned long)registry.observedCount]
+                          caption:@"Observed"
+                             tint:registry.observedCount
+                                ? UIColor.systemGreenColor : UIColor.secondaryLabelColor];
     [self.errorMetric setValue:[NSString stringWithFormat:@"%lu", (unsigned long)registry.failureCount]
                         caption:@"Errors"
                            tint:registry.failureCount ? UIColor.systemOrangeColor : UIColor.secondaryLabelColor];
@@ -365,8 +366,9 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
     }
     self.navigationItem.rightBarButtonItems = @[self.applyItem, separator, self.moreItem];
     if (@available(iOS 26.0, *)) {
-        self.navigationItem.subtitle = [NSString stringWithFormat:@"%lu effective · %lu pending",
-            (unsigned long)registry.activeCount,
+        self.navigationItem.subtitle = [NSString stringWithFormat:@"%lu armed · %lu observed · %lu pending",
+            (unsigned long)registry.armedCount,
+            (unsigned long)registry.observedCount,
             (unsigned long)registry.pendingCount];
     }
 }
@@ -397,6 +399,7 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
     cell.accessoryView = nil;
     cell.accessoryType = UITableViewCellAccessoryNone;
     cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    [FLEXLiquidGlass styleTableCell:cell];
     return cell;
 }
 
@@ -447,7 +450,7 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
         if (!self.pendingEntries.count) {
             [self configureCell:cell
                            text:@"Nothing waiting"
-                      secondary:@"Persisted intent and effective runtime state are synchronized."
+                      secondary:@"Persisted intent and installed runtime gates are synchronized."
                           image:@"checkmark.circle.fill"
                            tint:UIColor.systemGreenColor];
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
@@ -513,8 +516,12 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
     [self configureCell:cell
                    text:entry.title
               secondary:[NSString stringWithFormat:@"%@\n%@", entry.detail, entry.statusSummary]
-                  image:entry.effectiveEnabled ? @"bolt.circle.fill" : @"circle.dashed"
-                   tint:entry.effectiveEnabled ? UIColor.systemGreenColor : UIColor.secondaryLabelColor];
+                  image:entry.effectiveEnabled
+                      ? (entry.overrideHitCount > 0 ? @"checkmark.circle.fill" : @"bolt.circle.fill")
+                      : @"circle.dashed"
+                   tint:entry.effectiveEnabled
+                      ? (entry.overrideHitCount > 0 ? UIColor.systemGreenColor : UIColor.systemBlueColor)
+                      : UIColor.secondaryLabelColor];
     UISwitch *toggle = [UISwitch new];
     toggle.on = entry.pendingEnabled;
     toggle.enabled = (entry.available && entry.hookable) || entry.pendingEnabled;
@@ -578,8 +585,12 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
     NSString *identifier = objc_getAssociatedObject(toggle, kFLEXHookCenterIdentifierKey);
     FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
     BOOL requestedState = toggle.isOn;
-    [registry stageEnabled:requestedState forEntryIdentifier:identifier];
     FLEXHookEntry *entry = [registry entryForIdentifier:identifier];
+    if (requestedState && entry && !entry.userConfigured) {
+        [registry stageForceValue:YES forEntryIdentifier:identifier];
+    }
+    [registry stageEnabled:requestedState forEntryIdentifier:identifier];
+    entry = [registry entryForIdentifier:identifier];
     if (!entry || entry.pendingEnabled != requestedState) {
         UINotificationFeedbackGenerator *feedback = [UINotificationFeedbackGenerator new];
         [feedback notificationOccurred:UINotificationFeedbackTypeError];
@@ -594,9 +605,13 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
         NSArray<FLEXHookEntry *> *failed
     ) {
         UINotificationFeedbackGenerator *feedback = [UINotificationFeedbackGenerator new];
-        [feedback notificationOccurred:failed.count
+        FLEXHookEntry *resolved = [registry entryForIdentifier:identifier];
+        UINotificationFeedbackType feedbackType = failed.count
             ? UINotificationFeedbackTypeError
-            : UINotificationFeedbackTypeSuccess];
+            : (resolved.overrideHitCount > 0
+                ? UINotificationFeedbackTypeSuccess
+                : UINotificationFeedbackTypeWarning);
+        [feedback notificationOccurred:feedbackType];
         [weakSelf reloadState];
     }];
 }

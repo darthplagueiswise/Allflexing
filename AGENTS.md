@@ -226,6 +226,9 @@ Cada perfil deve declarar:
 - Não persistir ponteiros absolutos.
 - Stubs devem possuir slots estáticos tipados, ponteiro original por alvo,
   estado atômico e contador atômico de chamadas.
+- Um retorno genérico de ponteiro só pode ser forçado para `NULL` enquanto não
+  existir storage tipado e validado. Nunca fabricar `0x1` para representar
+  `true`, pois o chamador pode desreferenciar o valor.
 - Se um perfil usar argumento/retorno de ponto flutuante, struct ou vetor, ele
   precisa de um stub específico e teste arm64. Caso contrário, manter desativado.
 
@@ -248,12 +251,24 @@ Cada entrada precisa, no mínimo, de:
 - `effectiveEnabled`: replacement atualmente forçando/observando;
 - ponteiro original/trampoline somente em memória;
 - número de chamadas/hits;
+- número separado de chamadas realmente sobrescritas enquanto o gate estava ON;
 - data/geração da última validação;
 - último erro e motivo de indisponibilidade;
 - indicação `requiresRestart`.
 
 Estados de UI não podem colapsar `desired`, `installed` e `effective` num único
 booleano. Um toggle persistido não prova que o hook foi instalado.
+
+O vocabulário da UI é obrigatório:
+
+- **Armed**: replacement instalado e gate ON, mas ainda sem chamada sobrescrita;
+- **Observed**: ao menos uma chamada real atravessou o replacement com gate ON;
+- **Installed, forwarding original**: patch presente, gate OFF;
+- **Error**: instalação, revalidação ou prova direta falhou.
+
+Nunca chamar uma entrada de Effective/Observed usando apenas `installed` e um
+booleano persistido. Hits ocorridos enquanto o gate estava OFF não comprovam um
+override e devem ser contabilizados separadamente.
 
 ## 7. Semântica de toggle e Apply
 
@@ -271,6 +286,17 @@ booleano. Um toggle persistido não prova que o hook foi instalado.
   somente para o ID daquela entrada. O switch deve mudar o comportamento em
   tempo real e nunca aplicar pendências não relacionadas. A instalação ocorre
   no handler da ação, nunca em `cellForRowAtIndexPath:` nem durante scroll.
+- Para entradas BOOL ainda não configuradas, ligar o switch simples significa
+  deterministicamente `Force TRUE`; `Force FALSE` continua sendo uma escolha
+  explícita no menu/detalhe.
+- Com gate ON, o replacement retorna o valor forçado sem chamar a implementação
+  original. Com gate OFF, chama o original. Chamar o original antes do gate
+  mantém efeitos colaterais que o override deveria impedir e é incorreto.
+- Um getter Objective-C sem argumentos acionado diretamente no explorador pode
+  receber uma prova imediata somente quando o nome segue convenção segura de
+  getter. Se `objc_msgSend` não atravessar o replacement recém-instalado, a
+  entrada falha fechada, desliga o gate e registra erro; sucesso do provider não
+  é suficiente.
 - `pendingEnabled` continua necessário para edições de configuração, batch e
   recuperação de erro. O botão global `Aplicar` processa apenas o lote restante.
 - O botão `Aplicar` executa uma transação:
@@ -285,6 +311,8 @@ booleano. Um toggle persistido não prova que o hook foi instalado.
   8. atualiza resumo, hits e estado efetivo.
 
 - Se uma entrada falhar, não marcá-la como ativa e não esconder o erro.
+- Feedback háptico de sucesso só é usado após uma chamada Observed; uma entrada
+  apenas Armed usa feedback de atenção.
 - Desligar deve ter efeito em tempo real pelo gate do replacement. Não tentar
   remover de modo inseguro hooks inline ou cadeias Objective-C em execução.
 - `Aplicar e reiniciar` deve persistir, confirmar a gravação e então encerrar o
@@ -385,8 +413,8 @@ A entrada global antiga de toggles deve evoluir para um Hook Center completo.
 
 Estrutura mínima:
 
-- **Resumo**: provider detectado, engines disponíveis, ativos, pendentes,
-  falhas, safe mode e uptime do runtime.
+- **Resumo**: provider detectado, engines disponíveis, Armed, Observed,
+  pendentes, falhas, safe mode e uptime do runtime.
 - **Engines**: Auto, Objective-C/ElleKit, fishhook, inline/ElleKit e providers
   experimentais realmente compilados. Cada opção informa capacidade e status.
 - **Pendentes**: alterações ainda não aplicadas, com `Aplicar` e
@@ -429,9 +457,12 @@ Liquid Glass é hierarquia e comportamento, não apenas blur.
   uma aparência customizada opaca impede a adoção automática do material.
 - Preferir `UINavigationBar`, `UIToolbar`, `UISearchBar`, menus, popovers,
   `UIButtonConfiguration` e `UISwitch` padrão.
-- Glass pertence à camada flutuante de navegação e controles. Tabelas, células,
-  código, logs e conteúdo permanecem na camada de conteúdo.
-- Não aplicar glass em toda célula ou em todo fundo de tela.
+- Glass pertence prioritariamente à camada flutuante de navegação e controles.
+  No menu global do FLEX e nas telas do Hook Center, uma linha acionável é um
+  controle e recebe uma superfície glass delimitada e reutilizável. Código,
+  logs e linhas passivas continuam na camada de conteúdo.
+- Não aplicar glass indiscriminadamente em toda célula ou em todo fundo de
+  tela; o controller/componente precisa optar pela superfície.
 - Não empilhar glass sobre glass.
 - Controles customizados usam `UIVisualEffectView` com `UIGlassEffect`.
 - Para um controle customizado interativo, usar o efeito interativo; para uma
@@ -480,10 +511,13 @@ Liquid Glass é hierarquia e comportamento, não apenas blur.
   é proibido percorrer recursivamente a árvore de views procurando nomes de
   classes. Aparência é responsabilidade explícita do controller ou componente
   que cria a superfície.
-- A entrada global abre um workspace próprio. Em largura compacta ele usa tab
-  bar flutuante; em largura regular usa o modo tab/sidebar adaptativo do UIKit.
-  Center, Objective-C, C Runtime e Settings mantêm navigation controllers
-  independentes e compartilham o mesmo registry.
+- A entrada global abre um workspace próprio. Ele entrega diretamente ao
+  `UITabBarController` quatro navigation controllers concretos por
+  `setViewControllers:`; não usar providers lazy de `UITab`, pois uma aba que
+  apenas muda de aparência sem trocar o child controller é falha funcional. O
+  modo tab/sidebar do UIKit permanece habilitado para adaptação compacta/regular.
+  Center, Objective-C, C Runtime e Settings mantêm stacks independentes e
+  compartilham o mesmo registry.
 - O Hook Center usa header auto-dimensionável, métricas que mudam de linha em
   largura compacta ou categoria de texto de acessibilidade, conteúdo de lista
   nativo e `UIBarButtonItem` proeminente para Apply.
@@ -497,6 +531,12 @@ Liquid Glass é hierarquia e comportamento, não apenas blur.
 - A toolbar flutuante do explorer é uma superfície glass explícita. O painel de
   descrição materializa e desmaterializa animando `effect`; nenhuma rotina
   posterior tenta inserir backdrops por heurística.
+- O menu global usa busca `Integrated` e
+  `searchBarPlacementBarButtonItem` no iOS 26, permitindo que o UIKit mova a
+  busca para o toolbar flutuante do iPhone e execute o morphing nativo. Suas
+  linhas navegáveis e os cards/métricas do Hook Center usam `UIGlassEffect`
+  explícito; fundos opacos `secondarySystemGroupedBackgroundColor` não são a
+  apresentação final quando glass está habilitado.
 - O submódulo FLEX permanece fixado em commit conhecido. Alterações de
   apresentação indispensáveis são armazenadas num patch versionado, verificadas
   e aplicadas idempotentemente antes do build. O build deve falhar se a base não
@@ -614,6 +654,11 @@ separadamente. Toggles contextuais aplicam uma entrada imediatamente, o fishhook
 local usa a proteção moderna de `__DATA_CONST`, e o bootstrap possui fases de
 image load, primeira ativação e imagem tardia. O monitor de imagens carregadas
 tarde apenas agenda rescan e reaplicação idempotente fora do callback do loader.
+O workspace usa filhos concretos no tab controller; o menu global e os cards do
+Hook Center possuem superfícies `UIGlassEffect` explícitas, busca integrada no
+toolbar e estados separados Armed/Observed. Getters contextuais seguros recebem
+prova direta pós-instalação e falham fechados se o dispatch não atravessar o
+replacement.
 
 Compilação e inspeção estática não substituem as seguintes validações finais:
 

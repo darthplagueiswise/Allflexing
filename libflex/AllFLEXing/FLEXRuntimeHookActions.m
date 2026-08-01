@@ -9,6 +9,7 @@
 #import "FLEXProperty.h"
 #import "FLEXTableViewCell.h"
 
+#import <objc/message.h>
 #import <objc/runtime.h>
 
 static const void *kFLEXRuntimeHookToggleTargetKey =
@@ -28,10 +29,13 @@ static const void *kFLEXRuntimeHookToggleTargetKey =
 + (NSArray<UIMenuElement *> *)actionsForEntry:(nullable FLEXHookEntry *)entry
                                         sender:(nullable UIViewController *)sender
                                        refresh:(nullable dispatch_block_t)refresh;
++ (nullable NSNumber *)probeNoArgumentGetterForEntry:(FLEXHookEntry *)entry
+                                               target:(nullable id)target;
 @end
 
 @interface FLEXRuntimeHookToggleTarget : NSObject
 @property (nonatomic, weak) FLEXMetadataSection *section;
+@property (nonatomic, weak) id probeTarget;
 @property (nonatomic, copy) NSString *entryIdentifier;
 - (void)switchChanged:(UISwitch *)toggle;
 @end
@@ -41,8 +45,14 @@ static const void *kFLEXRuntimeHookToggleTargetKey =
 - (void)switchChanged:(UISwitch *)toggle {
     FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
     BOOL requestedState = toggle.isOn;
-    [registry stageEnabled:requestedState forEntryIdentifier:self.entryIdentifier];
     FLEXHookEntry *entry = [registry entryForIdentifier:self.entryIdentifier];
+    if (requestedState && entry && !entry.userConfigured) {
+        // A bare switch has one deterministic meaning: force TRUE. The menu
+        // remains the explicit place to select FALSE or forwarding-original.
+        [registry stageForceValue:YES forEntryIdentifier:self.entryIdentifier];
+    }
+    [registry stageEnabled:requestedState forEntryIdentifier:self.entryIdentifier];
+    entry = [registry entryForIdentifier:self.entryIdentifier];
     if (!entry || entry.pendingEnabled != requestedState) {
         [toggle setOn:entry.pendingEnabled animated:YES];
         UINotificationFeedbackGenerator *feedback = [UINotificationFeedbackGenerator new];
@@ -61,12 +71,27 @@ static const void *kFLEXRuntimeHookToggleTargetKey =
     ) {
         FLEXRuntimeHookToggleTarget *strongSelf = weakSelf;
         FLEXHookEntry *resolved = [registry entryForIdentifier:strongSelf.entryIdentifier];
+        NSNumber *probeResult = nil;
+        if (!failed.count && requestedState) {
+            probeResult = [FLEXRuntimeHookActions
+                probeNoArgumentGetterForEntry:resolved
+                                       target:strongSelf.probeTarget];
+            if (probeResult && !probeResult.boolValue) {
+                [registry failClosedEntryIdentifier:strongSelf.entryIdentifier
+                                             reason:@"Provider installed a replacement, but a direct Objective-C dispatch probe did not cross it"];
+                resolved = [registry entryForIdentifier:strongSelf.entryIdentifier];
+            }
+        }
         [toggle setOn:resolved.pendingEnabled animated:YES];
         toggle.enabled = (resolved.available && resolved.hookable) || resolved.pendingEnabled;
         UINotificationFeedbackGenerator *resultFeedback = [UINotificationFeedbackGenerator new];
-        [resultFeedback notificationOccurred:failed.count
+        BOOL verificationFailed = probeResult && !probeResult.boolValue;
+        UINotificationFeedbackType feedbackType = failed.count || verificationFailed
             ? UINotificationFeedbackTypeError
-            : UINotificationFeedbackTypeSuccess];
+            : (resolved.overrideHitCount > 0
+                ? UINotificationFeedbackTypeSuccess
+                : UINotificationFeedbackTypeWarning);
+        [resultFeedback notificationOccurred:feedbackType];
         (void)applied;
         [strongSelf.section reloadData:YES];
     }];
@@ -75,6 +100,46 @@ static const void *kFLEXRuntimeHookToggleTargetKey =
 @end
 
 @implementation FLEXRuntimeHookActions
+
++ (BOOL)selectorLooksLikeSideEffectFreeGetter:(NSString *)selectorName {
+    if (selectorName.length == 0 || [selectorName containsString:@":"]) {
+        return NO;
+    }
+    NSArray<NSString *> *prefixes = @[@"is", @"has", @"can", @"should", @"allows", @"supports"];
+    for (NSString *prefix in prefixes) {
+        if ([selectorName hasPrefix:prefix]) {
+            return YES;
+        }
+    }
+    return [selectorName hasSuffix:@"Value"];
+}
+
++ (NSNumber *)probeNoArgumentGetterForEntry:(FLEXHookEntry *)entry target:(id)target {
+    if (!entry || entry.abi != FLEXHookABIObjCBoolNoArguments || !target) {
+        return nil;
+    }
+    NSString *selectorName = [entry.locator[@"selector"] isKindOfClass:NSString.class]
+        ? entry.locator[@"selector"] : nil;
+    if (![self selectorLooksLikeSideEffectFreeGetter:selectorName]) {
+        return nil;
+    }
+    SEL selector = NSSelectorFromString(selectorName);
+    id receiver = [entry.locator[@"classMethod"] boolValue]
+        ? (id)NSClassFromString(entry.locator[@"class"])
+        : target;
+    if (!receiver || ![receiver respondsToSelector:selector]) {
+        return nil;
+    }
+
+    NSUInteger before = entry.overrideHitCount;
+    @try {
+        BOOL (*sendBool)(id, SEL) = (BOOL (*)(id, SEL))objc_msgSend;
+        (void)sendBool(receiver, selector);
+    } @catch (__unused NSException *exception) {
+        return @NO;
+    }
+    return @(entry.overrideHitCount > before);
+}
 
 #pragma mark - Target resolution
 
@@ -235,9 +300,9 @@ static const void *kFLEXRuntimeHookToggleTargetKey =
     if (!sender.viewIfLoaded.window) {
         return;
     }
-    NSString *title = failed.count ? @"Hook Errors" : @"Hooks Applied";
+    NSString *title = failed.count ? @"Hook Errors" : @"Hook Armed";
     NSString *message = [NSString stringWithFormat:
-        @"%lu applied · %lu failed",
+        @"%lu armed · %lu failed. A hook becomes Observed after a real target call crosses its replacement.",
         (unsigned long)applied.count,
         (unsigned long)failed.count];
     UIAlertController *alert = [UIAlertController
@@ -362,7 +427,7 @@ static const void *kFLEXRuntimeHookToggleTargetKey =
     } else if (entry.pendingEnabled != entry.desiredEnabled) {
         name = @"clock.arrow.circlepath";
     } else if (entry.installed && entry.effectiveEnabled) {
-        name = @"checkmark.circle.fill";
+        name = entry.overrideHitCount > 0 ? @"checkmark.circle.fill" : @"bolt.circle.fill";
     } else if (entry.installed) {
         name = @"arrow.triangle.branch";
     }
@@ -377,7 +442,7 @@ static const void *kFLEXRuntimeHookToggleTargetKey =
         return UIColor.systemOrangeColor;
     }
     if (entry.installed && entry.effectiveEnabled) {
-        return UIColor.systemGreenColor;
+        return entry.overrideHitCount > 0 ? UIColor.systemGreenColor : UIColor.systemBlueColor;
     }
     return UIColor.tertiaryLabelColor;
 }
@@ -408,6 +473,7 @@ static const void *kFLEXRuntimeHookToggleTargetKey =
 
     FLEXRuntimeHookToggleTarget *target = [FLEXRuntimeHookToggleTarget new];
     target.section = section;
+    target.probeTarget = section.explorer.object;
     target.entryIdentifier = entry.identifier;
     [toggle addTarget:target
                action:@selector(switchChanged:)

@@ -54,6 +54,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
 @implementation FLEXHookEntry {
     atomic_bool _runtimeEnabled;
     atomic_ullong _runtimeHits;
+    atomic_ullong _runtimeOverrideHits;
 }
 
 - (instancetype)init {
@@ -70,6 +71,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
         _forceValue = YES;
         atomic_init(&_runtimeEnabled, false);
         atomic_init(&_runtimeHits, 0);
+        atomic_init(&_runtimeOverrideHits, 0);
     }
     return self;
 }
@@ -91,8 +93,34 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     return (NSUInteger)atomic_load_explicit(&_runtimeHits, memory_order_relaxed);
 }
 
+- (NSUInteger)overrideHitCount {
+    if (self.runtimeSlot != NSNotFound &&
+        (self.surface == FLEXHookSurfaceCImport ||
+         self.surface == FLEXHookSurfaceCInline)) {
+        return [FLEXCHookEngine overrideHitCountForEntry:self];
+    }
+    return (NSUInteger)atomic_load_explicit(
+        &_runtimeOverrideHits, memory_order_relaxed
+    );
+}
+
 - (void)recordHit {
     atomic_fetch_add_explicit(&_runtimeHits, 1, memory_order_relaxed);
+}
+
+- (void)recordOverrideHit {
+    atomic_fetch_add_explicit(&_runtimeHits, 1, memory_order_relaxed);
+    unsigned long long previous = atomic_fetch_add_explicit(
+        &_runtimeOverrideHits, 1, memory_order_relaxed
+    );
+    if (previous == 0) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [NSNotificationCenter.defaultCenter
+                postNotificationName:FLEXHookRegistryDidChangeNotification
+                              object:self
+                            userInfo:@{ @"reason": @"first-observed-call" }];
+        });
+    }
 }
 
 - (id)copyWithZone:(NSZone *)zone {
@@ -191,10 +219,25 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
         return self.pendingEnabled ? @"Pending enable" : @"Pending disable";
     }
     if (self.installed) {
-        return [NSString stringWithFormat:@"%@ · %@ · %lu hits",
-            self.effectiveEnabled ? @"Active" : @"Installed, forwarding original",
-            FLEXHookBackendName(self.backend),
-            (unsigned long)self.hitCount];
+        NSUInteger calls = self.hitCount;
+        if (!self.effectiveEnabled) {
+            return [NSString stringWithFormat:@"Installed · forwarding original · %lu calls",
+                (unsigned long)calls];
+        }
+        NSString *forced = nil;
+        if (self.abi == FLEXHookABICPointerNoArguments) {
+            forced = @"Force NULL";
+        } else if (self.abi == FLEXHookABICInt64NoArguments) {
+            forced = self.forceValue ? @"Force 1" : @"Force 0";
+        } else {
+            forced = self.forceValue ? @"Force TRUE" : @"Force FALSE";
+        }
+        NSUInteger overrides = self.overrideHitCount;
+        if (overrides == 0) {
+            return [NSString stringWithFormat:@"Armed · %@ · waiting for first call", forced];
+        }
+        return [NSString stringWithFormat:@"Observed · %@ · %lu overridden calls",
+            forced, (unsigned long)overrides];
     }
     return self.desiredEnabled ? @"Enabled but not installed" : @"Ready";
 }
@@ -563,7 +606,10 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     if (!entry) {
         return;
     }
-    entry.forceValue = forceValue;
+    // A fabricated non-null pointer cannot be ABI-safe without owning valid
+    // storage. Pointer-return hooks therefore expose only the safe NULL value.
+    entry.forceValue = entry.abi == FLEXHookABICPointerNoArguments
+        ? NO : forceValue;
     entry.userConfigured = YES;
     if (entry.installed) {
         [FLEXCHookEngine setEnabled:entry.effectiveEnabled forEntry:entry];
@@ -581,6 +627,9 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     }
     entry.abi = abi;
     entry.backend = backend;
+    if (abi == FLEXHookABICPointerNoArguments) {
+        entry.forceValue = NO;
+    }
     entry.userConfigured = YES;
     entry.hookable = entry.available && abi != FLEXHookABIUnknown &&
                      backend != FLEXHookBackendNone &&
@@ -618,7 +667,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     return count;
 }
 
-- (NSUInteger)activeCount {
+- (NSUInteger)armedCount {
     NSUInteger count = 0;
     for (FLEXHookEntry *entry in self.entries) {
         if (entry.installed && entry.effectiveEnabled) {
@@ -626,6 +675,20 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
         }
     }
     return count;
+}
+
+- (NSUInteger)observedCount {
+    NSUInteger count = 0;
+    for (FLEXHookEntry *entry in self.entries) {
+        if (entry.installed && entry.effectiveEnabled && entry.overrideHitCount > 0) {
+            count++;
+        }
+    }
+    return count;
+}
+
+- (NSUInteger)activeCount {
+    return self.armedCount;
 }
 
 - (NSUInteger)failureCount {
@@ -754,6 +817,21 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
             completion:completion];
 }
 
+- (void)failClosedEntryIdentifier:(NSString *)identifier reason:(NSString *)reason {
+    FLEXHookEntry *entry = [self entryForIdentifier:identifier];
+    if (!entry) {
+        return;
+    }
+    entry.desiredEnabled = NO;
+    entry.pendingEnabled = NO;
+    entry.effectiveEnabled = NO;
+    entry.lastError = reason.length
+        ? reason : @"Installed replacement failed runtime dispatch verification";
+    [FLEXCHookEngine setEnabled:NO forEntry:entry];
+    [self persistEntries];
+    [self postChange:@"runtime-verification-failed"];
+}
+
 - (BOOL)installEntry:(FLEXHookEntry *)entry error:(NSError **)error {
     switch (entry.surface) {
         case FLEXHookSurfaceObjectiveC:
@@ -819,30 +897,39 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
         case FLEXHookABIObjCBoolNoArguments: {
             replacement = imp_implementationWithBlock(^BOOL(id receiver) {
                 FLEXHookEntry *strongEntry = weakEntry;
-                BOOL native = original
-                    ? ((BOOL (*)(id, SEL))original)(receiver, capturedSelector) : NO;
+                if (strongEntry.effectiveEnabled) {
+                    [strongEntry recordOverrideHit];
+                    return strongEntry.forceValue;
+                }
                 [strongEntry recordHit];
-                return strongEntry.effectiveEnabled ? strongEntry.forceValue : native;
+                return original
+                    ? ((BOOL (*)(id, SEL))original)(receiver, capturedSelector) : NO;
             });
             break;
         }
         case FLEXHookABIObjCBoolObjectArgument: {
             replacement = imp_implementationWithBlock(^BOOL(id receiver, id argument) {
                 FLEXHookEntry *strongEntry = weakEntry;
-                BOOL native = original
-                    ? ((BOOL (*)(id, SEL, id))original)(receiver, capturedSelector, argument) : NO;
+                if (strongEntry.effectiveEnabled) {
+                    [strongEntry recordOverrideHit];
+                    return strongEntry.forceValue;
+                }
                 [strongEntry recordHit];
-                return strongEntry.effectiveEnabled ? strongEntry.forceValue : native;
+                return original
+                    ? ((BOOL (*)(id, SEL, id))original)(receiver, capturedSelector, argument) : NO;
             });
             break;
         }
         case FLEXHookABIObjCBoolIntegerArgument: {
             replacement = imp_implementationWithBlock(^BOOL(id receiver, uintptr_t argument) {
                 FLEXHookEntry *strongEntry = weakEntry;
-                BOOL native = original
-                    ? ((BOOL (*)(id, SEL, uintptr_t))original)(receiver, capturedSelector, argument) : NO;
+                if (strongEntry.effectiveEnabled) {
+                    [strongEntry recordOverrideHit];
+                    return strongEntry.forceValue;
+                }
                 [strongEntry recordHit];
-                return strongEntry.effectiveEnabled ? strongEntry.forceValue : native;
+                return original
+                    ? ((BOOL (*)(id, SEL, uintptr_t))original)(receiver, capturedSelector, argument) : NO;
             });
             break;
         }

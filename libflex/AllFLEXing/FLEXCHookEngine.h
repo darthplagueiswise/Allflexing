@@ -9,6 +9,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (BOOL)installEntry:(FLEXHookEntry *)entry error:(NSError **)error;
 + (void)setEnabled:(BOOL)enabled forEntry:(FLEXHookEntry *)entry;
 + (NSUInteger)hitCountForEntry:(FLEXHookEntry *)entry;
++ (NSUInteger)overrideHitCountForEntry:(FLEXHookEntry *)entry;
 + (void)refreshAvailabilityForEntry:(FLEXHookEntry *)entry;
 + (nullable void *)resolveSymbol:(NSString *)symbol;
 

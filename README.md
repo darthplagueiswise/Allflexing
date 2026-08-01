@@ -34,7 +34,7 @@ product.
 | Unknown C/Swift function | inspection only | No toggle until its ABI is proven |
 
 The runtime uses one registry for discovery, pending state, installed state,
-effective state, persistence, hit counters, errors, and launch reapply. Apply
+armed/observed state, persistence, hit counters, errors, and launch reapply. Apply
 re-resolves every target and fails closed when a class, selector, image, symbol,
 ABI, provider, or bind slot no longer matches.
 
@@ -44,6 +44,10 @@ changes in real time without committing unrelated batch edits. The global
 
 Hooks install once. Turning a toggle off changes an atomic gate in the
 replacement, which immediately forwards to the saved original implementation.
+With the gate on, the replacement returns the configured override without
+executing the original first. `Armed` means installation succeeded;
+`Observed` requires a real overridden call, so the UI no longer treats provider
+acceptance as proof of behavior.
 The product does not try to tear down an inline patch while other threads may be
 executing it.
 
@@ -62,13 +66,15 @@ is explicitly revalidated.
 
 Open FLEX and select **AllFLEXing Runtime Workspace**. On iPhone it uses a
 floating tab bar; on iPad or another regular-width presentation it adapts to a
-sidebar. The workspace provides:
+sidebar. The four concrete navigation controllers are installed directly in
+the tab controller, avoiding lazy tab providers that could render an item
+without changing the visible child. The workspace provides:
 
 - verified provider and engine status;
 - global toggles for Objective-C/ElleKit, fishhook, and inline ElleKit;
 - staged pending changes with **Apply**, **Discard**, and
   **Apply & Restart** actions;
-- installed hooks with effective state and live hit counts;
+- installed hooks with separate Armed, Observed, forwarded, and error states;
 - an Objective-C Runtime Browser for supported BOOL method ABIs;
 - a C Runtime Browser that reads actual Mach-O import sections;
 - a dedicated settings and recovery surface;
@@ -91,10 +97,12 @@ installed dynamically only after exact ABI validation.
 
 ## Liquid Glass
 
-The dylib is compiled with real UIKit 26 headers. Standard navigation bars,
+The dylib is compiled with real UIKit 26.2 headers. Standard navigation bars,
 tab/sidebar navigation, searches, menus, popovers, buttons, and switches keep
 their native iOS 26 behavior. Menus are attached to their source bar items so
-UIKit provides the transition and morphing behavior.
+UIKit provides the transition and morphing behavior. The global FLEX search
+uses the public integrated-toolbar placement on iOS 26, producing the floating
+bottom search control and native compact/editing morph.
 
 The FLEX hierarchy selector moves a single `UIGlassEffect` selection inside a
 shared `UIGlassContainerEffect`. The explorer toolbar and its materializing
@@ -105,8 +113,10 @@ UIKit 26 bars have legacy background appearances cleared so the system material
 can activate. Custom glass geometry uses adaptive `UICornerConfiguration`;
 fixed layer radii are used only by the pre-iOS-26 fallback.
 
-Glass is limited to the floating navigation/control layer. Tables, cells, code,
-logs, and runtime results remain content, avoiding glass-on-glass composition.
+Navigable menu rows and Hook Center cards are explicit reusable
+`UIGlassEffect` surfaces with adaptive corners, matching the control-card
+hierarchy instead of opaque grouped cells. Passive code/log rows remain content,
+avoiding indiscriminate glass-on-glass composition.
 Effect materialization animates the `effect` property, while merge/split
 morphing animates frames inside a shared container. Standard UIKit behavior
 inherits Reduce Motion, Reduce Transparency, Increased Contrast, VoiceOver, and

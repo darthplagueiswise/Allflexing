@@ -275,9 +275,11 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
         entry.detail, entry.imageName, entry.statusSummary];
     content.secondaryTextProperties.numberOfLines = 0;
     content.image = [UIImage systemImageNamed:entry.effectiveEnabled
-        ? @"bolt.circle.fill" : (entry.hookable ? @"circle.dashed" : @"eye")];
+        ? (entry.overrideHitCount > 0 ? @"checkmark.circle.fill" : @"bolt.circle.fill")
+        : (entry.hookable ? @"circle.dashed" : @"eye")];
     content.imageProperties.tintColor = entry.effectiveEnabled
-        ? UIColor.systemGreenColor : (entry.hookable ? self.view.tintColor : UIColor.secondaryLabelColor);
+        ? (entry.overrideHitCount > 0 ? UIColor.systemGreenColor : UIColor.systemBlueColor)
+        : (entry.hookable ? self.view.tintColor : UIColor.secondaryLabelColor);
     cell.contentConfiguration = content;
     cell.accessoryType = UITableViewCellAccessoryNone;
 
@@ -295,6 +297,7 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
                action:@selector(toggleChanged:)
      forControlEvents:UIControlEventValueChanged];
     cell.accessoryView = toggle;
+    [FLEXLiquidGlass styleTableCell:cell];
     return cell;
 }
 
@@ -357,8 +360,12 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
     NSString *identifier = objc_getAssociatedObject(toggle, kFLEXRuntimeBrowserEntryIDKey);
     FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
     BOOL requestedState = toggle.isOn;
-    [registry stageEnabled:requestedState forEntryIdentifier:identifier];
     FLEXHookEntry *entry = [registry entryForIdentifier:identifier];
+    if (requestedState && entry && !entry.userConfigured) {
+        [registry stageForceValue:YES forEntryIdentifier:identifier];
+    }
+    [registry stageEnabled:requestedState forEntryIdentifier:identifier];
+    entry = [registry entryForIdentifier:identifier];
     if (!entry || entry.pendingEnabled != requestedState) {
         UINotificationFeedbackGenerator *feedback = [UINotificationFeedbackGenerator new];
         [feedback notificationOccurred:UINotificationFeedbackTypeError];
@@ -373,9 +380,13 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
         NSArray<FLEXHookEntry *> *failed
     ) {
         UINotificationFeedbackGenerator *resultFeedback = [UINotificationFeedbackGenerator new];
-        [resultFeedback notificationOccurred:failed.count
+        FLEXHookEntry *resolved = [registry entryForIdentifier:identifier];
+        UINotificationFeedbackType feedbackType = failed.count
             ? UINotificationFeedbackTypeError
-            : UINotificationFeedbackTypeSuccess];
+            : (resolved.overrideHitCount > 0
+                ? UINotificationFeedbackTypeSuccess
+                : UINotificationFeedbackTypeWarning);
+        [resultFeedback notificationOccurred:feedbackType];
         [weakSelf reloadEntries];
     }];
 }

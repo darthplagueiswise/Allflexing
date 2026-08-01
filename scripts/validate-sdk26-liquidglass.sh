@@ -32,6 +32,8 @@ test -f patches/flex-uikit26-liquid-glass.patch
 grep -q 'FLEXScopeCarousel.m' patches/flex-uikit26-liquid-glass.patch
 grep -q 'FLEXExplorerToolbar.m' patches/flex-uikit26-liquid-glass.patch
 grep -q 'FLEXNavigationController.m' patches/flex-uikit26-liquid-glass.patch
+grep -q 'FLEXGlobalsViewController.m' patches/flex-uikit26-liquid-glass.patch
+grep -q 'searchBarPlacementBarButtonItem' patches/flex-uikit26-liquid-glass.patch
 grep -q 'include modules/HookRuntime/Module.mk' libflex/Makefile
 grep -q 'include modules/HookProviders/Module.mk' libflex/Makefile
 grep -q 'include modules/LiquidGlassUI/Module.mk' libflex/Makefile
@@ -46,8 +48,15 @@ grep -q "UIGlassEffect" libflex/AllFLEXing/FLEXLiquidGlass.m
 grep -q "UIGlassContainerEffect" libflex/AllFLEXing/FLEXLiquidGlass.m
 grep -q 'glassContainerViewWithSpacing' libflex/AllFLEXing/FLEXLiquidGlass.m
 grep -q 'materializeGlassView' libflex/AllFLEXing/FLEXLiquidGlass.m
+grep -q 'FLEXGlassCellBackgroundView' libflex/AllFLEXing/FLEXLiquidGlass.m
+grep -q 'styleTableCell' libflex/AllFLEXing/FLEXLiquidGlass.m
+grep -q 'kFLEXGlassSearchBackgroundKey' libflex/AllFLEXing/FLEXLiquidGlass.m
 test -f libflex/AllFLEXing/FLEXHookWorkspaceController.m
-grep -q 'UITabBarControllerModeTabSidebar' libflex/AllFLEXing/FLEXHookWorkspaceController.m
+grep -q 'setViewControllers:self.workspaceNavigationControllers' libflex/AllFLEXing/FLEXHookWorkspaceController.m
+if grep -q 'self\.tabs[[:space:]]*=' libflex/AllFLEXing/FLEXHookWorkspaceController.m; then
+    echo "error: lazy UITab providers previously rendered inert runtime tabs" >&2
+    exit 1
+fi
 grep -q 'UITabBarMinimizeBehaviorOnScrollDown' libflex/AllFLEXing/FLEXHookWorkspaceController.m
 grep -q 'setContentScrollView' libflex/AllFLEXing/FLEXHookToggles.m
 grep -q 'menu:\[self scopeMenu\]' libflex/AllFLEXing/FLEXRuntimeBrowserController.m
@@ -69,6 +78,9 @@ grep -q 'FLEXMSHookMessageProviderAvailable' libflex/AllFLEXing/FLEXHooking.m
 grep -q 'FLEXMSHookFunctionProviderAvailable' libflex/AllFLEXing/FLEXHooking.m
 grep -q 'applyEntryIdentifier' libflex/AllFLEXing/FLEXHookRegistry.m
 grep -q 'runtime-toggle-applied' libflex/AllFLEXing/FLEXHookRegistry.m
+grep -q 'recordOverrideHit' libflex/AllFLEXing/FLEXHookRegistry.m
+grep -q 'observedCount' libflex/AllFLEXing/FLEXHookRegistry.m
+grep -q 'failClosedEntryIdentifier' libflex/AllFLEXing/FLEXRuntimeHookActions.m
 grep -q 'UIApplicationDidBecomeActiveNotification' libflex/AllFLEXing/AllFLEXingLoader.m
 grep -q 'cornerConfiguration' libflex/AllFLEXing/FLEXLiquidGlass.m
 grep -q 'configureWithDefaultBackground' libflex/AllFLEXing/FLEXLiquidGlass.m

@@ -26,8 +26,12 @@ NS_ASSUME_NONNULL_BEGIN
 + (void)styleNavigationController:(nullable UINavigationController *)navigationController;
 + (void)styleToolbar:(nullable UIToolbar *)toolbar;
 + (void)styleTableView:(nullable UITableView *)tableView;
++ (void)styleTableCell:(nullable UITableViewCell *)cell;
 + (void)styleSearchBar:(nullable UISearchBar *)searchBar;
 + (void)styleButton:(nullable UIButton *)button prominent:(BOOL)prominent;
++ (void)stylePanelView:(nullable UIView *)view
+            interactive:(BOOL)interactive
+                  radius:(CGFloat)radius;
 
 + (void)applyToViewController:(nullable UIViewController *)viewController;
 + (void)removeFromViewController:(nullable UIViewController *)viewController;

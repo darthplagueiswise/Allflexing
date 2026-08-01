@@ -107,6 +107,7 @@ typedef NS_ENUM(NSInteger, FLEXHookSettingsSection) {
     cell.accessoryView = nil;
     cell.accessoryType = UITableViewCellAccessoryNone;
     cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    [FLEXLiquidGlass styleTableCell:cell];
     return cell;
 }
 

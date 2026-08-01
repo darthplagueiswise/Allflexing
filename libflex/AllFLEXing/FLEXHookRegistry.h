@@ -60,6 +60,7 @@ FOUNDATION_EXPORT NSString *FLEXHookABIName(FLEXHookABI abi);
 @property (nonatomic) BOOL stale;
 @property (nonatomic, copy, nullable) NSString *lastError;
 @property (atomic, readonly) NSUInteger hitCount;
+@property (atomic, readonly) NSUInteger overrideHitCount;
 
 // Runtime-only state. These values are intentionally never serialized.
 @property (nonatomic) void *original;
@@ -67,6 +68,7 @@ FOUNDATION_EXPORT NSString *FLEXHookABIName(FLEXHookABI abi);
 @property (nonatomic) NSInteger runtimeSlot;
 
 - (void)recordHit;
+- (void)recordOverrideHit;
 - (NSDictionary<NSString *, id> *)dictionaryRepresentation;
 + (nullable instancetype)entryWithDictionary:(NSDictionary<NSString *, id> *)dictionary;
 - (NSString *)statusSummary;
@@ -102,6 +104,11 @@ typedef void (^FLEXHookApplyCompletion)(NSArray<FLEXHookEntry *> *applied,
 - (void)discardPendingChanges;
 - (BOOL)hasPendingChanges;
 - (NSUInteger)pendingCount;
+/// Installed gates that currently override their original implementation.
+- (NSUInteger)armedCount;
+/// Armed hooks whose replacement has handled at least one real call.
+- (NSUInteger)observedCount;
+/// Compatibility alias for armedCount. UI must not label this as observed.
 - (NSUInteger)activeCount;
 - (NSUInteger)failureCount;
 
@@ -111,6 +118,9 @@ typedef void (^FLEXHookApplyCompletion)(NSArray<FLEXHookEntry *> *applied,
 /// accidentally committing unrelated pending edits.
 - (void)applyEntryIdentifier:(NSString *)identifier
                   completion:(nullable FLEXHookApplyCompletion)completion;
+/// Disables a replacement that accepted installation but failed a direct,
+/// ABI-safe dispatch probe. The physical patch remains and forwards original.
+- (void)failClosedEntryIdentifier:(NSString *)identifier reason:(NSString *)reason;
 - (void)reapplyPersistedEntries;
 - (void)refreshCapabilities;
 - (void)clearSafeMode;
