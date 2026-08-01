@@ -69,13 +69,16 @@ require_text "public flag API" "_FLEXFlag" "$symbols"
 require_text "libFLEX compatibility API" "_FLXGetManager" "$symbols"
 require_text "libFLEX compatibility API" "_FLXRevealSEL" "$symbols"
 require_text "libFLEX compatibility API" "_FLXWindowClass" "$symbols"
+require_text "UIKit 26 glass class reference" \
+    '_OBJC_CLASS_$_UIGlassEffect' "$symbols"
+require_text "UIKit 26 container class reference" \
+    '_OBJC_CLASS_$_UIGlassContainerEffect' "$symbols"
 
-string_dump="$(strings "$dylib")"
+string_dump="$(strings -a "$dylib")"
 require_text "hook persistence class" "FLEXHookPersistence" "$string_dump"
 require_text "symbol rebind class" "FLEXSymbolRebind" "$string_dump"
 require_text "Liquid Glass class" "FLEXLiquidGlass" "$string_dump"
-require_text "UIKit 26 API" "UIGlassEffect" "$string_dump"
-require_text "UIKit 26 container API" "UIGlassContainerEffect" "$string_dump"
+require_text "Liquid Glass cluster" "FLEXGlassClusterHostView" "$string_dump"
 require_text "FLEX menu entry" "Hook Toggles" "$string_dump"
 
 echo "AllFLEXing Mach-O verification: OK"
