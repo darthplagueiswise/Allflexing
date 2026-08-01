@@ -1,41 +1,74 @@
-ifeq ($(SIMULATOR),1)
-	export ARCHS = arm64 x86_64
-	export TARGET = simulator:clang::15.0
-else
-	export THEOS_PACKAGE_SCHEME = rootless
-	export ARCHS = arm64 arm64e
-	export TARGET = iphone:latest:15.0
-endif
+TARGET ?= iphone:clang:26.2:15.0
+ARCHS ?= arm64
+
+export TARGET ARCHS
+
 include $(THEOS)/makefiles/common.mk
 
-# FULL PATH of the FLEX repo on your own machine
-FLEX_ROOT = FLEX
+FLEX_ROOT := FLEX
+ALLFLEXING_ROOT := AllFLEXing
 
-# Function to convert /foo/bar to -I/foo/bar
 dtoim = $(foreach d,$(1),-I$(d))
 
-# Gather FLEX sources
-SOURCES  = $(shell find $(FLEX_ROOT)/Classes -name '*.c')
-SOURCES += $(shell find $(FLEX_ROOT)/Classes -name '*.m')
-SOURCES += $(shell find $(FLEX_ROOT)/Classes -name '*.mm')
-# Gather FLEX headers for search paths
-_IMPORTS  = $(shell /bin/ls -d $(FLEX_ROOT)/Classes/*/)
-_IMPORTS += $(shell /bin/ls -d $(FLEX_ROOT)/Classes/*/*/)
-_IMPORTS += $(shell /bin/ls -d $(FLEX_ROOT)/Classes/*/*/*/)
-_IMPORTS += $(shell /bin/ls -d $(FLEX_ROOT)/Classes/*/*/*/*/)
-IMPORTS = -I$(FLEX_ROOT)/Classes/ $(call dtoim, $(_IMPORTS))
+FLEX_SOURCES  := $(shell find $(FLEX_ROOT)/Classes -type f -name '*.c' | sort)
+FLEX_SOURCES += $(shell find $(FLEX_ROOT)/Classes -type f -name '*.m' | sort)
+FLEX_SOURCES += $(shell find $(FLEX_ROOT)/Classes -type f -name '*.mm' | sort)
+ALLFLEXING_SOURCES := $(shell find $(ALLFLEXING_ROOT) -type f \( -name '*.c' -o -name '*.m' -o -name '*.mm' \) | sort)
 
-TWEAK_NAME = libFLEX
-$(TWEAK_NAME)_FILES = libFLEX.x $(SOURCES)
-$(TWEAK_NAME)_FRAMEWORKS = CoreGraphics UIKit ImageIO QuartzCore
-$(TWEAK_NAME)_LIBRARIES = sqlite3 z
-$(TWEAK_NAME)_CFLAGS += -fobjc-arc -w -Wno-unsupported-availability-guard $(IMPORTS) -g
+_IMPORTS  := $(shell /bin/ls -d $(FLEX_ROOT)/Classes/*/ 2>/dev/null)
+_IMPORTS += $(shell /bin/ls -d $(FLEX_ROOT)/Classes/*/*/ 2>/dev/null)
+_IMPORTS += $(shell /bin/ls -d $(FLEX_ROOT)/Classes/*/*/*/ 2>/dev/null)
+_IMPORTS += $(shell /bin/ls -d $(FLEX_ROOT)/Classes/*/*/*/*/ 2>/dev/null)
+IMPORTS := -I$(FLEX_ROOT)/Classes -I$(ALLFLEXING_ROOT) $(call dtoim,$(_IMPORTS))
+
+TWEAK_NAME := AllFLEXing
+
+$(TWEAK_NAME)_GENERATOR := internal
+$(TWEAK_NAME)_FILES := $(FLEX_SOURCES) $(ALLFLEXING_SOURCES)
+$(TWEAK_NAME)_FRAMEWORKS := Foundation CoreGraphics UIKit ImageIO QuartzCore SceneKit Security WebKit AVFoundation UserNotifications
+$(TWEAK_NAME)_LIBRARIES := sqlite3 z c++
+
+# Match the working SDK 26.2 setup used by Ryukgram-Fork/experimental3. The
+# deployment target stays at iOS 15 so the same dylib can use a material fallback
+# on iOS 15-25 while weak-linking the real UIKit 26 glass APIs.
+ALLFLEXING_TARGET_FLAGS := \
+	-DTARGET_OS_MAC=1 \
+	-DTARGET_OS_OSX=0 \
+	-DTARGET_OS_IPHONE=1 \
+	-DTARGET_OS_IOS=1 \
+	-DTARGET_OS_EMBEDDED=1 \
+	-DTARGET_OS_SIMULATOR=0 \
+	-DTARGET_OS_MACCATALYST=0 \
+	-DTARGET_OS_UIKITFORMAC=0 \
+	-DTARGET_OS_TV=0 \
+	-DTARGET_OS_WATCH=0 \
+	-DTARGET_OS_VISION=0 \
+	-DTARGET_OS_BRIDGE=0 \
+	-DTARGET_OS_DRIVERKIT=0
+
+$(TWEAK_NAME)_CFLAGS += -fobjc-arc $(IMPORTS) $(ALLFLEXING_TARGET_FLAGS)
+$(TWEAK_NAME)_CFLAGS += -Wno-unsupported-availability-guard -Wno-deprecated-declarations
+$(TWEAK_NAME)_CFLAGS += -Wno-nullability-completeness -Wno-unused-function
 $(TWEAK_NAME)_CCFLAGS += -std=gnu++11
 
+# A certificate-sideloaded host resolves this from its Frameworks directory.
+# No Substrate, ElleKit, or rootless rpath is required at runtime.
+$(TWEAK_NAME)_LDFLAGS += -Wl,-install_name,@rpath/AllFLEXing.dylib
+
+ifeq ($(FINALPACKAGE),1)
+	$(TWEAK_NAME)_LDFLAGS += -Wl,-x
+endif
+
 include $(THEOS_MAKE_PATH)/tweak.mk
+
+after-all::
+	@if command -v ldid >/dev/null 2>&1; then \
+		ldid -S "$(THEOS_OBJ_DIR)/AllFLEXing.dylib"; \
+	else \
+		echo "warning: ldid is not installed; leaving AllFLEXing.dylib unsigned"; \
+	fi
 
 before-stage::
 	find . -name ".DS_Store" -delete
 
-# For printing variables from the makefile
-print-%  : ; @echo $* = $($*)
+print-%: ; @echo $* = $($*)

@@ -1,0 +1,55 @@
+#import "FLEXGlassAutostyle.h"
+
+#import "FLEXHooking.h"
+#import "FLEXHookPersistence.h"
+#import "FLEXLiquidGlass.h"
+#import <UIKit/UIKit.h>
+
+static void (*FLEXOriginalViewDidAppear)(UIViewController *, SEL, BOOL);
+
+static BOOL FLEXIsOverlayViewController(UIViewController *controller) {
+    NSString *className = NSStringFromClass(controller.class);
+    return [className hasPrefix:@"FLEX"] ||
+           [className hasPrefix:@"FHS"] ||
+           [className hasPrefix:@"AllFLEXing"];
+}
+
+static void FLEXReplacementViewDidAppear(UIViewController *controller,
+                                         SEL selector,
+                                         BOOL animated) {
+    if (FLEXOriginalViewDidAppear) {
+        FLEXOriginalViewDidAppear(controller, selector, animated);
+    }
+
+    if (FLEXFlag(@"hook.log_view_controllers")) {
+        NSLog(@"[AllFLEXing] viewDidAppear: %@", NSStringFromClass(controller.class));
+    }
+
+    if (FLEXFlag(@"hook.flex_ui_autostyle") && FLEXIsOverlayViewController(controller)) {
+        [FLEXLiquidGlass applyToViewController:controller];
+    }
+}
+
+BOOL FLEXGlassAutostyleInstall(void) {
+    static dispatch_once_t onceToken;
+    static BOOL installed;
+    static id flagsObserver;
+    dispatch_once(&onceToken, ^{
+        installed = FLEXHookMessage(
+            UIViewController.class,
+            @selector(viewDidAppear:),
+            (IMP)FLEXReplacementViewDidAppear,
+            (IMP *)&FLEXOriginalViewDidAppear
+        );
+
+        flagsObserver = [NSNotificationCenter.defaultCenter
+            addObserverForName:FLEXHookFlagsDidChangeNotification
+                        object:nil
+                         queue:NSOperationQueue.mainQueue
+                    usingBlock:^(__unused NSNotification *notification) {
+                        [FLEXLiquidGlass refreshVisibleFLEXViewControllers];
+                    }];
+        (void)flagsObserver;
+    });
+    return installed;
+}

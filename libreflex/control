@@ -1,9 +1,0 @@
-Package: scilibreflex
-Name: libReflex (SCInsta)
-Pre-Depends: firmware (>= 13.0)
-Version: 1.0.0
-Architecture: iphoneos-arm
-Description: A FLEX extension for Swift object introspection (for SCInsta).
-Maintainer: SoCuul
-Author: Tanner Bennett <thepantsthief@me.com>
-Section: Tweaks

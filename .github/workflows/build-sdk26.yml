@@ -1,0 +1,96 @@
+name: Build AllFLEXing (SDK 26.2)
+
+on:
+  push:
+    branches:
+      - rootless
+      - 'agent/**'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Standalone arm64 dylib and deb
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    env:
+      SDK_NAME: iPhoneOS26.2.sdk
+      THEOS: ${{ github.workspace }}/theos
+
+    steps:
+      - name: Checkout AllFLEXing
+        uses: actions/checkout@v4
+        with:
+          path: main
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: brew install ldid dpkg make
+
+      - name: Prefer GNU make
+        run: echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+
+      - name: Setup Theos
+        uses: actions/checkout@v4
+        with:
+          repository: theos/theos
+          ref: master
+          path: theos
+          submodules: recursive
+
+      - name: Cache iPhoneOS 26.2 SDK
+        id: sdk-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.THEOS }}/sdks
+          key: iphoneos-26.2-sdk-v1
+
+      - name: Download iPhoneOS 26.2 SDK
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --quiet -n --depth=1 --filter=tree:0 https://github.com/xybp888/iOS-SDKs sdk-source
+          cd sdk-source
+          git sparse-checkout set --no-cone "$SDK_NAME"
+          git checkout
+          mkdir -p "$THEOS/sdks"
+          mv *.sdk "$THEOS/sdks"
+
+      - name: Validate SDK and Liquid Glass integration
+        run: |
+          cd main
+          bash scripts/validate-sdk26-liquidglass.sh
+
+      - name: Build standalone package
+        run: |
+          cd main
+          make clean
+          make package FINALPACKAGE=1 ARCHS=arm64
+
+      - name: Verify Mach-O contract
+        run: |
+          cd main
+          bash scripts/verify-dylib.sh libflex/.theos/obj/AllFLEXing.dylib
+
+      - name: Collect artifacts
+        run: |
+          cd main
+          mkdir -p release
+          cp libflex/.theos/obj/AllFLEXing.dylib release/AllFLEXing.dylib
+          deb="$(find . -type f -path '*/packages/*.deb' | sort | tail -n 1)"
+          test -n "$deb"
+          cp "$deb" release/AllFLEXing.deb
+          shasum -a 256 release/AllFLEXing.dylib release/AllFLEXing.deb
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: AllFLEXing-sdk26.2-arm64-${{ github.run_number }}
+          path: |
+            main/release/AllFLEXing.dylib
+            main/release/AllFLEXing.deb
+          if-no-files-found: error
