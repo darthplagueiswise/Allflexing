@@ -1,6 +1,7 @@
 #import "FLEXHookToggles.h"
 
 #import "FLEXHookEntryDetailController.h"
+#import "FLEXHookPersistence.h"
 #import "FLEXHookRegistry.h"
 #import "FLEXHooking.h"
 #import "FLEXLiquidGlass.h"
