@@ -27,6 +27,7 @@ grep -q 'include modules/HookRuntime/Module.mk' libflex/Makefile
 grep -q 'include modules/LiquidGlassUI/Module.mk' libflex/Makefile
 grep -q 'FLEX_FISHHOOK_SOURCE' libflex/Makefile
 grep -Fq '$(TWEAK_NAME)_USE_MODULES := 0' libflex/Makefile
+grep -Eq '\$\(TWEAK_NAME\)_LIBRARIES[[:space:]]*:=[^#]*substrate' libflex/Makefile
 test -f libflex/AllFLEXing/FLEXLiquidGlass.m
 grep -q "UIGlassEffect" libflex/AllFLEXing/FLEXLiquidGlass.m
 grep -q "UIGlassContainerEffect" libflex/AllFLEXing/FLEXLiquidGlass.m

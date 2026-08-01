@@ -42,7 +42,7 @@ TWEAK_NAME := AllFLEXing
 
 $(TWEAK_NAME)_FILES := $(FLEX_SOURCES) $(ALLFLEXING_SOURCES)
 $(TWEAK_NAME)_FRAMEWORKS := Foundation CoreGraphics UIKit ImageIO QuartzCore SceneKit Security WebKit AVFoundation UserNotifications
-$(TWEAK_NAME)_LIBRARIES := sqlite3 z c++
+$(TWEAK_NAME)_LIBRARIES := sqlite3 z c++ substrate
 $(TWEAK_NAME)_USE_MODULES := 0
 
 # Keep the SDK/deployment contract fixed and provide the TARGET_OS definitions
