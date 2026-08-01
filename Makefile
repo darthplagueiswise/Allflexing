@@ -1,5 +1,5 @@
-TARGET ?= iphone:clang:26.2:16.3
-ARCHS ?= arm64
+TARGET := iphone:clang:26.2:16.3
+ARCHS := arm64
 
 export TARGET ARCHS
 

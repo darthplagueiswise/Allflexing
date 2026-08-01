@@ -510,32 +510,28 @@ Uma entrega não pode ser descrita como concluída até que:
 - morphing use container/effect/frame, respeitando acessibilidade;
 - não existam paths, dependências ou pressupostos de jailbreak.
 
-## 16. Lacunas conhecidas que devem ser eliminadas
+## 16. Estado atual e validações ainda obrigatórias
 
-Até a implementação final, considerar estas lacunas como trabalho pendente:
+A base implementada já inclui target `iphone:clang:26.2:16.3`, arm64, dylib
+unificada, provider Substrate-compatible validado, `MSHookMessageEx`, fishhook,
+`MSHookFunction`, registry persistente por locators, safe mode, Runtime Browser,
+Hook Center e a camada visual UIKit 26 descrita neste arquivo. O monitor de
+imagens carregadas tarde apenas agenda rescan e reaplicação idempotente fora do
+callback do loader.
 
-- target local ainda usa deployment 15.0 e deve ser alinhado ao contrato
-  `iphone:clang:26.2:16.3` acima;
-- backend MSHook ainda tratado apenas como símbolo opcional em vez de integração
-  de build e carregamento validada com ElleKit;
-- generator interno ainda configurado no target, incompatível com o contrato de
-  hooks C do produto final;
-- tela simples de flags ainda não representa registry, ABI, provider, pending,
-  installed, effective, hits ou erros;
-- ausência de um Runtime Browser unificado compartilhando estado com o Hook
-  Center;
-- persistência atual guarda flags, mas não locators versionados nem estado de
-  recuperação/safe mode;
-- fishhook existe, porém ainda precisa de catálogo ABI, bind validation, slots
-  tipados e integração completa com toggles runtime;
-- `MSHookFunction` ainda precisa de provider obrigatório, stubs tipados,
-  trampoline validation e testes;
-- Liquid Glass está parcialmente aplicado, mas a navegação completa, ações do
-  Hook Center, menus, morphing e estados de erro/progresso precisam seguir todo
-  o contrato visual deste arquivo;
-- documentação antiga que declare “nenhuma dependência de hook” deve ser
-  corrigida: o dylib unifica o produto, enquanto ElleKit é a dependência de
-  runtime fornecida pelo fluxo de sideload.
+Compilação e inspeção estática não substituem as seguintes validações finais:
+
+- executar a matriz da seção 14 em aparelho iOS 26 com IPA assinada por
+  certificado de desenvolvedor;
+- confirmar em runtime que o provider carregado é ElleKit e que cada trampoline
+  preserva o original;
+- testar carregamento tardio real, debounce, rescan e ausência de hook duplicado;
+- validar safe mode após interrupção intencional durante Apply;
+- fazer QA visual e de acessibilidade do Liquid Glass em aparelho, incluindo
+  morphing, Reduce Motion, contraste, rotação e tamanhos de tela;
+- ampliar o catálogo ABI somente junto de stubs tipados e testes equivalentes;
+- medir o custo de scans amplos e ajustar limites sem executar trabalho pesado
+  no callback do loader.
 
 ## 17. Disciplina de alteração
 

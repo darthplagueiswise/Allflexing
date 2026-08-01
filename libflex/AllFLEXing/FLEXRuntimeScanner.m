@@ -8,7 +8,11 @@
 #import <mach-o/loader.h>
 #import <mach-o/nlist.h>
 #import <objc/runtime.h>
+#import <stdatomic.h>
 #import <string.h>
+
+NSNotificationName const FLEXRuntimeImagesDidChangeNotification =
+    @"FLEXRuntimeImagesDidChangeNotification";
 
 static dispatch_queue_t FLEXRuntimeScannerQueue(void) {
     static dispatch_queue_t queue;
@@ -18,6 +22,37 @@ static dispatch_queue_t FLEXRuntimeScannerQueue(void) {
                                       DISPATCH_QUEUE_SERIAL);
     });
     return queue;
+}
+
+static atomic_bool gFLEXRuntimeImageNotificationScheduled = false;
+
+static void FLEXRuntimeImageAdded(const struct mach_header *header, intptr_t slide) {
+    (void)header;
+    (void)slide;
+
+    bool expected = false;
+    if (!atomic_compare_exchange_strong_explicit(
+            &gFLEXRuntimeImageNotificationScheduled,
+            &expected,
+            true,
+            memory_order_acq_rel,
+            memory_order_relaxed)) {
+        return;
+    }
+
+    // dyld invokes this callback while its loader machinery is active. Defer all
+    // Objective-C work, debounce image bursts, and never scan from the callback.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 150 * NSEC_PER_MSEC),
+                   FLEXRuntimeScannerQueue(), ^{
+        atomic_store_explicit(&gFLEXRuntimeImageNotificationScheduled,
+                              false,
+                              memory_order_release);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [NSNotificationCenter.defaultCenter
+                postNotificationName:FLEXRuntimeImagesDidChangeNotification
+                              object:FLEXRuntimeScanner.class];
+        });
+    });
 }
 
 static BOOL FLEXImageIsInsideHostApp(NSString *path) {
@@ -123,6 +158,14 @@ static NSString *FLEXUUIDForHeader(const struct mach_header_64 *header) {
 }
 
 @implementation FLEXRuntimeScanner
+
++ (void)startMonitoringImages {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        (void)FLEXRuntimeScannerQueue();
+        _dyld_register_func_for_add_image(FLEXRuntimeImageAdded);
+    });
+}
 
 + (void)scanObjectiveCRuntimeIncludingSystemImages:(BOOL)includeSystemImages
                                          completion:(FLEXRuntimeScanCompletion)completion {

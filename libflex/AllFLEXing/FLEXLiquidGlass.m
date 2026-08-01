@@ -207,7 +207,7 @@ static UIViewController *FLEXVisibleViewController(UIViewController *controller)
 
     while (self.glassViews.count < controls.count) {
         UIVisualEffect *glass =
-            [FLEXLiquidGlass glassEffectInteractive:NO tint:nil];
+            [FLEXLiquidGlass glassEffectInteractive:YES tint:nil];
         UIVisualEffectView *glassView =
             [[UIVisualEffectView alloc] initWithEffect:nil];
         glassView.userInteractionEnabled = NO;
@@ -218,7 +218,8 @@ static UIViewController *FLEXVisibleViewController(UIViewController *controller)
 
         // Setting effect, rather than alpha, gives UIKit the native glass
         // materialization transition inside the shared container.
-        [UIView animateWithDuration:0.24
+        NSTimeInterval duration = UIAccessibilityIsReduceMotionEnabled() ? 0.0 : 0.24;
+        [UIView animateWithDuration:duration
                               delay:0.0
                             options:UIViewAnimationOptionBeginFromCurrentState |
                                     UIViewAnimationOptionAllowUserInteraction
@@ -230,7 +231,8 @@ static UIViewController *FLEXVisibleViewController(UIViewController *controller)
     while (self.glassViews.count > controls.count) {
         UIVisualEffectView *glassView = self.glassViews.lastObject;
         [self.glassViews removeLastObject];
-        [UIView animateWithDuration:0.20
+        NSTimeInterval duration = UIAccessibilityIsReduceMotionEnabled() ? 0.0 : 0.20;
+        [UIView animateWithDuration:duration
                               delay:0.0
                             options:UIViewAnimationOptionBeginFromCurrentState |
                                     UIViewAnimationOptionAllowUserInteraction
@@ -241,7 +243,8 @@ static UIViewController *FLEXVisibleViewController(UIViewController *controller)
         }];
     }
 
-    [UIView animateWithDuration:0.28
+    NSTimeInterval morphDuration = UIAccessibilityIsReduceMotionEnabled() ? 0.0 : 0.28;
+    [UIView animateWithDuration:morphDuration
                           delay:0.0
                         options:UIViewAnimationOptionBeginFromCurrentState |
                                 UIViewAnimationOptionAllowUserInteraction |

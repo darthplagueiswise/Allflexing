@@ -1,5 +1,5 @@
-TARGET ?= iphone:clang:26.2:16.3
-ARCHS ?= arm64
+TARGET := iphone:clang:26.2:16.3
+ARCHS := arm64
 
 export TARGET ARCHS
 
@@ -8,12 +8,29 @@ include $(THEOS)/makefiles/common.mk
 FLEX_ROOT := FLEX
 ALLFLEXING_ROOT := AllFLEXing
 
+include modules/Core/Module.mk
+include modules/HookRuntime/Module.mk
+include modules/LiquidGlassUI/Module.mk
+
 dtoim = $(foreach d,$(1),-I$(d))
 
 FLEX_SOURCES  := $(shell find $(FLEX_ROOT)/Classes -type f -name '*.c' | sort)
 FLEX_SOURCES += $(shell find $(FLEX_ROOT)/Classes -type f -name '*.m' | sort)
 FLEX_SOURCES += $(shell find $(FLEX_ROOT)/Classes -type f -name '*.mm' | sort)
-ALLFLEXING_SOURCES := $(shell find $(ALLFLEXING_ROOT) -type f \( -name '*.c' -o -name '*.m' -o -name '*.mm' \) | sort)
+ALLFLEXING_SOURCES := $(sort \
+	$(ALLFLEXING_CORE_SOURCES) \
+	$(ALLFLEXING_HOOK_RUNTIME_SOURCES) \
+	$(ALLFLEXING_LIQUID_GLASS_UI_SOURCES))
+ALLFLEXING_DISCOVERED_SOURCES := $(shell find $(ALLFLEXING_ROOT) -type f \( -name '*.c' -o -name '*.m' -o -name '*.mm' \) | sort)
+
+ifneq ($(sort $(ALLFLEXING_SOURCES)),$(sort $(ALLFLEXING_DISCOVERED_SOURCES)))
+$(error AllFLEXing module manifests do not match the source tree)
+endif
+
+FLEX_FISHHOOK_SOURCE := $(FLEX_ROOT)/Classes/Utility/Runtime/flex_fishhook.c
+ifeq ($(filter $(FLEX_FISHHOOK_SOURCE),$(FLEX_SOURCES)),)
+$(error namespaced fishhook source is missing from the unified target)
+endif
 
 _IMPORTS  := $(shell /bin/ls -d $(FLEX_ROOT)/Classes/*/ 2>/dev/null)
 _IMPORTS += $(shell /bin/ls -d $(FLEX_ROOT)/Classes/*/*/ 2>/dev/null)
@@ -26,10 +43,10 @@ TWEAK_NAME := AllFLEXing
 $(TWEAK_NAME)_FILES := $(FLEX_SOURCES) $(ALLFLEXING_SOURCES)
 $(TWEAK_NAME)_FRAMEWORKS := Foundation CoreGraphics UIKit ImageIO QuartzCore SceneKit Security WebKit AVFoundation UserNotifications
 $(TWEAK_NAME)_LIBRARIES := sqlite3 z c++
+$(TWEAK_NAME)_USE_MODULES := 0
 
-# Match the working SDK 26.2 setup used by Ryukgram-Fork/experimental3. The
-# deployment target stays at iOS 15 so the same dylib can use a material fallback
-# on iOS 15-25 while weak-linking the real UIKit 26 glass APIs.
+# Keep the SDK/deployment contract fixed and provide the TARGET_OS definitions
+# expected by the iPhoneOS 26.2 headers when Clang modules are disabled.
 ALLFLEXING_TARGET_FLAGS := \
 	-DTARGET_OS_MAC=1 \
 	-DTARGET_OS_OSX=0 \
@@ -45,7 +62,11 @@ ALLFLEXING_TARGET_FLAGS := \
 	-DTARGET_OS_BRIDGE=0 \
 	-DTARGET_OS_DRIVERKIT=0
 
+ALLFLEXING_SDK_SEARCH_PATHS := \
+	-F$(THEOS)/sdks/iPhoneOS26.2.sdk/System/Library/SubFrameworks
+
 $(TWEAK_NAME)_CFLAGS += -fobjc-arc $(IMPORTS) $(ALLFLEXING_TARGET_FLAGS)
+$(TWEAK_NAME)_CFLAGS += $(ALLFLEXING_SDK_SEARCH_PATHS)
 $(TWEAK_NAME)_CFLAGS += -Wno-unsupported-availability-guard -Wno-deprecated-declarations
 $(TWEAK_NAME)_CFLAGS += -Wno-nullability-completeness -Wno-unused-function
 $(TWEAK_NAME)_CFLAGS += -Wno-unused-but-set-variable -Wno-gnu-folding-constant

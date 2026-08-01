@@ -1,48 +1,92 @@
 # AllFLEXing
 
-AllFLEXing is a standalone FLEX debugger dylib for certificate-sideloaded iOS
-apps. FLEX itself, the loader, persistent runtime toggles, the hook backends, and
-the UIKit 26 Liquid Glass integration are linked into one output:
+AllFLEXing is one injectable iOS dylib containing the complete FLEX/libFLEX
+debugger, a persistent runtime hook system, and a UIKit 26 Liquid Glass Hook
+Center.
+
+The production target is deliberately narrow:
+
+- jailed certificate sideloading;
+- Feather for tweak injection, signing, and installation;
+- ElleKit as the Substrate-compatible hook provider inside the signed app;
+- iPhoneOS SDK 26.2, deployment target 16.3, arm64;
+- no jailbreak bootstrap, rootless paths, TrollStore, daemon, or extra
+  entitlement.
+
+The build emits:
 
 ```text
 .theos/obj/AllFLEXing.dylib
 ```
 
-The dylib has the sideload-safe install name `@rpath/AllFLEXing.dylib`. It does
-not hard-link Cydia Substrate, ElleKit, libhooker, or a second `libFLEX.dylib`.
+FLEX, the former libFLEX compatibility layer, fishhook, the loader, registry,
+ABI resolver, persistence, browsers, and UI are compiled into that one image.
+ElleKit remains a framework supplied by Feather; it is not a second FLEX
+product.
 
-## What changed from upstream FLEXing
+## Hook runtime
 
-Upstream used a loader tweak plus a separately installed `libFLEX.dylib`.
-AllFLEXing compiles the loader directly beside FLEX's sources and uses a normal
-Mach-O constructor. It therefore works when an injector adds a single
-`LC_LOAD_DYLIB` command to a resigned IPA.
+| Target | Backend | Requirement |
+|---|---|---|
+| Objective-C method | `MSHookMessageEx` through ElleKit | Valid `Method`, type encoding, and supported BOOL ABI |
+| Imported C symbol | embedded namespaced fishhook | Confirmed lazy/non-lazy Mach-O bind slot and explicit C ABI |
+| C function by address | `MSHookFunction` through ElleKit | Resolved symbol, explicit C ABI, and valid original trampoline |
+| Unknown C/Swift function | inspection only | No toggle until its ABI is proven |
 
-The runtime layer provides:
+The runtime uses one registry for discovery, pending state, installed state,
+effective state, persistence, hit counters, errors, and launch reapply. Apply
+re-resolves every target and fails closed when a class, selector, image, symbol,
+ABI, provider, or bind slot no longer matches.
 
-- the embedded, namespaced `flex_fishhook` already shipped by FLEX;
-- optional `MSHookMessageEx` / `MSHookFunction` use when another injected
-  framework exposes them;
-- an Objective-C runtime fallback (`class_addMethod` / `method_setImplementation`)
-  when those symbols are absent;
-- hooks installed once at image load and gated by live BOOL flags;
-- namespaced `NSUserDefaults` persistence inside the host app's sandbox;
-- a FLEX global entry named **Hook Toggles**;
-- a three-finger long press reveal gesture attached to current and future app
-  windows, including scene-based apps.
+Hooks install once. Turning a toggle off changes an atomic gate in the
+replacement, which immediately forwards to the saved original implementation.
+The product does not try to tear down an inline patch while other threads may be
+executing it.
+
+Persistence stores versioned locators and intent in the host app's normal
+`NSUserDefaults` sandbox. It never stores an IMP, trampoline, or ASLR-dependent
+absolute address. An interrupted apply is detected on the next launch and the
+suspect target is disabled in safe mode.
+
+dyld image additions are debounced and moved off the loader callback before any
+Objective-C work occurs. Persisted targets that were unavailable at launch are
+retried idempotently; installed targets are never patched a second time. A C
+entry whose saved Mach-O UUID changed is reset to inspection-only until its ABI
+is explicitly revalidated.
+
+## Hook Center
+
+Open FLEX and select **Hook Center**. It provides:
+
+- verified provider and engine status;
+- global toggles for Objective-C/ElleKit, fishhook, and inline ElleKit;
+- staged pending changes with **Apply**, **Discard**, and
+  **Apply & Restart** actions;
+- installed hooks with effective state and live hit counts;
+- an Objective-C Runtime Browser for supported BOOL method ABIs;
+- a C Runtime Browser that reads actual Mach-O import sections;
+- manual C symbol entry for known inline targets;
+- per-target ABI and backend selection;
+- stale-target, apply-error, and safe-mode diagnostics.
+
+Every entry proven hookable has a switch beside it. An unknown C ABI stays
+visible but disabled until the user chooses a signature they have independently
+verified.
 
 ## Liquid Glass
 
-The project compiles with the iPhoneOS 26.2 SDK. On iOS 26 and later it creates
-real `UIGlassEffect` and `UIGlassContainerEffect` objects and uses the native
-glass button configurations. On iOS 15-25 it falls back to system material.
+The dylib is compiled with real UIKit 26 headers. Standard navigation bars,
+toolbars, searches, menus, popovers, buttons, and switches keep their native
+iOS 26 behavior. Custom FLEX control surfaces use `UIGlassEffect`; related
+toolbar elements share `UIGlassContainerEffect` so frame changes can merge and
+split as one material.
 
-Glass is intentionally limited to FLEX's navigation and control layer. Tables
-remain content, and the code avoids glass-on-glass composition. This follows
-Apple's Liquid Glass hierarchy instead of applying blur indiscriminately to
-every cell in the overlay. The custom explorer toolbar groups its button glass
-views in one container and animates their frames/effects, allowing UIKit's
-native materialization and merge/split morphing.
+Glass is limited to the floating navigation/control layer. Tables, cells, code,
+logs, and runtime results remain content, avoiding glass-on-glass composition.
+Effect materialization animates the `effect` property, while merge/split
+morphing animates frames inside a shared container. Standard UIKit behavior
+inherits Reduce Motion, Reduce Transparency, Increased Contrast, VoiceOver, and
+Dynamic Type adaptations.
 
 ## Build
 
@@ -54,58 +98,33 @@ Requirements:
 
 ```bash
 git submodule update --init --recursive
-make clean
-make package FINALPACKAGE=1
+./build.sh package
+./build.sh verify
 ```
 
-The default `arm64` slice is the most compatible choice for resigned apps and
-runs on both arm64 and arm64e devices. To also produce the reference binary's
-fat layout:
+The build uses explicit Core, HookRuntime, and LiquidGlassUI manifests, but all
+three are source groups in the same Theos target. They do not produce helper
+dylibs. The workflow performs the same SDK validation, build, Mach-O audit,
+package collection, and artifact upload automatically.
 
-```bash
-make clean
-make package FINALPACKAGE=1 ARCHS="arm64 arm64e"
-```
+## Feather injection
 
-Verify a built dylib on macOS:
+Import the built `.dylib` or `.deb` as a tweak in Feather, enable ElleKit tweak
+injection, sign the complete IPA with the developer certificate, and install it.
+Feather places the Substrate-compatible framework in the app's `Frameworks`
+directory and rewrites the tweak dependency to its `@rpath` form for the signed
+bundle.
 
-```bash
-scripts/verify-dylib.sh .theos/obj/AllFLEXing.dylib
-```
+The expected app layout contains the host executable, its normal frameworks,
+`AllFLEXing.dylib`, and `CydiaSubstrate.framework` backed by ElleKit. It must not
+contain rootless/jailbreak rpaths.
 
-GitHub Actions uses the same SDK acquisition and validation pattern as
-`darthplagueiswise/Ryukgram-Fork` branch `experimental3`.
+## Validation boundary
 
-## Injection
+CI proves source compilation and the static Mach-O contract. Final acceptance
+also requires a Feather-signed iOS 26 device test covering Objective-C,
+fishhook, inline hooks, live disable/forwarding, persistence, safe mode, UI,
+morphing, rotation, and accessibility.
 
-Copy only `AllFLEXing.dylib` into `Payload/<App>.app/Frameworks/`, add
-`@rpath/AllFLEXing.dylib` as an `LC_LOAD_DYLIB`, then re-sign the complete app.
-Sideloadly, Feather, cyan, or any equivalent injector can perform those steps.
-
-No tweak filter or jailbreak bootstrap is used at runtime. The empty package
-filter exists only so Theos can also emit a `.deb` that deb-aware IPA injectors
-can unpack.
-
-## Adding hooks
-
-Register a persistent flag and install the hook once:
-
-```objc
-FLEXHookPersistence *flags = FLEXHookPersistence.sharedManager;
-[flags registerInstallOnce:@"hook.my_feature"
-                     title:@"My feature"
-                    detail:@"Example live-gated Objective-C hook"
-              defaultValue:NO
-                     block:^{
-    FLEXHookMessage(SomeClass.class, @selector(someMethod),
-        (IMP)replacement_someMethod, (IMP *)&original_someMethod);
-}];
-```
-
-The replacement must check `FLEXFlag(@"hook.my_feature")` on every call. The
-switch can then change behavior immediately without re-hooking or relaunching.
-Use `FLEXSymbolRebind` for imported C symbols.
-
-See [ALLFLEXING_BUILD.md](ALLFLEXING_BUILD.md) for architecture and timing
-details and [docs/REFERENCE_BINARY.md](docs/REFERENCE_BINARY.md) for the audit of
-the uploaded dylib.
+See `AGENTS.md` for the normative engineering contract and
+`docs/REFERENCE_BINARY.md` for the uploaded binary audit.

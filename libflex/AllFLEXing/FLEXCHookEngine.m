@@ -6,6 +6,8 @@
 #import "FLEXSymbolRebind.h"
 
 #import <dlfcn.h>
+#import <mach-o/dyld.h>
+#import <mach-o/loader.h>
 #import <stdatomic.h>
 #import <stdbool.h>
 #import <stdint.h>
@@ -27,6 +29,124 @@ typedef struct {
 } FLEXCHookSlot;
 
 static FLEXCHookSlot gFLEXCHookSlots[FLEX_C_SLOT_COUNT];
+
+static NSString *FLEXCHookUUIDForHeader(const struct mach_header_64 *header) {
+    if (!header || header->magic != MH_MAGIC_64) {
+        return @"";
+    }
+    const uint8_t *cursor = (const uint8_t *)(header + 1);
+    for (uint32_t index = 0; index < header->ncmds; index++) {
+        const struct load_command *command = (const struct load_command *)cursor;
+        if (command->cmd == LC_UUID && command->cmdsize >= sizeof(struct uuid_command)) {
+            const struct uuid_command *uuidCommand = (const struct uuid_command *)command;
+            NSUUID *uuid = [[NSUUID alloc] initWithUUIDBytes:uuidCommand->uuid];
+            return uuid.UUIDString ?: @"";
+        }
+        if (command->cmdsize < sizeof(struct load_command)) {
+            break;
+        }
+        cursor += command->cmdsize;
+    }
+    return @"";
+}
+
+static BOOL FLEXCHookImagePathMatches(NSString *requested, NSString *loaded) {
+    if (requested.length == 0) {
+        return YES;
+    }
+    if ([requested containsString:@"/"]) {
+        return [requested isEqualToString:loaded];
+    }
+    return [requested.lastPathComponent isEqualToString:loaded.lastPathComponent];
+}
+
+static const struct mach_header_64 *FLEXCHookLoadedImageHeader(NSString *requested,
+                                                               NSString **loadedPath) {
+    if (requested.length == 0) {
+        return NULL;
+    }
+    for (uint32_t index = 0; index < _dyld_image_count(); index++) {
+        const char *rawPath = _dyld_get_image_name(index);
+        const struct mach_header *header = _dyld_get_image_header(index);
+        if (!rawPath || !header || header->magic != MH_MAGIC_64) {
+            continue;
+        }
+        NSString *path = [NSString stringWithUTF8String:rawPath];
+        if (!FLEXCHookImagePathMatches(requested, path)) {
+            continue;
+        }
+        if (loadedPath) {
+            *loadedPath = path;
+        }
+        return (const struct mach_header_64 *)header;
+    }
+    return NULL;
+}
+
+static BOOL FLEXCHookValidateImageLocator(NSDictionary *locator,
+                                          NSString **failureReason) {
+    NSString *requested = [locator[@"image"] isKindOfClass:NSString.class]
+        ? locator[@"image"] : nil;
+    if (requested.length == 0) {
+        return YES;
+    }
+
+    const struct mach_header_64 *header = FLEXCHookLoadedImageHeader(requested, NULL);
+    if (!header) {
+        if (failureReason) {
+            *failureReason = @"Target image is not loaded";
+        }
+        return NO;
+    }
+
+    NSString *expectedUUID = [locator[@"imageUUID"] isKindOfClass:NSString.class]
+        ? locator[@"imageUUID"] : nil;
+    if (expectedUUID.length) {
+        NSString *loadedUUID = FLEXCHookUUIDForHeader(header);
+        if (loadedUUID.length == 0 ||
+            [expectedUUID caseInsensitiveCompare:loadedUUID] != NSOrderedSame) {
+            if (failureReason) {
+                *failureReason = @"Target image UUID changed; revalidate the ABI";
+            }
+            return NO;
+        }
+    }
+    return YES;
+}
+
+static void *FLEXCHookResolveGlobalSymbol(NSString *symbol) {
+    if (symbol.length == 0) {
+        return NULL;
+    }
+    NSString *normalized = [symbol hasPrefix:@"_"]
+        ? [symbol substringFromIndex:1] : symbol;
+    void *address = dlsym(RTLD_DEFAULT, normalized.UTF8String);
+    if (!address) {
+        address = dlsym(RTLD_DEFAULT, symbol.UTF8String);
+    }
+    return address;
+}
+
+static void *FLEXCHookResolveSymbolForLocator(NSString *symbol,
+                                              NSDictionary *locator) {
+    void *address = FLEXCHookResolveGlobalSymbol(symbol);
+    if (!address) {
+        return NULL;
+    }
+
+    NSString *requested = [locator[@"image"] isKindOfClass:NSString.class]
+        ? locator[@"image"] : nil;
+    if (requested.length == 0) {
+        return address;
+    }
+
+    Dl_info info = {0};
+    if (dladdr(address, &info) == 0 || !info.dli_fname) {
+        return NULL;
+    }
+    NSString *resolvedPath = [NSString stringWithUTF8String:info.dli_fname];
+    return FLEXCHookImagePathMatches(requested, resolvedPath) ? address : NULL;
+}
 
 static bool FLEXCallBool0(NSUInteger index) {
     FLEXCHookSlot *slot = &gFLEXCHookSlots[index];
@@ -171,16 +291,7 @@ static NSInteger FLEXReserveSlot(FLEXHookEntry *entry) {
 @implementation FLEXCHookEngine
 
 + (void *)resolveSymbol:(NSString *)symbol {
-    if (symbol.length == 0) {
-        return NULL;
-    }
-    NSString *normalized = [symbol hasPrefix:@"_"]
-        ? [symbol substringFromIndex:1] : symbol;
-    void *address = dlsym(RTLD_DEFAULT, normalized.UTF8String);
-    if (!address) {
-        address = dlsym(RTLD_DEFAULT, symbol.UTF8String);
-    }
-    return address;
+    return FLEXCHookResolveGlobalSymbol(symbol);
 }
 
 + (BOOL)installEntry:(FLEXHookEntry *)entry error:(NSError **)error {
@@ -189,6 +300,17 @@ static NSInteger FLEXReserveSlot(FLEXHookEntry *entry) {
             *error = [NSError errorWithDomain:@"FLEXCHookEngine"
                                           code:1
                                       userInfo:@{NSLocalizedDescriptionKey: @"C ABI is unknown"}];
+        }
+        return NO;
+    }
+
+    [self refreshAvailabilityForEntry:entry];
+    if (!entry.available || !entry.hookable) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"FLEXCHookEngine"
+                                          code:7
+                                      userInfo:@{NSLocalizedDescriptionKey:
+                                          entry.lastError ?: @"C target failed runtime validation"}];
         }
         return NO;
     }
@@ -252,7 +374,7 @@ static NSInteger FLEXReserveSlot(FLEXHookEntry *entry) {
             }
             return NO;
         }
-        void *address = [self resolveSymbol:symbol];
+        void *address = FLEXCHookResolveSymbolForLocator(symbol, entry.locator);
         if (address && FLEXMSHookProviderAvailable()) {
             installed = FLEXHookFunctionIfAvailable(address, replacement, &slot->original);
         }
@@ -306,8 +428,12 @@ static NSInteger FLEXReserveSlot(FLEXHookEntry *entry) {
     if (!entry) {
         return;
     }
-    BOOL hasBind = [entry.locator[@"bindSlots"] unsignedIntegerValue] > 0;
-    BOOL hasAddress = [self resolveSymbol:entry.locator[@"symbol"]] != NULL;
+    NSString *imageFailure = nil;
+    BOOL imageValid = FLEXCHookValidateImageLocator(entry.locator, &imageFailure);
+    BOOL hasBind = imageValid &&
+        [entry.locator[@"bindSlots"] unsignedIntegerValue] > 0;
+    BOOL hasAddress = imageValid &&
+        FLEXCHookResolveSymbolForLocator(entry.locator[@"symbol"], entry.locator) != NULL;
     FLEXHookBackend backend = entry.backend;
     if (backend == FLEXHookBackendAuto) {
         backend = hasBind ? FLEXHookBackendFishhook : FLEXHookBackendInlineElleKit;
@@ -327,9 +453,9 @@ static NSInteger FLEXReserveSlot(FLEXHookEntry *entry) {
     }
     entry.stale = !entry.available;
     if (!entry.available) {
-        entry.lastError = backend == FLEXHookBackendFishhook
+        entry.lastError = imageFailure ?: (backend == FLEXHookBackendFishhook
             ? @"No imported bind slot is available"
-            : @"Symbol address or ElleKit provider is unavailable";
+            : @"Symbol address or ElleKit provider is unavailable");
     } else if (entry.abi == FLEXHookABIUnknown) {
         entry.lastError = nil;
     } else {

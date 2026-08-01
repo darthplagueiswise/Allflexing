@@ -3,6 +3,7 @@
 #import "FLEXCHookEngine.h"
 #import "FLEXHookPersistence.h"
 #import "FLEXHooking.h"
+#import "FLEXRuntimeScanner.h"
 
 #import <stdatomic.h>
 
@@ -274,7 +275,22 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
         }
         self.bootstrapped = YES;
     }
-    [self reapplyPersistedEntries];
+    [NSNotificationCenter.defaultCenter
+        addObserver:self
+           selector:@selector(runtimeImagesChanged:)
+               name:FLEXRuntimeImagesDidChangeNotification
+             object:nil];
+    dispatch_sync(self.queue, ^{
+        [self reapplyPersistedEntriesWithReason:@"launch-reapply"];
+    });
+    [FLEXRuntimeScanner startMonitoringImages];
+}
+
+- (void)runtimeImagesChanged:(NSNotification *)notification {
+    (void)notification;
+    dispatch_async(self.queue, ^{
+        [self reapplyPersistedEntriesWithReason:@"late-image-reapply"];
+    });
 }
 
 - (void)loadPersistedEntries {
@@ -370,11 +386,34 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
                 continue;
             }
 
+            NSString *previousUUID = [existing.locator[@"imageUUID"]
+                isKindOfClass:NSString.class] ? existing.locator[@"imageUUID"] : nil;
+            NSString *discoveredUUID = [discovered.locator[@"imageUUID"]
+                isKindOfClass:NSString.class] ? discovered.locator[@"imageUUID"] : nil;
+            BOOL imageIdentityChanged = existing.userConfigured &&
+                previousUUID.length && discoveredUUID.length &&
+                [previousUUID caseInsensitiveCompare:discoveredUUID] != NSOrderedSame;
+
             existing.title = discovered.title;
             existing.detail = discovered.detail;
             existing.imageName = discovered.imageName;
             existing.surface = discovered.surface;
             existing.locator = discovered.locator;
+
+            if (imageIdentityChanged) {
+                existing.abi = FLEXHookABIUnknown;
+                existing.backend = FLEXHookBackendNone;
+                existing.desiredEnabled = NO;
+                existing.pendingEnabled = NO;
+                existing.effectiveEnabled = NO;
+                existing.available = YES;
+                existing.hookable = NO;
+                existing.stale = YES;
+                existing.lastError = @"Image UUID changed; revalidate the ABI before enabling";
+                [FLEXCHookEngine setEnabled:NO forEntry:existing];
+                continue;
+            }
+
             existing.available = discovered.available;
             existing.stale = discovered.stale;
             if (!existing.userConfigured || existing.abi == FLEXHookABIUnknown) {
@@ -715,10 +754,19 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     return YES;
 }
 
-- (void)reapplyPersistedEntries {
+- (void)reapplyPersistedEntriesWithReason:(NSString *)reason {
     for (FLEXHookEntry *entry in self.entries) {
         if (!entry.desiredEnabled ||
             [entry.identifier isEqualToString:self.safeModeEntryIdentifier]) {
+            continue;
+        }
+
+        // Image notifications can arrive in bursts. Never install a second
+        // replacement for an entry that already owns a validated trampoline.
+        if (entry.installed) {
+            entry.pendingEnabled = YES;
+            entry.effectiveEnabled = [self engineEnabledForEntry:entry];
+            [FLEXCHookEngine setEnabled:entry.effectiveEnabled forEntry:entry];
             continue;
         }
 
@@ -742,7 +790,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
         }
     }
     [self persistEntries];
-    [self postChange:@"launch-reapply"];
+    [self postChange:reason ?: @"runtime-reapply"];
 }
 
 - (void)refreshPersistedEntryAvailability:(FLEXHookEntry *)entry {

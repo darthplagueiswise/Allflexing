@@ -55,10 +55,15 @@ fishhook is compiled into the image.
 
 ## Dependencies and sideload caveats
 
-The binary does **not** contain an `LC_LOAD_DYLIB` for Cydia Substrate, ElleKit,
-or libhooker. The strings `/usr/lib/libsubstrate.dylib` and `MSHookFunction` come
-from FLEX's upstream system-log controller, which probes them dynamically; they
-are not hard dependencies.
+The uploaded reference binary does **not** contain an `LC_LOAD_DYLIB` for Cydia
+Substrate, ElleKit, or libhooker. The strings `/usr/lib/libsubstrate.dylib` and
+`MSHookFunction` come from FLEX's system-log controller, which probes them
+dynamically; they are not hard dependencies of that reference image.
+
+The rebuilt product intentionally differs here: it links the
+Substrate-compatible `CydiaSubstrate.framework` contract that Feather rewrites
+and supplies with ElleKit inside a certificate-signed app. That dependency is
+not a jailbreak bootstrap and must resolve from the app's `Frameworks` rpath.
 
 It does retain four rootless rpaths:
 

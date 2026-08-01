@@ -2,112 +2,183 @@
 
 ## Output contract
 
-The project produces one injectable image named `AllFLEXing.dylib` containing:
+The project builds one `AllFLEXing.dylib` containing:
 
 - the complete pinned FLEX source tree;
-- the reveal loader and scene/window lifecycle handling;
-- UIKit 26 Liquid Glass integration and pre-iOS 26 material fallback;
-- persistent live BOOL flags and the in-FLEX toggle controller;
-- FLEX's namespaced `flex_fishhook` implementation;
-- a sideload-safe Objective-C message-hook abstraction.
-
-The Mach-O contract is:
+- the former libFLEX compatibility exports;
+- the scene/window-aware reveal loader;
+- the persistent hook registry and safe-mode recovery;
+- the Objective-C and C Runtime Browsers;
+- namespaced fishhook and typed C replacement slots;
+- the Hook Center and UIKit 26 Liquid Glass integration.
 
 | Property | Required value |
 |---|---|
 | File type | `MH_DYLIB` |
 | Install name | `@rpath/AllFLEXing.dylib` |
 | SDK | iPhoneOS 26.2 |
-| Minimum OS | iOS 15.0 |
-| Default architecture | arm64 |
-| External hook dependency | none |
-| Rootless `/var/jb` rpaths | none |
+| Minimum OS | iOS 16.3 |
+| Architecture | arm64 |
+| Hook framework | Feather-rewritable `CydiaSubstrate.framework` |
+| Runtime provider | ElleKit inside the signed app |
+| Jailbreak/rootless rpaths | none |
 
-`arm64` is the certificate-sideload default because it also runs on arm64e
-hardware. Pass `ARCHS="arm64 arm64e"` when a fat reference artifact is useful.
+The CydiaSubstrate-compatible load dependency is intentional. Feather supplies
+that framework using ElleKit and relocates it into the signed app. This does not
+split FLEX/libFLEX back into multiple dylibs.
 
-## Hook timing
+## Build flow
 
-1. dyld maps `AllFLEXing.dylib` because the host executable contains an
-   `LC_LOAD_DYLIB` for `@rpath/AllFLEXing.dylib`.
-2. `AllFLEXingBootstrap` runs as a Mach-O constructor.
-3. Flags and install-once blocks are registered synchronously.
-4. Objective-C hooks are installed before the first main-runloop turn.
-5. Hook replacements consult `FLEXFlag(...)` on each call. Changing a switch
-   changes behavior without installing another IMP chain.
-6. UI work is dispatched to the main queue. The global entry and reveal gesture
-   are attached once UIKit is ready.
-7. Window and scene notifications attach the reveal recognizer to windows that
-   appear after launch.
+1. The workflow checks out the source and submodules.
+2. It installs GNU make, `dpkg`, and `ldid`.
+3. It initializes Theos.
+4. It restores or downloads exactly `iPhoneOS26.2.sdk`.
+5. It validates the real UIKit 26 glass headers, target strings, registry, and
+   Substrate-compatible source contract.
+6. It invokes `./build.sh package`, which enforces a clean
+   `FINALPACKAGE=1` build and stages deterministic artifacts.
+7. It audits the dylib's SDK, minimum OS, install name, provider imports,
+   classrefs, classes, exports, and absence of jailbreak rpaths.
+8. It uploads the dylib and deb artifacts.
 
-This split avoids both common races: installing behavior hooks too late and
-touching UIKit view state from an early constructor.
+## Load and injection timing
 
-## Hook backends
+1. dyld maps the host app, `CydiaSubstrate.framework`, and
+   `@rpath/AllFLEXing.dylib`.
+2. The single AllFLEXing constructor registers feature/engine defaults.
+3. The registry loads versioned persisted locators and detects an interrupted
+   prior apply.
+4. It re-resolves and reinstalls only exact persisted targets that remain safe.
+5. Static AllFLEXing hooks install once.
+6. UI initialization is dispatched to the main queue.
+7. Once scenes/windows exist, FLEX registers the Hook Center and reveal gesture.
+8. Runtime scans occur only when requested and run off the main thread.
+9. dyld image additions are debounced; the callback schedules work and returns
+   without scanning or touching UIKit.
 
-### Objective-C messages
+The constructor does not enumerate the runtime broadly or create UIKit views.
 
-`FLEXHookMessage` checks whether `MSHookMessageEx` is already exported in the
-process. If so, it uses that implementation. It never hard-links or forcibly
-loads Substrate/ElleKit. If the symbol is absent, it creates a local override
-with `class_addMethod` for inherited methods or replaces the class's own IMP
-with `method_setImplementation`.
+## Provider detection
 
-The fallback retains the original IMP and works in an ordinarily resigned app;
-it does not require a jailbreak bootstrap or special entitlement.
+The build takes strong references to `MSHookMessageEx` and `MSHookFunction`, so
+the expected framework is an actual Mach-O dependency rather than an optimistic
+`dlsym` probe. At runtime:
 
-### C symbols
+- `dladdr` identifies the image implementing the MSHook API;
+- the ElleKit-specific `EKEnableThreadSafety` export must resolve from that same
+  Mach-O base before the UI labels the provider as ElleKit;
+- otherwise the UI reports a generic Substrate-compatible provider;
+- unavailable providers disable dependent targets and return a concrete error.
 
-`FLEXSymbolRebind` calls the `flex_rebind_symbols` implementation already present
-under `FLEX/Classes/Utility/Runtime`. There is deliberately no second fishhook
-copy, which avoids duplicate symbols and keeps FLEX's own system-log rebinding
-on the same registry.
+## Objective-C ABI path
 
-`FLEXHookFunctionIfAvailable` exposes optional `MSHookFunction` use for callers
-that intentionally inject a provider. It returns `NO` in the standalone case;
-fishhook is the portable default.
+The scanner enumerates direct instance and class methods. A toggle is created
+only when:
 
-## Persistence
+- the return type is a BOOL-compatible encoding;
+- there are zero explicit arguments, or one supported object/integer argument;
+- the selector is not an initializer, setter, deallocator, or unsafe runtime
+  primitive;
+- the provider is available and its engine is enabled.
 
-Flags use `NSUserDefaults.standardUserDefaults` with keys prefixed by
-`com.allflexing.flags.`. A sideloaded app already has a unique sandbox and
-preferences domain, so a custom suite or app-group entitlement adds failure
-modes without improving isolation.
+Each signature receives a separate `imp_implementationWithBlock` replacement.
+Apply resolves the class, selector, `Method`, and current type encoding again.
+The original IMP is kept exactly once, hit counts are recorded, and an OFF gate
+returns the native result.
 
-Registered defaults live in the in-memory cache until a user changes them.
-Writes update the cache and defaults together, then post
-`FLEXHookFlagsDidChangeNotification` on the main thread.
+## C ABI path
+
+The C Runtime Browser parses `LC_SYMTAB`, `LC_DYSYMTAB`, and lazy/non-lazy
+symbol pointer sections for each selected image. It does not infer ABI from a
+name.
+
+Supported initial typed slot pools are:
+
+- `bool(void)`;
+- `bool(void *)`;
+- `int64_t(void)`;
+- `void *(void)`.
+
+Each profile has eight static arm64-compatible replacement slots. Every slot
+holds an original pointer/trampoline, atomic enable/force state, and atomic hit
+counter.
+
+Auto selects fishhook when the selected image has a confirmed import slot. It
+selects `MSHookFunction` only when no bind slot applies and the symbol resolves
+to an address. Unknown signatures remain inspection-only.
+
+## Registry state
+
+Every runtime target uses one shared `FLEXHookEntry` with separate:
+
+- pending intent;
+- persisted desired intent;
+- physical installation state;
+- effective runtime gate;
+- availability/hookability;
+- ABI and backend;
+- locator and image identity;
+- original pointer (memory only);
+- hit count and last error.
+
+Apply is serialized. Before each installation, the registry writes an in-flight
+record and synchronizes it. Successful or failed completion clears that marker.
+If the process ends during the narrow install window, the next launch enters
+safe mode and disables only the suspect target.
+
+Persisted locators include class/selector/type encoding for Objective-C or
+symbol/image/UUID/bind count for C. Absolute runtime pointers are never saved.
+If a C image UUID changes, the saved ABI and backend are invalidated and the
+entry becomes inspection-only until explicitly classified again.
+
+## Source module manifests
+
+The build is divided into three source manifests:
+
+- Core: loader and persistence;
+- HookRuntime: provider bridge, registry, scanner, resolver, fishhook adapter,
+  and typed C slots;
+- LiquidGlassUI: Hook Center, entry details, Runtime Browsers, autostyle, and
+  Liquid Glass components.
+
+These are build-time groups only. The namespaced fishhook source is compiled
+exactly once through the pinned FLEX source tree, and every group links into the
+single `AllFLEXing.dylib` target.
+
+## Live toggles
+
+Changing a switch stages a value. Apply revalidates and installs only when
+necessary. Once installed, all replacements remain in place for that process:
+
+- ON returns the configured forced value;
+- OFF calls the saved original implementation immediately;
+- disabling a whole engine gates all installed entries using that provider;
+- physical unhooking is not attempted while other threads may execute a target.
+
+`Apply & Restart` saves and then closes the app after explicit confirmation.
+Stock iOS cannot relaunch a jailed app, so the user opens it again manually.
 
 ## Liquid Glass hierarchy
 
-On iOS 26+, `FLEXLiquidGlass` uses public SDK 26 APIs:
+- Standard UIKit 26 bars, search, menus, popovers, switches, and toolbar actions
+  provide the primary control layer.
+- Custom FLEX toolbar elements use `UIGlassEffect` inside one
+  `UIGlassContainerEffect`.
+- Effect materialization animates `effect`, not just alpha.
+- Merge/split morphing animates frames inside the shared container.
+- Runtime tables/cells remain content and do not receive a glass panel each.
+- Action sheets are anchored to their source cell/item for native transitions.
+- Reduce Motion suppresses optional toolbar and custom material morphing
+  animations.
 
-- UIKit's default SDK 26 appearances for navigation bars, toolbars, search,
-  menus, and standard controls such as the Hook Toggles switches;
-- `UIGlassEffect` for custom floating panels and explorer-toolbar buttons;
-- `UIGlassContainerEffect` around the custom FLEX explorer toolbar, with one
-  child `UIGlassEffect` per button so nearby controls adapt and merge as a
-  coherent group; frame changes animate within the shared container so UIKit
-  performs the native merge/split morphing;
-- `UIButtonConfiguration.glassButtonConfiguration` for standalone controls.
-
-Tables and cells remain in the content layer. A FLEX toolbar receives one glass
-container whose child glass views sit behind its buttons; those buttons are not
-given an additional glass configuration. This prevents glass-on-glass
-composition and preserves hierarchy and legibility.
-
-On iOS 15-25, the same APIs return a system thin-material fallback.
-
-## Build and validation
+## Local commands
 
 ```bash
 git submodule update --init --recursive
-make clean
-make package FINALPACKAGE=1
-scripts/verify-dylib.sh .theos/obj/AllFLEXing.dylib
+./build.sh package
+./build.sh verify
 ```
 
-The GitHub workflow downloads `iPhoneOS26.2.sdk` with the same sparse-checkout
-pattern used by `Ryukgram-Fork/experimental3`, validates the public glass headers,
-builds the package, and fails if the dylib gains a hook-framework dependency or
-a rootless rpath.
+Static success is necessary but not sufficient. A Feather-signed iOS 26 device
+test remains the final validation for provider identity, hook behavior,
+persistence, restart flow, UI, morphing, and accessibility.

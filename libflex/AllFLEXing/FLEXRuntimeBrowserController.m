@@ -74,6 +74,11 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
            selector:@selector(registryChanged:)
                name:FLEXHookRegistryDidChangeNotification
              object:nil];
+    [NSNotificationCenter.defaultCenter
+        addObserver:self
+           selector:@selector(runtimeImagesChanged:)
+               name:FLEXRuntimeImagesDidChangeNotification
+             object:nil];
     [self reloadEntries];
     [self reloadScan];
     [FLEXLiquidGlass applyToViewController:self];
@@ -92,6 +97,13 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
 - (void)registryChanged:(NSNotification *)notification {
     (void)notification;
     [self reloadEntries];
+}
+
+- (void)runtimeImagesChanged:(NSNotification *)notification {
+    (void)notification;
+    if (self.viewIfLoaded.window) {
+        [self reloadScan];
+    }
 }
 
 - (void)reloadEntries {

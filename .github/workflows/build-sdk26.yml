@@ -70,14 +70,14 @@ jobs:
       - name: Validate SDK and Liquid Glass integration
         run: |
           cd main
+          chmod +x build.sh scripts/*.sh
           bash scripts/validate-sdk26-liquidglass.sh
 
       - name: Build standalone package
         id: build
         run: |
           cd main
-          make clean
-          make package FINALPACKAGE=1 ARCHS=arm64
+          ./build.sh package
 
       - name: Verify Mach-O contract
         run: |
@@ -88,11 +88,8 @@ jobs:
         if: always() && steps.build.outcome == 'success'
         run: |
           cd main
-          mkdir -p release
-          cp .theos/obj/AllFLEXing.dylib release/AllFLEXing.dylib
-          deb="$(find . -type f -path '*/packages/*.deb' | sort | tail -n 1)"
-          test -n "$deb"
-          cp "$deb" release/AllFLEXing.deb
+          test -f release/AllFLEXing.dylib
+          test -f release/AllFLEXing.deb
           shasum -a 256 release/AllFLEXing.dylib release/AllFLEXing.deb
 
       - name: Upload build

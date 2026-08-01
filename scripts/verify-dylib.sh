@@ -88,6 +88,8 @@ require_text "Liquid Glass cluster" "FLEXGlassClusterHostView" "$string_dump"
 require_text "hook registry" "FLEXHookRegistry" "$string_dump"
 require_text "ABI-aware C engine" "FLEXCHookEngine" "$string_dump"
 require_text "runtime scanner" "FLEXRuntimeScanner" "$string_dump"
+require_text "late-image monitor" "FLEXRuntimeImagesDidChangeNotification" "$string_dump"
+require_text "idempotent late-image reapply" "late-image-reapply" "$string_dump"
 require_text "FLEX menu entry" "Hook Center" "$string_dump"
 
 echo "AllFLEXing Mach-O verification: OK"
