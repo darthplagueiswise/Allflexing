@@ -293,6 +293,12 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     });
 }
 
+- (void)reapplyPersistedEntries {
+    dispatch_async(self.queue, ^{
+        [self reapplyPersistedEntriesWithReason:@"manual-reapply"];
+    });
+}
+
 - (void)loadPersistedEntries {
     NSDictionary *payload = [self.defaults objectForKey:kFLEXHookRegistryStorageKey];
     if (![payload isKindOfClass:NSDictionary.class] ||
