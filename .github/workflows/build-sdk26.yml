@@ -45,7 +45,7 @@ jobs:
 
       - name: Cache iPhoneOS 26.2 SDK
         id: sdk-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ${{ env.THEOS }}/sdks
           key: iphoneos-26.2-sdk-v1
@@ -59,6 +59,13 @@ jobs:
           git checkout
           mkdir -p "$THEOS/sdks"
           mv *.sdk "$THEOS/sdks"
+
+      - name: Save iPhoneOS 26.2 SDK cache
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.THEOS }}/sdks
+          key: iphoneos-26.2-sdk-v1
 
       - name: Validate SDK and Liquid Glass integration
         run: |
@@ -74,13 +81,13 @@ jobs:
       - name: Verify Mach-O contract
         run: |
           cd main
-          bash scripts/verify-dylib.sh libflex/.theos/obj/AllFLEXing.dylib
+          bash scripts/verify-dylib.sh .theos/obj/AllFLEXing.dylib
 
       - name: Collect artifacts
         run: |
           cd main
           mkdir -p release
-          cp libflex/.theos/obj/AllFLEXing.dylib release/AllFLEXing.dylib
+          cp .theos/obj/AllFLEXing.dylib release/AllFLEXing.dylib
           deb="$(find . -type f -path '*/packages/*.deb' | sort | tail -n 1)"
           test -n "$deb"
           cp "$deb" release/AllFLEXing.deb

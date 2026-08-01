@@ -5,7 +5,7 @@ apps. FLEX itself, the loader, persistent runtime toggles, the hook backends, an
 the UIKit 26 Liquid Glass integration are linked into one output:
 
 ```text
-libflex/.theos/obj/AllFLEXing.dylib
+.theos/obj/AllFLEXing.dylib
 ```
 
 The dylib has the sideload-safe install name `@rpath/AllFLEXing.dylib`. It does
@@ -68,7 +68,7 @@ make package FINALPACKAGE=1 ARCHS="arm64 arm64e"
 Verify a built dylib on macOS:
 
 ```bash
-scripts/verify-dylib.sh libflex/.theos/obj/AllFLEXing.dylib
+scripts/verify-dylib.sh .theos/obj/AllFLEXing.dylib
 ```
 
 GitHub Actions uses the same SDK acquisition and validation pattern as

@@ -100,7 +100,7 @@ On iOS 15-25, the same APIs return a system thin-material fallback.
 git submodule update --init --recursive
 make clean
 make package FINALPACKAGE=1
-scripts/verify-dylib.sh libflex/.theos/obj/AllFLEXing.dylib
+scripts/verify-dylib.sh .theos/obj/AllFLEXing.dylib
 ```
 
 The GitHub workflow downloads `iPhoneOS26.2.sdk` with the same sparse-checkout
