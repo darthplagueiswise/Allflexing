@@ -12,6 +12,7 @@
 #import "FLEXWindow.h"
 
 static const void *kAllFLEXingRevealGestureKey = &kAllFLEXingRevealGestureKey;
+static id AllFLEXingDidBecomeActiveObserver;
 
 @interface AllFLEXingReveal : NSObject
 @property (nonatomic) BOOL started;
@@ -214,6 +215,44 @@ static void AllFLEXingStartUI(void) {
     });
 }
 
+static void AllFLEXingRunActivationPhase(void) {
+    NSCAssert(NSThread.isMainThread, @"activation phase must run on the main thread");
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        // The constructor already replays exact targets that exist at image
+        // load. Re-resolve once after UIApplication becomes active to cover
+        // Swift/late Objective-C realization without delaying early hooks.
+        [FLEXHookRegistry.sharedRegistry reapplyPersistedEntries];
+        AllFLEXingStartUI();
+    });
+}
+
+static void AllFLEXingScheduleActivationPhase(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIApplication *application = UIApplication.sharedApplication;
+        if (application.applicationState == UIApplicationStateActive) {
+            AllFLEXingRunActivationPhase();
+            return;
+        }
+
+        if (AllFLEXingDidBecomeActiveObserver) {
+            return;
+        }
+        AllFLEXingDidBecomeActiveObserver = [NSNotificationCenter.defaultCenter
+            addObserverForName:UIApplicationDidBecomeActiveNotification
+                        object:nil
+                         queue:NSOperationQueue.mainQueue
+                    usingBlock:^(__unused NSNotification *notification) {
+            id observer = AllFLEXingDidBecomeActiveObserver;
+            AllFLEXingDidBecomeActiveObserver = nil;
+            if (observer) {
+                [NSNotificationCenter.defaultCenter removeObserver:observer];
+            }
+            AllFLEXingRunActivationPhase();
+        }];
+    });
+}
+
 __attribute__((constructor))
 static void AllFLEXingBootstrap(void) {
     @autoreleasepool {
@@ -224,8 +263,6 @@ static void AllFLEXingBootstrap(void) {
         // Method and symbol hooks are registered synchronously at image load so
         // early app calls cannot win a race with the first main-runloop turn.
         AllFLEXingRegisterRuntime();
-        dispatch_async(dispatch_get_main_queue(), ^{
-            AllFLEXingStartUI();
-        });
+        AllFLEXingScheduleActivationPhase();
     }
 }

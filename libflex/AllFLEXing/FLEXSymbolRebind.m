@@ -4,7 +4,7 @@
 #import <dlfcn.h>
 #import <mach-o/dyld.h>
 
-NSUInteger const FLEXEmbeddedFishhookABIVersion = 1;
+NSUInteger const FLEXEmbeddedFishhookABIVersion = 2;
 
 BOOL FLEXEmbeddedFishhookAvailable(void) {
     // Taking both addresses creates a strong link-time contract with the
@@ -123,7 +123,7 @@ BOOL FLEXEmbeddedFishhookAvailable(void) {
 }
 
 + (NSString *)backendDescription {
-    return [NSString stringWithFormat:@"embedded FLEX flex_fishhook ABI %lu",
+    return [NSString stringWithFormat:@"embedded FLEX flex_fishhook ABI %lu · DATA_CONST safe",
         (unsigned long)FLEXEmbeddedFishhookABIVersion];
 }
 

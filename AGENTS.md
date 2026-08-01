@@ -264,11 +264,15 @@ booleano. Um toggle persistido não prova que o hook foi instalado.
   contador e erro do Hook Center. É proibido recriar o dicionário de overrides
   isolado usado por protótipos anteriores.
 - O menu contextual de uma linha hookável deve oferecer Force TRUE, Force FALSE,
-  Forward Original, Apply, detalhes e Copy Hook ID.
+  Forward Original, reaplicação daquela entrada, detalhes e Copy Hook ID.
 - Itens sem ABI, provider ou locator seguro continuam visíveis, mas com toggle
   desabilitado e motivo concreto.
-- Alterar um toggle cria uma mudança pendente; não instalar hooks pesados durante
-  `cellForRowAtIndexPath:` nem a cada movimento da lista.
+- Alterar um toggle contextual ou do Runtime Browser executa `stage + apply`
+  somente para o ID daquela entrada. O switch deve mudar o comportamento em
+  tempo real e nunca aplicar pendências não relacionadas. A instalação ocorre
+  no handler da ação, nunca em `cellForRowAtIndexPath:` nem durante scroll.
+- `pendingEnabled` continua necessário para edições de configuração, batch e
+  recuperação de erro. O botão global `Aplicar` processa apenas o lote restante.
 - O botão `Aplicar` executa uma transação:
 
   1. captura as mudanças pendentes;
@@ -319,9 +323,19 @@ Ordem esperada:
 3. registra hooks internos conhecidos e carrega locators persistidos;
 4. reinstala apenas hooks persistidos seguros que precisam ocorrer cedo;
 5. registra callbacks para imagens carregadas posteriormente quando necessário;
-6. agenda toda inicialização visual na main queue;
-7. após UIKit/scene/window estarem disponíveis, registra a entrada global,
-   gesto de abertura e apresenta o Hook Center.
+6. registra um observer descartável para `UIApplicationDidBecomeActive`;
+7. na primeira ativação, re-resolve uma segunda vez classes/símbolos realizados
+   tarde e remove o observer;
+8. somente então registra na main thread a entrada global, gesto de abertura e
+   camada visual;
+9. callbacks de imagens posteriores continuam revalidando locators exatos sem
+   duplicar hooks.
+
+| Fase | Thread | Trabalho permitido | Objetivo |
+|---|---|---|---|
+| Image load | constructor/dyld | Flags, provider, hooks conhecidos e replay exato | Não perder chamadas iniciais |
+| App ativa | main + fila serial | Replay tardio, registro da UI e gesto | Cobrir UIKit/Swift realizados tarde |
+| Imagem tardia | callback mínimo + fila serial | Catalogar e revalidar entradas exatas | Suportar frameworks carregados depois |
 
 Restrições:
 
@@ -394,6 +408,9 @@ Requisitos de interação:
   toggles associados à célula errada durante filtros.
 - Identificar ações por ID estável da entrada, nunca apenas por index path.
 - Exibir feedback háptico somente para uma mudança confirmada.
+- `accessoryView` customizada precisa receber `frame`/`bounds` calculado pelo
+  fitting size antes de ser entregue à célula. Auto Layout interno sozinho não
+  dimensiona a accessory e causa switches sobrepostos ao texto.
 - Desabilitar `Aplicar` quando não houver mudanças ou enquanto uma transação
   estiver em andamento.
 - Mostrar progresso para scans e apply em lote, permitindo cancelamento antes
@@ -408,6 +425,8 @@ Liquid Glass é hierarquia e comportamento, não apenas blur.
 
 - Recompilar com SDK 26.2 para que componentes UIKit padrão adotem o design
   atual automaticamente.
+- Em iOS 26, remover appearances/backgrounds antigos de navigation bar e toolbar;
+  uma aparência customizada opaca impede a adoção automática do material.
 - Preferir `UINavigationBar`, `UIToolbar`, `UISearchBar`, menus, popovers,
   `UIButtonConfiguration` e `UISwitch` padrão.
 - Glass pertence à camada flutuante de navegação e controles. Tabelas, células,
@@ -423,6 +442,8 @@ Liquid Glass é hierarquia e comportamento, não apenas blur.
   glass regular.
 - `UISwitch` deve manter o visual nativo do iOS 26. Não desenhar um toggle falso
   dentro de outro painel glass.
+- Geometria adaptativa deve usar `UICornerConfiguration`/`UICornerRadius` em
+  iOS 26; `layer.cornerRadius` fica somente como fallback anterior.
 
 ### 12.2 Agrupamento e morphing
 
@@ -471,6 +492,10 @@ preservada:
   backend inline incorporado;
 - a referência mais recente possui aproximadamente 1,6 MB de `__LINKEDIT`,
   símbolos locais e caminhos de objetos de um build debug;
+- o disassembly integral da referência cobre todas as três seções executáveis,
+  299.875 linhas, bytes brutos, símbolos e destinos/xrefs de branches;
+- essa referência declara minimum OS 15.0 e SDK 16.5. Portanto seu helper visual
+  não é prova de uso nativo das APIs do SDK 26.2;
 - o tamanho maior decorre de debug, falta de otimização e, no binário anterior,
   múltiplos slices; portanto não é uma medida confiável de funcionalidade.
 
@@ -497,6 +522,8 @@ O build só está concluído quando passar por validação estática e runtime.
 - classrefs/strings: APIs reais `UIGlassEffect` e `UIGlassContainerEffect`.
 - confirmar que fishhook foi incorporado uma única vez, com namespace e com os
   exports marcadores `FLEXEmbeddedFishhookAvailable` e ABI versionada.
+- confirmar que o fishhook usa `vm_protect` com `VM_PROT_COPY`, não escreve após
+  falha de proteção e só relata sucesso quando ao menos um bind slot foi trocado.
 - confirmar que as ações contextuais TRUE/FALSE/Apply e a integração Logos foram
   compiladas.
 - confirmar que o dylib não depende de um segundo `libflex.dylib` ou
@@ -550,8 +577,11 @@ unificada, provider Substrate-compatible validado, `MSHookMessageEx`, fishhook,
 `MSHookFunction`, manifestos explícitos de providers, integração Logos das
 linhas de metadata, `FLEXRuntimeHookActions`, registry persistente por locators,
 safe mode, Runtime Browser, Hook Center e a camada visual UIKit 26 descrita
-neste arquivo. O monitor de imagens carregadas tarde apenas agenda rescan e
-reaplicação idempotente fora do callback do loader.
+neste arquivo. Capacidades de `MSHookMessageEx` e `MSHookFunction` são medidas
+separadamente. Toggles contextuais aplicam uma entrada imediatamente, o fishhook
+local usa a proteção moderna de `__DATA_CONST`, e o bootstrap possui fases de
+image load, primeira ativação e imagem tardia. O monitor de imagens carregadas
+tarde apenas agenda rescan e reaplicação idempotente fora do callback do loader.
 
 Compilação e inspeção estática não substituem as seguintes validações finais:
 

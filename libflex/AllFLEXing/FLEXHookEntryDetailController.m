@@ -320,12 +320,30 @@ typedef NS_ENUM(NSInteger, FLEXHookDetailSection) {
 }
 
 - (void)enabledChanged:(UISwitch *)toggle {
-    [FLEXHookRegistry.sharedRegistry stageEnabled:toggle.isOn
-                               forEntryIdentifier:self.entry.identifier];
+    FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
+    BOOL requestedState = toggle.isOn;
+    [registry stageEnabled:requestedState forEntryIdentifier:self.entry.identifier];
+    if (self.entry.pendingEnabled != requestedState) {
+        [toggle setOn:self.entry.pendingEnabled animated:YES];
+        UINotificationFeedbackGenerator *feedback = [UINotificationFeedbackGenerator new];
+        [feedback notificationOccurred:UINotificationFeedbackTypeError];
+        return;
+    }
+    __weak typeof(self) weakSelf = self;
+    [registry applyEntryIdentifier:self.entry.identifier completion:^(
+        __unused NSArray<FLEXHookEntry *> *applied,
+        NSArray<FLEXHookEntry *> *failed
+    ) {
+        UINotificationFeedbackGenerator *feedback = [UINotificationFeedbackGenerator new];
+        [feedback notificationOccurred:failed.count
+            ? UINotificationFeedbackTypeError
+            : UINotificationFeedbackTypeSuccess];
+        [weakSelf.tableView reloadData];
+    }];
 }
 
 - (void)applyNow {
-    [FLEXHookRegistry.sharedRegistry applyPendingWithCompletion:^(
+    [FLEXHookRegistry.sharedRegistry applyEntryIdentifier:self.entry.identifier completion:^(
         NSArray<FLEXHookEntry *> *applied,
         NSArray<FLEXHookEntry *> *failed
     ) {

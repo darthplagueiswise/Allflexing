@@ -55,7 +55,7 @@ FOUNDATION_EXPORT NSString *FLEXHookABIName(FLEXHookABI abi);
 @property (nonatomic) BOOL pendingEnabled;
 @property (nonatomic) BOOL installed;
 @property (atomic) BOOL effectiveEnabled;
-@property (nonatomic) BOOL forceValue;
+@property (atomic) BOOL forceValue;
 @property (nonatomic) BOOL requiresRestart;
 @property (nonatomic) BOOL stale;
 @property (nonatomic, copy, nullable) NSString *lastError;
@@ -106,6 +106,11 @@ typedef void (^FLEXHookApplyCompletion)(NSArray<FLEXHookEntry *> *applied,
 - (NSUInteger)failureCount;
 
 - (void)applyPendingWithCompletion:(nullable FLEXHookApplyCompletion)completion;
+/// Applies exactly one row's staged state. Runtime-browser and contextual
+/// switches use this path so a toggle changes behavior immediately without
+/// accidentally committing unrelated pending edits.
+- (void)applyEntryIdentifier:(NSString *)identifier
+                  completion:(nullable FLEXHookApplyCompletion)completion;
 - (void)reapplyPersistedEntries;
 - (void)refreshCapabilities;
 - (void)clearSafeMode;

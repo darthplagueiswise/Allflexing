@@ -195,7 +195,7 @@ static NSString *FLEXUUIDForHeader(const struct mach_header_64 *header) {
         return nil;
     }
 
-    BOOL providerAvailable = FLEXMSHookProviderAvailable();
+    BOOL providerAvailable = FLEXMSHookMessageProviderAvailable();
     BOOL engineEnabled = FLEXFlag(@"engine.objc_ellekit");
     FLEXHookEntry *entry = [FLEXHookEntry new];
     entry.identifier = FLEXStableObjectiveCIdentifier(
@@ -476,7 +476,7 @@ static NSString *FLEXUUIDForHeader(const struct mach_header_64 *header) {
         @"image": imageName ?: @"",
         @"bindSlots": @0,
     };
-    entry.available = normalized.length > 0 && FLEXMSHookProviderAvailable();
+    entry.available = normalized.length > 0 && FLEXMSHookFunctionProviderAvailable();
     entry.hookable = NO;
     entry.userConfigured = YES;
     entry.lastError = entry.available ? nil : @"Symbol/provider unavailable";

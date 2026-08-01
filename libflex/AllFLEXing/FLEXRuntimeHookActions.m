@@ -40,13 +40,36 @@ static const void *kFLEXRuntimeHookToggleTargetKey =
 
 - (void)switchChanged:(UISwitch *)toggle {
     FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
-    [registry stageEnabled:toggle.isOn forEntryIdentifier:self.entryIdentifier];
+    BOOL requestedState = toggle.isOn;
+    [registry stageEnabled:requestedState forEntryIdentifier:self.entryIdentifier];
     FLEXHookEntry *entry = [registry entryForIdentifier:self.entryIdentifier];
-    [toggle setOn:entry.pendingEnabled animated:YES];
+    if (!entry || entry.pendingEnabled != requestedState) {
+        [toggle setOn:entry.pendingEnabled animated:YES];
+        UINotificationFeedbackGenerator *feedback = [UINotificationFeedbackGenerator new];
+        [feedback notificationOccurred:UINotificationFeedbackTypeError];
+        [self.section reloadData:YES];
+        return;
+    }
 
     UISelectionFeedbackGenerator *feedback = [UISelectionFeedbackGenerator new];
     [feedback selectionChanged];
-    [self.section reloadData:YES];
+    toggle.enabled = NO;
+    __weak typeof(self) weakSelf = self;
+    [registry applyEntryIdentifier:self.entryIdentifier completion:^(
+        NSArray<FLEXHookEntry *> *applied,
+        NSArray<FLEXHookEntry *> *failed
+    ) {
+        FLEXRuntimeHookToggleTarget *strongSelf = weakSelf;
+        FLEXHookEntry *resolved = [registry entryForIdentifier:strongSelf.entryIdentifier];
+        [toggle setOn:resolved.pendingEnabled animated:YES];
+        toggle.enabled = (resolved.available && resolved.hookable) || resolved.pendingEnabled;
+        UINotificationFeedbackGenerator *resultFeedback = [UINotificationFeedbackGenerator new];
+        [resultFeedback notificationOccurred:failed.count
+            ? UINotificationFeedbackTypeError
+            : UINotificationFeedbackTypeSuccess];
+        (void)applied;
+        [strongSelf.section reloadData:YES];
+    }];
 }
 
 @end
@@ -170,7 +193,11 @@ static const void *kFLEXRuntimeHookToggleTargetKey =
     FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
     if (!state) {
         [registry stageEnabled:NO forEntryIdentifier:entry.identifier];
-        return !entry.pendingEnabled;
+        BOOL accepted = !entry.pendingEnabled;
+        if (accepted) {
+            [registry applyEntryIdentifier:entry.identifier completion:nil];
+        }
+        return accepted;
     }
     if (!entry.available || !entry.hookable) {
         return NO;
@@ -178,7 +205,11 @@ static const void *kFLEXRuntimeHookToggleTargetKey =
 
     [registry stageForceValue:state.boolValue forEntryIdentifier:entry.identifier];
     [registry stageEnabled:YES forEntryIdentifier:entry.identifier];
-    return entry.pendingEnabled && entry.forceValue == state.boolValue;
+    BOOL accepted = entry.pendingEnabled && entry.forceValue == state.boolValue;
+    if (accepted) {
+        [registry applyEntryIdentifier:entry.identifier completion:nil];
+    }
+    return accepted;
 }
 
 #pragma mark - Context menu
@@ -279,11 +310,11 @@ static const void *kFLEXRuntimeHookToggleTargetKey =
         ? UIMenuElementStateOff : UIMenuElementStateOn;
 
     UIAction *apply = [UIAction
-        actionWithTitle:@"Apply Staged Changes"
+        actionWithTitle:@"Reapply This Hook"
                   image:[UIImage systemImageNamed:@"checkmark.seal"]
              identifier:nil
                 handler:^(__unused UIAction *action) {
-        [FLEXHookRegistry.sharedRegistry applyPendingWithCompletion:^(
+        [FLEXHookRegistry.sharedRegistry applyEntryIdentifier:entry.identifier completion:^(
             NSArray<FLEXHookEntry *> *applied,
             NSArray<FLEXHookEntry *> *failed) {
             if (refresh) {
@@ -292,9 +323,8 @@ static const void *kFLEXRuntimeHookToggleTargetKey =
             [self presentApplyResultFrom:weakSender applied:applied failed:failed];
         }];
     }];
-    if (!FLEXHookRegistry.sharedRegistry.hasPendingChanges) {
-        apply.attributes = UIMenuElementAttributesDisabled;
-    }
+    apply.attributes = entry.available && entry.hookable
+        ? 0 : UIMenuElementAttributesDisabled;
 
     UIAction *details = [UIAction
         actionWithTitle:@"Hook Details"
@@ -413,6 +443,12 @@ static const void *kFLEXRuntimeHookToggleTargetKey =
     accessory.alignment = UIStackViewAlignmentCenter;
     accessory.spacing = 8.0;
     accessory.accessibilityLabel = entry.statusSummary;
+    CGSize fittingSize = [accessory systemLayoutSizeFittingSize:
+        UILayoutFittingCompressedSize];
+    accessory.frame = (CGRect){CGPointZero, {
+        fittingSize.width,
+        fittingSize.height,
+    }};
     cell.accessoryType = UITableViewCellAccessoryNone;
     cell.accessoryView = accessory;
 

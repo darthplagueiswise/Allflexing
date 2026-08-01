@@ -56,6 +56,28 @@ static void FLEXRestoreBackgroundColor(UIView *view) {
     );
 }
 
+static void FLEXConfigureCorners(UIView *view,
+                                 CGFloat fixedRadius,
+                                 BOOL capsule) {
+    if (!view) {
+        return;
+    }
+#if ALLFLEXING_HAS_UIKIT_GLASS
+    if (@available(iOS 26.0, *)) {
+        view.cornerConfiguration = capsule
+            ? [UICornerConfiguration capsuleConfiguration]
+            : [UICornerConfiguration configurationWithRadius:
+                [UICornerRadius fixedRadius:fixedRadius]];
+        view.layer.cornerRadius = 0.0;
+        view.layer.masksToBounds = YES;
+        return;
+    }
+#endif
+    view.layer.cornerRadius = fixedRadius;
+    view.layer.cornerCurve = kCACornerCurveContinuous;
+    view.layer.masksToBounds = YES;
+}
+
 static BOOL FLEXObjectBelongsToOverlay(id object) {
     NSString *className = NSStringFromClass([object class]);
     return [className hasPrefix:@"FLEX"] ||
@@ -81,6 +103,7 @@ static UIVisualEffectView *FLEXEnsureBackdrop(UIView *view,
     UIVisualEffect *effect = [FLEXLiquidGlass glassEffectInteractive:interactive tint:nil];
     if ([backdrop isKindOfClass:UIVisualEffectView.class]) {
         backdrop.effect = effect;
+        FLEXConfigureCorners(backdrop, cornerRadius, NO);
         return backdrop;
     }
 
@@ -88,9 +111,7 @@ static UIVisualEffectView *FLEXEnsureBackdrop(UIView *view,
     backdrop.tag = tag;
     backdrop.userInteractionEnabled = NO;
     backdrop.translatesAutoresizingMaskIntoConstraints = NO;
-    backdrop.layer.cornerRadius = cornerRadius;
-    backdrop.layer.cornerCurve = kCACornerCurveContinuous;
-    backdrop.layer.masksToBounds = YES;
+    FLEXConfigureCorners(backdrop, cornerRadius, NO);
 
     [view insertSubview:backdrop atIndex:0];
     [NSLayoutConstraint activateConstraints:@[
@@ -257,8 +278,11 @@ static UIViewController *FLEXVisibleViewController(UIViewController *controller)
             frame = CGRectInset(frame, 3.0, 4.0);
             glassView.frame = frame;
             glassView.hidden = control.hidden || control.alpha <= 0.01;
-            glassView.layer.cornerRadius = MIN(18.0, CGRectGetHeight(frame) / 2.0);
-            glassView.layer.cornerCurve = kCACornerCurveContinuous;
+            FLEXConfigureCorners(
+                glassView,
+                MIN(18.0, CGRectGetHeight(frame) / 2.0),
+                YES
+            );
         }];
     } completion:nil];
 }
@@ -344,9 +368,14 @@ static FLEXGlassClusterHostView *FLEXEnsureGlassCluster(UIView *view) {
     bar.translucent = YES;
 
     if (self.isGlassAvailable) {
-        // Standard UIKit bars adopt the SDK 26 design automatically. Leaving
-        // their appearances alone preserves native grouping, transitions, and
-        // scroll-edge behavior instead of replacing them with custom glass.
+        // Standard UIKit bars adopt Liquid Glass only when old opaque/custom
+        // appearances stop overriding the system-provided material.
+        bar.standardAppearance = nil;
+        bar.scrollEdgeAppearance = nil;
+        bar.compactAppearance = nil;
+        if (@available(iOS 15.0, *)) {
+            bar.compactScrollEdgeAppearance = nil;
+        }
         [self styleToolbar:navigationController.toolbar];
         return;
     }
@@ -375,6 +404,10 @@ static FLEXGlassClusterHostView *FLEXEnsureGlassCluster(UIView *view) {
 
     if (self.isGlassAvailable) {
         toolbar.translucent = YES;
+        toolbar.standardAppearance = nil;
+        if (@available(iOS 15.0, *)) {
+            toolbar.scrollEdgeAppearance = nil;
+        }
         return;
     }
 
@@ -397,8 +430,18 @@ static FLEXGlassClusterHostView *FLEXEnsureGlassCluster(UIView *view) {
         return;
     }
 
-    // Liquid Glass is a floating control/navigation layer. The table remains
-    // content so cells do not compete with the bars or stack glass on glass.
+    // Liquid Glass belongs to navigation and controls. On iOS 26 leave content
+    // colors owned by FLEX/UIKit; changing every cell creates stacked dark
+    // slabs and breaks the system's scroll-edge adaptation.
+    if (self.isGlassAvailable) {
+        FLEXRestoreBackgroundColor(tableView);
+        for (UITableViewCell *cell in tableView.visibleCells) {
+            FLEXRestoreBackgroundColor(cell);
+            FLEXRestoreBackgroundColor(cell.contentView);
+        }
+        return;
+    }
+
     FLEXSetRestorableBackgroundColor(tableView, UIColor.systemBackgroundColor);
     tableView.backgroundView = nil;
     tableView.separatorColor = UIColor.separatorColor;
@@ -416,6 +459,7 @@ static FLEXGlassClusterHostView *FLEXEnsureGlassCluster(UIView *view) {
     if (self.isGlassAvailable) {
         // UISearchBar is a standard component and supplies its own Liquid Glass
         // when linked with UIKit 26. Do not stack a custom glass view under it.
+        FLEXRestoreBackgroundColor(searchBar.searchTextField);
         return;
     }
 
@@ -491,6 +535,11 @@ static FLEXGlassClusterHostView *FLEXEnsureGlassCluster(UIView *view) {
         if ([legacyBackground isKindOfClass:UIView.class]) {
             FLEXSetRestorableBackgroundColor(legacyBackground, UIColor.clearColor);
         }
+        for (UIView *subview in view.subviews) {
+            if ([subview isKindOfClass:UIButton.class]) {
+                FLEXSetRestorableBackgroundColor(subview, UIColor.clearColor);
+            }
+        }
         FLEXEnsureGlassCluster(view);
         return;
     }
@@ -513,10 +562,14 @@ static FLEXGlassClusterHostView *FLEXEnsureGlassCluster(UIView *view) {
         return;
     }
 
-    FLEXSetRestorableBackgroundColor(
-        viewController.view,
-        UIColor.systemBackgroundColor
-    );
+    if (self.isGlassAvailable) {
+        FLEXRestoreBackgroundColor(viewController.view);
+    } else {
+        FLEXSetRestorableBackgroundColor(
+            viewController.view,
+            UIColor.systemBackgroundColor
+        );
+    }
     [self styleNavigationController:viewController.navigationController];
     if ([viewController isKindOfClass:UITableViewController.class]) {
         [self styleTableView:((UITableViewController *)viewController).tableView];
@@ -536,9 +589,7 @@ static FLEXGlassClusterHostView *FLEXEnsureGlassCluster(UIView *view) {
             return;
         }
 
-        if ([view isKindOfClass:UIButton.class] && !insideGlassPanel) {
-            [self styleButton:(UIButton *)view prominent:NO];
-        }
+        (void)insideGlassPanel;
     }, NO);
 }
 

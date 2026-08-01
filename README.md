@@ -38,6 +38,10 @@ effective state, persistence, hit counters, errors, and launch reapply. Apply
 re-resolves every target and fails closed when a class, selector, image, symbol,
 ABI, provider, or bind slot no longer matches.
 
+A row switch performs a targeted transaction for that entry only, so its gate
+changes in real time without committing unrelated batch edits. The global
+**Apply** button remains available for pending configuration/batch changes.
+
 Hooks install once. Turning a toggle off changes an atomic gate in the
 replacement, which immediately forwards to the saved original implementation.
 The product does not try to tear down an inline patch while other threads may be
@@ -76,7 +80,7 @@ verified.
 The regular FLEX object explorer is connected to that same runtime registry.
 Supported BOOL methods and BOOL properties receive a native switch directly in
 their metadata row. Their **Runtime Hook** menu provides **Force TRUE**,
-**Force FALSE**, **Forward Original**, **Apply Staged Changes**, **Hook
+**Force FALSE**, **Forward Original**, **Reapply This Hook**, **Hook
 Details**, and **Copy Hook ID** without replacing FLEX's existing navigation or
 copy actions. This integration is generated through Logos for the known
 `FLEXMetadataSection` surface; the selected target is still resolved and
@@ -89,6 +93,10 @@ toolbars, searches, menus, popovers, buttons, and switches keep their native
 iOS 26 behavior. Custom FLEX control surfaces use `UIGlassEffect`; related
 toolbar elements share `UIGlassContainerEffect` so frame changes can merge and
 split as one material.
+
+UIKit 26 bars have legacy background appearances cleared so the system material
+can activate. Custom glass geometry uses adaptive `UICornerConfiguration`;
+fixed layer radii are used only by the pre-iOS-26 fallback.
 
 Glass is limited to the floating navigation/control layer. Tables, cells, code,
 logs, and runtime results remain content, avoiding glass-on-glass composition.
@@ -113,8 +121,9 @@ git submodule update --init --recursive
 
 The build uses explicit Core, HookProviders, HookRuntime, and LiquidGlassUI
 manifests, but all four are source groups in the same Theos target. They do not
-produce helper dylibs. HookProviders adds the hidden namespaced fishhook source
-exactly once and exports a small ABI marker so CI can prove it was linked. The
+produce helper dylibs. HookProviders adds the vendored hidden namespaced
+fishhook source exactly once and exports a small ABI marker so CI can prove it
+was linked. The
 Logos metadata-row integration uses the Substrate-compatible generator. The
 workflow performs the same SDK validation, build, Mach-O audit, package
 collection, and artifact upload automatically.

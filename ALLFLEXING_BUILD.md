@@ -51,8 +51,9 @@ split FLEX/libFLEX back into multiple dylibs.
    prior apply.
 4. It re-resolves and reinstalls only exact persisted targets that remain safe.
 5. Static AllFLEXing hooks and the Logos metadata-row adapter install once.
-6. UI initialization is dispatched to the main queue.
-7. Once scenes/windows exist, FLEX registers the Hook Center and reveal gesture.
+6. A one-shot `UIApplicationDidBecomeActive` observer is installed on main.
+7. First activation re-resolves persisted late targets, removes the observer,
+   and registers the Hook Center, reveal gesture, and visual layer.
 8. Runtime scans occur only when requested and run off the main thread.
 9. dyld image additions are debounced; the callback schedules work and returns
    without scanning or touching UIKit.
@@ -69,6 +70,7 @@ the expected framework is an actual Mach-O dependency rather than an optimistic
 - the ElleKit-specific `EKEnableThreadSafety` export must resolve from that same
   Mach-O base before the UI labels the provider as ElleKit;
 - otherwise the UI reports a generic Substrate-compatible provider;
+- message and inline-function capabilities are measured independently;
 - unavailable providers disable dependent targets and return a concrete error.
 
 ## Objective-C ABI path
@@ -83,7 +85,8 @@ only when:
 - the provider is available and its engine is enabled.
 
 Each signature receives a separate `imp_implementationWithBlock` replacement.
-Apply resolves the class, selector, `Method`, and current type encoding again.
+A row switch resolves the class, selector, `Method`, and current type encoding
+again in a transaction scoped to that entry.
 The original IMP is kept exactly once, hit counts are recorded, and an OFF gate
 returns the native result.
 
@@ -150,15 +153,18 @@ The build is divided into four source manifests:
 - LiquidGlassUI: Hook Center, entry details, Runtime Browsers, autostyle, and
   Liquid Glass components.
 
-These are build-time groups only. The namespaced fishhook source is removed from
-the broad FLEX source glob and added exactly once by HookProviders. Every group,
+These are build-time groups only. The upstream fishhook source is removed from
+the broad FLEX source glob and the vendored provider copy is added exactly once
+by HookProviders. Every group,
 including the `.xm` Logos source, links into the single `AllFLEXing.dylib`
 target.
 
 ## Live toggles
 
-Changing a switch stages a value. Apply revalidates and installs only when
-necessary. Once installed, all replacements remain in place for that process:
+Changing a runtime switch stages and immediately applies only its stable entry
+ID. The global Apply action handles any remaining batch edits. Installation is
+performed only when necessary. Once installed, all replacements remain in place
+for that process:
 
 - ON returns the configured forced value;
 - OFF calls the saved original implementation immediately;
@@ -177,6 +183,10 @@ Stock iOS cannot relaunch a jailed app, so the user opens it again manually.
 - Effect materialization animates `effect`, not just alpha.
 - Merge/split morphing animates frames inside the shared container.
 - Runtime tables/cells remain content and do not receive a glass panel each.
+- Standard bars clear legacy appearances and custom effects use adaptive
+  `UICornerConfiguration` on iOS 26.
+- Custom cell accessories receive an explicit fitting frame before assignment,
+  preventing switches from overlapping metadata text.
 - Action sheets are anchored to their source cell/item for native transitions.
 - Reduce Motion suppresses optional toolbar and custom material morphing
   animations.

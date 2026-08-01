@@ -4,7 +4,8 @@
 ALLFLEXING_HOOK_PROVIDER_SOURCES := \
 	$(ALLFLEXING_ROOT)/FLEXCHookEngine.m \
 	$(ALLFLEXING_ROOT)/FLEXHooking.m \
-	$(ALLFLEXING_ROOT)/FLEXSymbolRebind.m
+	$(ALLFLEXING_ROOT)/FLEXSymbolRebind.m \
+	$(ALLFLEXING_ROOT)/flex_fishhook.c
 
 ALLFLEXING_EMBEDDED_FISHHOOK_SOURCES := \
-	$(FLEX_ROOT)/Classes/Utility/Runtime/flex_fishhook.c
+	$(ALLFLEXING_ROOT)/flex_fishhook.c

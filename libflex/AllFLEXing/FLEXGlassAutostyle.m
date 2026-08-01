@@ -6,6 +6,7 @@
 #import <UIKit/UIKit.h>
 
 static void (*FLEXOriginalViewDidAppear)(UIViewController *, SEL, BOOL);
+static void (*FLEXOriginalViewWillAppear)(UIViewController *, SEL, BOOL);
 
 static BOOL FLEXIsOverlayViewController(UIViewController *controller) {
     NSString *className = NSStringFromClass(controller.class);
@@ -27,6 +28,23 @@ static void FLEXReplacementViewDidAppear(UIViewController *controller,
 
     if (FLEXFlag(@"hook.flex_ui_autostyle") && FLEXIsOverlayViewController(controller)) {
         [FLEXLiquidGlass applyToViewController:controller];
+        __weak UIViewController *weakController = controller;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            UIViewController *strongController = weakController;
+            [strongController.view layoutIfNeeded];
+            [FLEXLiquidGlass applyToViewController:strongController];
+        });
+    }
+}
+
+static void FLEXReplacementViewWillAppear(UIViewController *controller,
+                                          SEL selector,
+                                          BOOL animated) {
+    if (FLEXOriginalViewWillAppear) {
+        FLEXOriginalViewWillAppear(controller, selector, animated);
+    }
+    if (FLEXFlag(@"hook.flex_ui_autostyle") && FLEXIsOverlayViewController(controller)) {
+        [FLEXLiquidGlass applyToViewController:controller];
     }
 }
 
@@ -35,12 +53,19 @@ BOOL FLEXGlassAutostyleInstall(void) {
     static BOOL installed;
     static id flagsObserver;
     dispatch_once(&onceToken, ^{
-        installed = FLEXHookMessage(
+        BOOL earlyInstalled = FLEXHookMessage(
+            UIViewController.class,
+            @selector(viewWillAppear:),
+            (IMP)FLEXReplacementViewWillAppear,
+            (IMP *)&FLEXOriginalViewWillAppear
+        );
+        BOOL reconciliationInstalled = FLEXHookMessage(
             UIViewController.class,
             @selector(viewDidAppear:),
             (IMP)FLEXReplacementViewDidAppear,
             (IMP *)&FLEXOriginalViewDidAppear
         );
+        installed = earlyInstalled && reconciliationInstalled;
 
         flagsObserver = [NSNotificationCenter.defaultCenter
             addObserverForName:FLEXHookFlagsDidChangeNotification

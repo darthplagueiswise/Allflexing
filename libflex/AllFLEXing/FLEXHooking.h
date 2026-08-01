@@ -23,6 +23,11 @@ FOUNDATION_EXPORT BOOL FLEXHookFunctionIfAvailable(void *symbol,
                                                    void *replacement,
                                                    void * _Nullable * _Nullable original);
 
+/// Capability checks are deliberately independent. A valid Objective-C hook
+/// must not be hidden just because the loaded provider does not expose the
+/// inline-function API (and vice versa).
+FOUNDATION_EXPORT BOOL FLEXMSHookMessageProviderAvailable(void);
+FOUNDATION_EXPORT BOOL FLEXMSHookFunctionProviderAvailable(void);
 FOUNDATION_EXPORT BOOL FLEXMSHookProviderAvailable(void);
 FOUNDATION_EXPORT BOOL FLEXMSHookProviderIsElleKit(void);
 FOUNDATION_EXPORT NSString *FLEXMSHookProviderName(void);

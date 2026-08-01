@@ -61,6 +61,9 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
                 style:UIBarButtonItemStylePlain
                target:self
                action:@selector(applyAndRestart)];
+    if (@available(iOS 26.0, *)) {
+        self.applyItem.style = UIBarButtonItemStyleProminent;
+    }
 
     [NSNotificationCenter.defaultCenter
         addObserver:self
@@ -146,6 +149,13 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
         initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace
                              target:nil
                              action:nil];
+    if (@available(iOS 26.0, *)) {
+        // These actions have different consequences. Keep the flexible spaces
+        // as real glass separators; the system can then give Apply its own
+        // prominent material instead of stretching one giant pill edge-to-edge.
+        flexibleA.hidesSharedBackground = YES;
+        flexibleB.hidesSharedBackground = YES;
+    }
     NSArray *items = @[
         self.discardItem,
         flexibleA,
@@ -210,9 +220,9 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
             cell.textLabel.text = @"Engines";
             cell.detailTextLabel.text = [NSString stringWithFormat:
                 @"Objective-C: %@\nC imports: %@\nC inline: %@",
-                FLEXMSHookProviderAvailable() ? @"MSHookMessageEx ready" : @"unavailable",
+                FLEXMSHookMessageProviderAvailable() ? @"MSHookMessageEx ready" : @"unavailable",
                 FLEXSymbolRebind.backendDescription,
-                FLEXMSHookProviderAvailable() ? @"MSHookFunction ready" : @"unavailable"];
+                FLEXMSHookFunctionProviderAvailable() ? @"MSHookFunction ready" : @"unavailable"];
             cell.imageView.image = [UIImage systemImageNamed:@"gearshape.2.fill"];
         } else {
             cell.textLabel.text = @"Runtime summary";
@@ -324,7 +334,21 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
         entry.effectiveEnabled ? @"bolt.circle.fill" : @"circle.dashed"];
     cell.imageView.tintColor = entry.effectiveEnabled
         ? UIColor.systemGreenColor : UIColor.secondaryLabelColor;
-    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    UISwitch *toggle = [UISwitch new];
+    toggle.on = entry.pendingEnabled;
+    toggle.enabled = (entry.available && entry.hookable) || entry.pendingEnabled;
+    toggle.accessibilityLabel = [NSString stringWithFormat:@"Runtime hook for %@",
+        entry.title];
+    toggle.accessibilityValue = entry.statusSummary;
+    objc_setAssociatedObject(toggle,
+                             kFLEXHookCenterIdentifierKey,
+                             entry.identifier,
+                             OBJC_ASSOCIATION_COPY_NONATOMIC);
+    [toggle addTarget:self
+               action:@selector(hookToggleChanged:)
+     forControlEvents:UIControlEventValueChanged];
+    cell.accessoryView = toggle;
+    cell.accessoryType = UITableViewCellAccessoryNone;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
@@ -343,7 +367,7 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     (void)tableView;
     if (section == FLEXHookCenterSectionPending) {
-        return @"Switches stage changes. Apply re-resolves the target, revalidates ABI/provider, installs once, and then persists.";
+        return @"Runtime switches apply one target immediately. Apply commits any remaining batch edits after revalidating target, ABI and provider.";
     }
     if (section == FLEXHookCenterSectionActive) {
         return @"An OFF installed hook forwards to the original implementation; physical unhooking is intentionally avoided at runtime.";
@@ -390,6 +414,34 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
     [FLEXHookPersistence.sharedManager setBool:toggle.isOn forFlag:identifier];
     UISelectionFeedbackGenerator *feedback = [UISelectionFeedbackGenerator new];
     [feedback selectionChanged];
+}
+
+- (void)hookToggleChanged:(UISwitch *)toggle {
+    NSString *identifier = objc_getAssociatedObject(toggle, kFLEXHookCenterIdentifierKey);
+    FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
+    BOOL requestedState = toggle.isOn;
+    [registry stageEnabled:requestedState forEntryIdentifier:identifier];
+    FLEXHookEntry *entry = [registry entryForIdentifier:identifier];
+    if (!entry || entry.pendingEnabled != requestedState) {
+        UINotificationFeedbackGenerator *feedback = [UINotificationFeedbackGenerator new];
+        [feedback notificationOccurred:UINotificationFeedbackTypeError];
+        [self reloadState];
+        return;
+    }
+
+    UISelectionFeedbackGenerator *selection = [UISelectionFeedbackGenerator new];
+    [selection selectionChanged];
+    __weak typeof(self) weakSelf = self;
+    [registry applyEntryIdentifier:identifier completion:^(
+        __unused NSArray<FLEXHookEntry *> *applied,
+        NSArray<FLEXHookEntry *> *failed
+    ) {
+        UINotificationFeedbackGenerator *feedback = [UINotificationFeedbackGenerator new];
+        [feedback notificationOccurred:failed.count
+            ? UINotificationFeedbackTypeError
+            : UINotificationFeedbackTypeSuccess];
+        [weakSelf reloadState];
+    }];
 }
 
 - (void)discardPending {

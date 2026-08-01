@@ -375,7 +375,7 @@ static NSInteger FLEXReserveSlot(FLEXHookEntry *entry) {
             return NO;
         }
         void *address = FLEXCHookResolveSymbolForLocator(symbol, entry.locator);
-        if (address && FLEXMSHookProviderAvailable()) {
+        if (address && FLEXMSHookFunctionProviderAvailable()) {
             installed = FLEXHookFunctionIfAvailable(address, replacement, &slot->original);
         }
     }
@@ -444,7 +444,7 @@ static NSInteger FLEXReserveSlot(FLEXHookEntry *entry) {
         entry.hookable = entry.available && entry.abi != FLEXHookABIUnknown &&
                          FLEXFlag(@"engine.fishhook");
     } else if (backend == FLEXHookBackendInlineElleKit) {
-        entry.available = hasAddress && FLEXMSHookProviderAvailable();
+        entry.available = hasAddress && FLEXMSHookFunctionProviderAvailable();
         entry.hookable = entry.available && entry.abi != FLEXHookABIUnknown &&
                          FLEXFlag(@"engine.inline_ellekit");
     } else {

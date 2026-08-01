@@ -16,6 +16,9 @@ grep -R "UIGlassContainerEffect" "$headers" >/dev/null
 grep -R "UIGlassEffectStyleRegular" "$headers" >/dev/null
 grep -R "glassButtonConfiguration" "$headers" >/dev/null
 grep -R "prominentGlassButtonConfiguration" "$headers" >/dev/null
+grep -R "UICornerConfiguration" "$headers" >/dev/null
+grep -R "cornerConfiguration" "$headers" >/dev/null
+grep -R "hidesSharedBackground" "$headers" >/dev/null
 
 grep -q "iphone:clang:26.2:16.3" Makefile
 grep -q "iphone:clang:26.2:16.3" libflex/Makefile
@@ -28,6 +31,7 @@ grep -q 'include modules/HookProviders/Module.mk' libflex/Makefile
 grep -q 'include modules/LiquidGlassUI/Module.mk' libflex/Makefile
 grep -q 'FLEX_FISHHOOK_SOURCE' libflex/Makefile
 grep -q 'ALLFLEXING_EMBEDDED_FISHHOOK_SOURCES' libflex/Makefile
+grep -q 'FLEX_UPSTREAM_FISHHOOK_SOURCE' libflex/Makefile
 grep -q 'LOGOS_DEFAULT_GENERATOR := MobileSubstrate' libflex/Makefile
 grep -Fq '$(TWEAK_NAME)_USE_MODULES := 0' libflex/Makefile
 grep -Eq '\$\(TWEAK_NAME\)_LIBRARIES[[:space:]]*:=[^#]*substrate' libflex/Makefile
@@ -46,6 +50,20 @@ test -f libflex/AllFLEXing/FLEXRuntimeHookActions.m
 test -f libflex/AllFLEXing/FLEXRuntimeHookIntegration.xm
 grep -q '%hook FLEXMetadataSection' libflex/AllFLEXing/FLEXRuntimeHookIntegration.xm
 grep -q 'FLEXEmbeddedFishhookAvailable' libflex/AllFLEXing/FLEXSymbolRebind.m
+grep -q 'FLEXMSHookMessageProviderAvailable' libflex/AllFLEXing/FLEXHooking.m
+grep -q 'FLEXMSHookFunctionProviderAvailable' libflex/AllFLEXing/FLEXHooking.m
+grep -q 'applyEntryIdentifier' libflex/AllFLEXing/FLEXHookRegistry.m
+grep -q 'runtime-toggle-applied' libflex/AllFLEXing/FLEXHookRegistry.m
+grep -q 'UIApplicationDidBecomeActiveNotification' libflex/AllFLEXing/AllFLEXingLoader.m
+grep -q 'cornerConfiguration' libflex/AllFLEXing/FLEXLiquidGlass.m
+grep -q 'hidesSharedBackground' libflex/AllFLEXing/FLEXHookToggles.m
+grep -q 'vm_protect' libflex/AllFLEXing/flex_fishhook.c
+grep -q 'VM_PROT_COPY' libflex/AllFLEXing/flex_fishhook.c
+grep -q 'systemLayoutSizeFittingSize' libflex/AllFLEXing/FLEXRuntimeHookActions.m
+if grep -q 'mprotect[[:space:]]*(' libflex/AllFLEXing/flex_fishhook.c; then
+    echo "error: legacy mprotect fishhook path is not allowed" >&2
+    exit 1
+fi
 
 if grep -q 'GENERATOR[[:space:]]*:=[[:space:]]*internal' libflex/Makefile; then
     echo "error: internal Logos generator cannot provide the required C hook backend" >&2

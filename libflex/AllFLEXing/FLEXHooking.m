@@ -111,6 +111,12 @@ static BOOL FLEXHookMessageInternal(Class targetClass,
         return NO;
     }
 
+    // A provider that cannot report the displaced implementation did not
+    // produce a reversible hook. Never cache or expose such an installation.
+    if (!capturedOriginal) {
+        return NO;
+    }
+
     @synchronized (installed) {
         installed[key] = [NSValue valueWithPointer:capturedOriginal];
     }
@@ -146,9 +152,17 @@ BOOL FLEXHookFunctionIfAvailable(void *symbol,
     return *outOriginal != NULL;
 }
 
+BOOL FLEXMSHookMessageProviderAvailable(void) {
+    return FLEXResolveMSHookMessageEx() != NULL;
+}
+
+BOOL FLEXMSHookFunctionProviderAvailable(void) {
+    return FLEXResolveMSHookFunction() != NULL;
+}
+
 BOOL FLEXMSHookProviderAvailable(void) {
-    return FLEXResolveMSHookMessageEx() != NULL &&
-           FLEXResolveMSHookFunction() != NULL;
+    return FLEXMSHookMessageProviderAvailable() ||
+           FLEXMSHookFunctionProviderAvailable();
 }
 
 static BOOL FLEXProviderInfoForAddress(void *address, Dl_info *info) {
@@ -160,8 +174,12 @@ static BOOL FLEXProviderInfoForAddress(void *address, Dl_info *info) {
 }
 
 NSString *FLEXMSHookProviderPath(void) {
+    void *providerAddress = (void *)FLEXResolveMSHookMessageEx();
+    if (!providerAddress) {
+        providerAddress = (void *)FLEXResolveMSHookFunction();
+    }
     Dl_info info;
-    if (!FLEXProviderInfoForAddress((void *)FLEXResolveMSHookMessageEx(), &info)) {
+    if (!FLEXProviderInfoForAddress(providerAddress, &info)) {
         return @"Unavailable";
     }
     return [NSString stringWithUTF8String:info.dli_fname] ?: @"Unknown image";
@@ -175,7 +193,11 @@ BOOL FLEXMSHookProviderIsElleKit(void) {
 
     Dl_info hookInfo;
     Dl_info markerInfo;
-    if (!FLEXProviderInfoForAddress((void *)FLEXResolveMSHookMessageEx(), &hookInfo) ||
+    void *providerAddress = (void *)FLEXResolveMSHookMessageEx();
+    if (!providerAddress) {
+        providerAddress = (void *)FLEXResolveMSHookFunction();
+    }
+    if (!FLEXProviderInfoForAddress(providerAddress, &hookInfo) ||
         !FLEXProviderInfoForAddress(marker, &markerInfo)) {
         return NO;
     }
@@ -197,7 +219,7 @@ NSString *FLEXMSHookProviderName(void) {
 }
 
 NSString *FLEXMessageHookBackend(void) {
-    return FLEXResolveMSHookMessageEx()
+    return FLEXMSHookMessageProviderAvailable()
         ? [NSString stringWithFormat:@"MSHookMessageEx · %@", FLEXMSHookProviderName()]
         : @"Objective-C runtime (degraded fallback)";
 }

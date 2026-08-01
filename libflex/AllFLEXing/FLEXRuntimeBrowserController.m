@@ -294,7 +294,7 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
     (void)tableView;
     (void)section;
     return self.kind == FLEXRuntimeBrowserKindObjectiveC
-        ? @"Only ABI-validated BOOL methods are toggleable. Apply revalidates the Method and type encoding."
+        ? @"Only ABI-validated BOOL methods are toggleable. Each switch revalidates and applies its target immediately."
         : @"Imported symbols are listed from Mach-O bind sections. A C toggle remains disabled until an explicit ABI is selected.";
 }
 
@@ -308,10 +308,29 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
 
 - (void)toggleChanged:(UISwitch *)toggle {
     NSString *identifier = objc_getAssociatedObject(toggle, kFLEXRuntimeBrowserEntryIDKey);
-    [FLEXHookRegistry.sharedRegistry stageEnabled:toggle.isOn
-                               forEntryIdentifier:identifier];
+    FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
+    BOOL requestedState = toggle.isOn;
+    [registry stageEnabled:requestedState forEntryIdentifier:identifier];
+    FLEXHookEntry *entry = [registry entryForIdentifier:identifier];
+    if (!entry || entry.pendingEnabled != requestedState) {
+        UINotificationFeedbackGenerator *feedback = [UINotificationFeedbackGenerator new];
+        [feedback notificationOccurred:UINotificationFeedbackTypeError];
+        [self reloadEntries];
+        return;
+    }
     UISelectionFeedbackGenerator *feedback = [UISelectionFeedbackGenerator new];
     [feedback selectionChanged];
+    __weak typeof(self) weakSelf = self;
+    [registry applyEntryIdentifier:identifier completion:^(
+        __unused NSArray<FLEXHookEntry *> *applied,
+        NSArray<FLEXHookEntry *> *failed
+    ) {
+        UINotificationFeedbackGenerator *resultFeedback = [UINotificationFeedbackGenerator new];
+        [resultFeedback notificationOccurred:failed.count
+            ? UINotificationFeedbackTypeError
+            : UINotificationFeedbackTypeSuccess];
+        [weakSelf reloadEntries];
+    }];
 }
 
 @end

@@ -23,6 +23,13 @@ The binary has 15,839 symbol-table records, 7,170 non-debug definitions, 489
 exports, and 2,037 imports. Its Objective-C inventory contains 170 defined class
 symbols, 329 class-name strings, 313 imported classes, and 4,551 selectors.
 
+The complete arm64 disassembly covers every byte in all three executable
+sections. It contains 299,875 lines (17,818,905 bytes) plus a 6,019,545-byte
+machine-readable index with symbol ranges, raw instruction bytes, branch
+destinations, and cross-references. Their SHA-256 values are respectively
+`0054e16c6a04fd435e2c756c47b1c51b432f30ca36edb189dd834cf0616d93eb`
+and `a716309bc186c2b846a8d60007369c849c61f58fce2abe002c11a7622278e6aa`.
+
 ## What is genuinely unified
 
 The latest reference exports the compatibility functions `FLXGetManager`,
@@ -48,7 +55,9 @@ in the first uploaded binary:
 The rebuilt implementation keeps this contextual surface but routes it through
 the stronger shared registry. It additionally supports the already validated
 one-object and one-integer Objective-C BOOL profiles, separates pending,
-desired, installed, and effective states, and requires explicit Apply.
+desired, installed, and effective states, and applies a contextual switch to
+exactly that target in real time. Batch configuration still has an explicit
+Apply transaction.
 
 ## fishhook, Logos, and the hook provider
 
@@ -69,8 +78,10 @@ The provider framework still has to be present in the signed app.
 
 The rebuilt target makes these boundaries explicit:
 
-- namespaced fishhook C source is compiled exactly once as an in-dylib provider
-  module;
+- namespaced fishhook C source is vendored outside the FLEX submodule and
+  compiled exactly once as an in-dylib provider module;
+- its iOS 15+ path uses `vm_protect` with copy-on-write protection and reports
+  success only after replacing a real bind slot;
 - exported `FLEXEmbeddedFishhookAvailable` and ABI-version symbols create a
   verifiable strong link to both hidden fishhook entry points;
 - known FLEX metadata-row integration is compiled through Logos;

@@ -18,7 +18,8 @@ dtoim = $(foreach d,$(1),-I$(d))
 FLEX_SOURCES  := $(shell find $(FLEX_ROOT)/Classes -type f -name '*.c' | sort)
 FLEX_SOURCES += $(shell find $(FLEX_ROOT)/Classes -type f -name '*.m' | sort)
 FLEX_SOURCES += $(shell find $(FLEX_ROOT)/Classes -type f -name '*.mm' | sort)
-FLEX_SOURCES := $(filter-out $(ALLFLEXING_EMBEDDED_FISHHOOK_SOURCES),$(FLEX_SOURCES))
+FLEX_UPSTREAM_FISHHOOK_SOURCE := $(FLEX_ROOT)/Classes/Utility/Runtime/flex_fishhook.c
+FLEX_SOURCES := $(filter-out $(FLEX_UPSTREAM_FISHHOOK_SOURCE),$(FLEX_SOURCES))
 ALLFLEXING_SOURCES := $(sort \
 	$(ALLFLEXING_CORE_SOURCES) \
 	$(ALLFLEXING_HOOK_PROVIDER_SOURCES) \
@@ -30,7 +31,7 @@ ifneq ($(sort $(ALLFLEXING_SOURCES)),$(sort $(ALLFLEXING_DISCOVERED_SOURCES)))
 $(error AllFLEXing module manifests do not match the source tree)
 endif
 
-FLEX_FISHHOOK_SOURCE := $(FLEX_ROOT)/Classes/Utility/Runtime/flex_fishhook.c
+FLEX_FISHHOOK_SOURCE := $(ALLFLEXING_ROOT)/flex_fishhook.c
 ifneq ($(ALLFLEXING_EMBEDDED_FISHHOOK_SOURCES),$(FLEX_FISHHOOK_SOURCE))
 $(error namespaced fishhook source is missing from the unified target)
 endif
@@ -43,7 +44,7 @@ IMPORTS := -I$(FLEX_ROOT)/Classes -I$(ALLFLEXING_ROOT) $(call dtoim,$(_IMPORTS))
 
 TWEAK_NAME := AllFLEXing
 
-$(TWEAK_NAME)_FILES := $(FLEX_SOURCES) $(ALLFLEXING_SOURCES) $(ALLFLEXING_EMBEDDED_FISHHOOK_SOURCES)
+$(TWEAK_NAME)_FILES := $(FLEX_SOURCES) $(ALLFLEXING_SOURCES)
 $(TWEAK_NAME)_FRAMEWORKS := Foundation CoreGraphics UIKit ImageIO QuartzCore SceneKit Security WebKit AVFoundation UserNotifications
 $(TWEAK_NAME)_LIBRARIES := sqlite3 z c++ substrate
 $(TWEAK_NAME)_USE_MODULES := 0

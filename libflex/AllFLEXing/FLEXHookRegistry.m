@@ -209,6 +209,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
 @property (nonatomic, readwrite) BOOL safeMode;
 @property (nonatomic, copy, readwrite, nullable) NSString *safeModeEntryIdentifier;
 @property (nonatomic, readwrite, getter=isApplying) BOOL applying;
+@property (nonatomic) NSUInteger applyOperationCount;
 @property (nonatomic) BOOL bootstrapped;
 @end
 
@@ -564,6 +565,9 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     }
     entry.forceValue = forceValue;
     entry.userConfigured = YES;
+    if (entry.installed) {
+        [FLEXCHookEngine setEnabled:entry.effectiveEnabled forEntry:entry];
+    }
     [self persistEntries];
     [self postChange:@"force"];
 }
@@ -634,26 +638,46 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     return count;
 }
 
-- (void)applyPendingWithCompletion:(FLEXHookApplyCompletion)completion {
+- (void)beginApplyOperation {
     @synchronized (self) {
-        if (self.applying) {
-            if (completion) {
-                completion(@[], @[]);
-            }
-            return;
-        }
+        self.applyOperationCount += 1;
         self.applying = YES;
     }
     [self postChange:@"apply-start"];
+}
+
+- (void)finishApplyOperationWithReason:(NSString *)reason
+                               applied:(NSArray<FLEXHookEntry *> *)applied
+                                failed:(NSArray<FLEXHookEntry *> *)failed
+                            completion:(FLEXHookApplyCompletion)completion {
+    @synchronized (self) {
+        if (self.applyOperationCount > 0) {
+            self.applyOperationCount -= 1;
+        }
+        self.applying = self.applyOperationCount > 0;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self postChange:reason ?: @"apply-finish"];
+        if (completion) {
+            completion(applied, failed);
+        }
+    });
+}
+
+- (void)applyEntries:(NSArray<FLEXHookEntry *> *)entries
+                force:(BOOL)force
+               reason:(NSString *)reason
+           completion:(FLEXHookApplyCompletion)completion {
+    [self beginApplyOperation];
 
     dispatch_async(self.queue, ^{
         NSMutableArray<FLEXHookEntry *> *applied = [NSMutableArray array];
         NSMutableArray<FLEXHookEntry *> *failed = [NSMutableArray array];
 
-        for (FLEXHookEntry *entry in self.entries) {
+        for (FLEXHookEntry *entry in entries) {
             BOOL needsStateChange = entry.pendingEnabled != entry.desiredEnabled;
             BOOL needsInstall = entry.pendingEnabled && !entry.installed;
-            if (!needsStateChange && !needsInstall) {
+            if (!force && !needsStateChange && !needsInstall) {
                 continue;
             }
 
@@ -675,10 +699,13 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
                 continue;
             }
 
-            [self markApplyInFlight:entry];
             NSError *error = nil;
-            BOOL installed = entry.installed || [self installEntry:entry error:&error];
-            [self clearApplyInFlight];
+            BOOL installed = entry.installed;
+            if (!installed) {
+                [self markApplyInFlight:entry];
+                installed = [self installEntry:entry error:&error];
+                [self clearApplyInFlight];
+            }
             if (!installed) {
                 entry.lastError = error.localizedDescription ?: @"Hook provider rejected the target";
                 entry.pendingEnabled = entry.desiredEnabled;
@@ -696,16 +723,35 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
         }
 
         [self persistEntries];
-        @synchronized (self) {
-            self.applying = NO;
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self postChange:@"apply-finish"];
-            if (completion) {
-                completion(applied.copy, failed.copy);
-            }
-        });
+        [self finishApplyOperationWithReason:reason
+                                    applied:applied.copy
+                                     failed:failed.copy
+                                 completion:completion];
     });
+}
+
+- (void)applyPendingWithCompletion:(FLEXHookApplyCompletion)completion {
+    [self applyEntries:self.entries
+                 force:NO
+                reason:@"apply-finish"
+            completion:completion];
+}
+
+- (void)applyEntryIdentifier:(NSString *)identifier
+                  completion:(FLEXHookApplyCompletion)completion {
+    FLEXHookEntry *entry = [self entryForIdentifier:identifier];
+    if (!entry) {
+        if (completion) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                completion(@[], @[]);
+            });
+        }
+        return;
+    }
+    [self applyEntries:@[entry]
+                 force:YES
+                reason:@"runtime-toggle-applied"
+            completion:completion];
 }
 
 - (BOOL)installEntry:(FLEXHookEntry *)entry error:(NSError **)error {
@@ -891,7 +937,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
             ? entry.locator[@"encoding"] : nil;
         entry.available = method != NULL && (!saved.length || [saved isEqualToString:encoding]);
         entry.hookable = entry.available && entry.abi != FLEXHookABIUnknown &&
-                         FLEXMSHookProviderAvailable() &&
+                         FLEXMSHookMessageProviderAvailable() &&
                          FLEXFlag(@"engine.objc_ellekit");
         entry.stale = !entry.available;
         return;
