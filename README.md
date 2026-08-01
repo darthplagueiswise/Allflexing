@@ -40,7 +40,9 @@ glass button configurations. On iOS 15-25 it falls back to system material.
 Glass is intentionally limited to FLEX's navigation and control layer. Tables
 remain content, and the code avoids glass-on-glass composition. This follows
 Apple's Liquid Glass hierarchy instead of applying blur indiscriminately to
-every cell in the overlay.
+every cell in the overlay. The custom explorer toolbar groups its button glass
+views in one container and animates their frames/effects, allowing UIKit's
+native materialization and merge/split morphing.
 
 ## Build
 

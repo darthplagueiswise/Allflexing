@@ -14,8 +14,47 @@
 static NSInteger const kFLEXLiquidGlassBackdropTag = 0xF1E02601;
 static NSInteger const kFLEXLiquidGlassPanelTag = 0xF1E02602;
 static NSInteger const kFLEXLiquidGlassSearchTag = 0xF1E02603;
+static NSInteger const kFLEXLiquidGlassClusterTag = 0xF1E02604;
 static const void *kFLEXLiquidGlassOriginalButtonConfigurationKey =
     &kFLEXLiquidGlassOriginalButtonConfigurationKey;
+static const void *kFLEXLiquidGlassOriginalBackgroundColorKey =
+    &kFLEXLiquidGlassOriginalBackgroundColorKey;
+
+static BOOL FLEXIsManagedGlassView(UIView *view) {
+    return view.tag == kFLEXLiquidGlassBackdropTag ||
+           view.tag == kFLEXLiquidGlassPanelTag ||
+           view.tag == kFLEXLiquidGlassSearchTag ||
+           view.tag == kFLEXLiquidGlassClusterTag;
+}
+
+static void FLEXSetRestorableBackgroundColor(UIView *view, UIColor *color) {
+    if (!view) {
+        return;
+    }
+    if (!objc_getAssociatedObject(view, kFLEXLiquidGlassOriginalBackgroundColorKey)) {
+        objc_setAssociatedObject(
+            view,
+            kFLEXLiquidGlassOriginalBackgroundColorKey,
+            view.backgroundColor ?: NSNull.null,
+            OBJC_ASSOCIATION_RETAIN_NONATOMIC
+        );
+    }
+    view.backgroundColor = color;
+}
+
+static void FLEXRestoreBackgroundColor(UIView *view) {
+    id original = objc_getAssociatedObject(view, kFLEXLiquidGlassOriginalBackgroundColorKey);
+    if (!original) {
+        return;
+    }
+    view.backgroundColor = original == NSNull.null ? nil : original;
+    objc_setAssociatedObject(
+        view,
+        kFLEXLiquidGlassOriginalBackgroundColorKey,
+        nil,
+        OBJC_ASSOCIATION_RETAIN_NONATOMIC
+    );
+}
 
 static BOOL FLEXObjectBelongsToOverlay(id object) {
     NSString *className = NSStringFromClass([object class]);
@@ -74,18 +113,14 @@ static void FLEXWalkViewTree(UIView *view, void (^block)(UIView *view, BOOL insi
     // would incorrectly mark an entire screen as being inside one toolbar panel.
     BOOL ownsPanel = NO;
     for (UIView *subview in view.subviews) {
-        if (subview.tag == kFLEXLiquidGlassBackdropTag ||
-            subview.tag == kFLEXLiquidGlassPanelTag ||
-            subview.tag == kFLEXLiquidGlassSearchTag) {
+        if (FLEXIsManagedGlassView(subview)) {
             ownsPanel = YES;
             break;
         }
     }
     BOOL isPanel = insidePanel || ownsPanel;
     for (UIView *subview in view.subviews) {
-        if (subview.tag == kFLEXLiquidGlassBackdropTag ||
-            subview.tag == kFLEXLiquidGlassPanelTag ||
-            subview.tag == kFLEXLiquidGlassSearchTag) {
+        if (FLEXIsManagedGlassView(subview)) {
             continue;
         }
         FLEXWalkViewTree(subview, block, isPanel);
@@ -106,6 +141,157 @@ static UIViewController *FLEXVisibleViewController(UIViewController *controller)
         return FLEXVisibleViewController(((UITabBarController *)controller).selectedViewController);
     }
     return controller;
+}
+
+/// Hosts one UIGlassContainerEffect and a separate UIGlassEffect behind each
+/// direct toolbar button. The buttons remain owned by FLEX, while the glass
+/// views share the container required for uniform adaptation and morphing.
+@interface FLEXGlassClusterHostView : UIView
+
+@property (nonatomic, weak) UIView *sourceView;
+@property (nonatomic) UIVisualEffectView *containerView;
+@property (nonatomic) NSMutableArray<UIVisualEffectView *> *glassViews;
+
+- (instancetype)initWithSourceView:(UIView *)sourceView
+                     containerEffect:(UIVisualEffect *)containerEffect;
+- (void)updateContainerEffect:(UIVisualEffect *)containerEffect;
+
+@end
+
+@implementation FLEXGlassClusterHostView
+
+- (instancetype)initWithSourceView:(UIView *)sourceView
+                     containerEffect:(UIVisualEffect *)containerEffect {
+    self = [super initWithFrame:sourceView.bounds];
+    if (self) {
+        _sourceView = sourceView;
+        _glassViews = [NSMutableArray array];
+        _containerView = [[UIVisualEffectView alloc] initWithEffect:containerEffect];
+        _containerView.userInteractionEnabled = NO;
+        [self addSubview:_containerView];
+
+        self.userInteractionEnabled = NO;
+        self.backgroundColor = UIColor.clearColor;
+        self.autoresizingMask = UIViewAutoresizingFlexibleWidth |
+                                UIViewAutoresizingFlexibleHeight;
+    }
+    return self;
+}
+
+- (void)updateContainerEffect:(UIVisualEffect *)containerEffect {
+    self.containerView.effect = containerEffect;
+    [self setNeedsLayout];
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    self.containerView.frame = self.bounds;
+
+    NSMutableArray<UIView *> *controls = [NSMutableArray array];
+    for (UIView *candidate in self.sourceView.subviews) {
+        if (candidate != self && [candidate isKindOfClass:UIButton.class]) {
+            [controls addObject:candidate];
+        }
+    }
+    [controls sortUsingComparator:^NSComparisonResult(UIView *left, UIView *right) {
+        CGFloat leftX = CGRectGetMinX(left.frame);
+        CGFloat rightX = CGRectGetMinX(right.frame);
+        if (leftX < rightX) {
+            return NSOrderedAscending;
+        }
+        if (leftX > rightX) {
+            return NSOrderedDescending;
+        }
+        return NSOrderedSame;
+    }];
+
+    while (self.glassViews.count < controls.count) {
+        UIVisualEffect *glass =
+            [FLEXLiquidGlass glassEffectInteractive:NO tint:nil];
+        UIVisualEffectView *glassView =
+            [[UIVisualEffectView alloc] initWithEffect:nil];
+        glassView.userInteractionEnabled = NO;
+        glassView.accessibilityElementsHidden = YES;
+        glassView.layer.masksToBounds = YES;
+        [self.containerView.contentView addSubview:glassView];
+        [self.glassViews addObject:glassView];
+
+        // Setting effect, rather than alpha, gives UIKit the native glass
+        // materialization transition inside the shared container.
+        [UIView animateWithDuration:0.24
+                              delay:0.0
+                            options:UIViewAnimationOptionBeginFromCurrentState |
+                                    UIViewAnimationOptionAllowUserInteraction
+                         animations:^{
+            glassView.effect = glass;
+        } completion:nil];
+    }
+
+    while (self.glassViews.count > controls.count) {
+        UIVisualEffectView *glassView = self.glassViews.lastObject;
+        [self.glassViews removeLastObject];
+        [UIView animateWithDuration:0.20
+                              delay:0.0
+                            options:UIViewAnimationOptionBeginFromCurrentState |
+                                    UIViewAnimationOptionAllowUserInteraction
+                         animations:^{
+            glassView.effect = nil;
+        } completion:^(__unused BOOL finished) {
+            [glassView removeFromSuperview];
+        }];
+    }
+
+    [UIView animateWithDuration:0.28
+                          delay:0.0
+                        options:UIViewAnimationOptionBeginFromCurrentState |
+                                UIViewAnimationOptionAllowUserInteraction |
+                                UIViewAnimationOptionCurveEaseInOut
+                     animations:^{
+        [controls enumerateObjectsUsingBlock:^(UIView *control, NSUInteger index, BOOL *stop) {
+            (void)stop;
+            UIVisualEffectView *glassView = self.glassViews[index];
+            CGRect frame = [self convertRect:control.bounds fromView:control];
+            frame = CGRectInset(frame, 3.0, 4.0);
+            glassView.frame = frame;
+            glassView.hidden = control.hidden || control.alpha <= 0.01;
+            glassView.layer.cornerRadius = MIN(18.0, CGRectGetHeight(frame) / 2.0);
+            glassView.layer.cornerCurve = kCACornerCurveContinuous;
+        }];
+    } completion:nil];
+}
+
+@end
+
+static FLEXGlassClusterHostView *FLEXEnsureGlassCluster(UIView *view) {
+    UIVisualEffect *containerEffect =
+        [FLEXLiquidGlass containerEffectWithSpacing:8.0];
+    if (!containerEffect) {
+        return nil;
+    }
+
+    FLEXGlassClusterHostView *cluster = nil;
+    for (UIView *subview in view.subviews) {
+        if (subview.tag == kFLEXLiquidGlassClusterTag &&
+            [subview isKindOfClass:FLEXGlassClusterHostView.class]) {
+            cluster = (FLEXGlassClusterHostView *)subview;
+            break;
+        }
+    }
+
+    if (cluster) {
+        [cluster updateContainerEffect:containerEffect];
+    } else {
+        cluster = [[FLEXGlassClusterHostView alloc]
+            initWithSourceView:view
+            containerEffect:containerEffect];
+        cluster.tag = kFLEXLiquidGlassClusterTag;
+        [view insertSubview:cluster atIndex:0];
+    }
+
+    cluster.frame = view.bounds;
+    [cluster setNeedsLayout];
+    [cluster layoutIfNeeded];
+    return cluster;
 }
 
 @implementation FLEXLiquidGlass
@@ -154,18 +340,19 @@ static UIViewController *FLEXVisibleViewController(UIViewController *controller)
     UINavigationBar *bar = navigationController.navigationBar;
     bar.translucent = YES;
 
-    UINavigationBarAppearance *appearance = [UINavigationBarAppearance new];
     if (self.isGlassAvailable) {
-        // UIKit 26 bars adopt Liquid Glass automatically when linked with the
-        // new SDK. backgroundEffect remains typed as UIBlurEffect, so assigning
-        // a UIGlassEffect here would be both unnecessary and type-incorrect.
-        [appearance configureWithDefaultBackground];
-    } else {
-        [appearance configureWithTransparentBackground];
-        appearance.backgroundColor = UIColor.clearColor;
-        appearance.backgroundEffect =
-            [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial];
+        // Standard UIKit bars adopt the SDK 26 design automatically. Leaving
+        // their appearances alone preserves native grouping, transitions, and
+        // scroll-edge behavior instead of replacing them with custom glass.
+        [self styleToolbar:navigationController.toolbar];
+        return;
     }
+
+    UINavigationBarAppearance *appearance = [UINavigationBarAppearance new];
+    [appearance configureWithTransparentBackground];
+    appearance.backgroundColor = UIColor.clearColor;
+    appearance.backgroundEffect =
+        [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial];
     appearance.shadowColor = UIColor.clearColor;
 
     bar.standardAppearance = appearance;
@@ -183,15 +370,16 @@ static UIViewController *FLEXVisibleViewController(UIViewController *controller)
         return;
     }
 
-    UIToolbarAppearance *appearance = [UIToolbarAppearance new];
     if (self.isGlassAvailable) {
-        [appearance configureWithDefaultBackground];
-    } else {
-        [appearance configureWithTransparentBackground];
-        appearance.backgroundColor = UIColor.clearColor;
-        appearance.backgroundEffect =
-            [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial];
+        toolbar.translucent = YES;
+        return;
     }
+
+    UIToolbarAppearance *appearance = [UIToolbarAppearance new];
+    [appearance configureWithTransparentBackground];
+    appearance.backgroundColor = UIColor.clearColor;
+    appearance.backgroundEffect =
+        [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial];
     appearance.shadowColor = UIColor.clearColor;
 
     toolbar.translucent = YES;
@@ -208,12 +396,12 @@ static UIViewController *FLEXVisibleViewController(UIViewController *controller)
 
     // Liquid Glass is a floating control/navigation layer. The table remains
     // content so cells do not compete with the bars or stack glass on glass.
-    tableView.backgroundColor = UIColor.systemBackgroundColor;
+    FLEXSetRestorableBackgroundColor(tableView, UIColor.systemBackgroundColor);
     tableView.backgroundView = nil;
     tableView.separatorColor = UIColor.separatorColor;
     for (UITableViewCell *cell in tableView.visibleCells) {
-        cell.backgroundColor = UIColor.secondarySystemBackgroundColor;
-        cell.contentView.backgroundColor = UIColor.clearColor;
+        FLEXSetRestorableBackgroundColor(cell, UIColor.secondarySystemBackgroundColor);
+        FLEXSetRestorableBackgroundColor(cell.contentView, UIColor.clearColor);
     }
 }
 
@@ -222,10 +410,16 @@ static UIViewController *FLEXVisibleViewController(UIViewController *controller)
         return;
     }
 
+    if (self.isGlassAvailable) {
+        // UISearchBar is a standard component and supplies its own Liquid Glass
+        // when linked with UIKit 26. Do not stack a custom glass view under it.
+        return;
+    }
+
     searchBar.searchBarStyle = UISearchBarStyleMinimal;
     searchBar.backgroundImage = [UIImage new];
     UITextField *textField = searchBar.searchTextField;
-    textField.backgroundColor = UIColor.clearColor;
+    FLEXSetRestorableBackgroundColor(textField, UIColor.clearColor);
     textField.layer.cornerRadius = 16.0;
     textField.layer.cornerCurve = kCACornerCurveContinuous;
     textField.layer.masksToBounds = YES;
@@ -269,7 +463,7 @@ static UIViewController *FLEXVisibleViewController(UIViewController *controller)
     }
 #endif
 
-    button.backgroundColor = UIColor.tertiarySystemFillColor;
+    FLEXSetRestorableBackgroundColor(button, UIColor.tertiarySystemFillColor);
     button.layer.cornerRadius = 12.0;
     button.layer.cornerCurve = kCACornerCurveContinuous;
 }
@@ -280,7 +474,24 @@ static UIViewController *FLEXVisibleViewController(UIViewController *controller)
     if (!view) {
         return;
     }
-    view.backgroundColor = UIColor.clearColor;
+    FLEXSetRestorableBackgroundColor(view, UIColor.clearColor);
+
+    NSString *className = NSStringFromClass(view.class);
+    if (self.isGlassAvailable &&
+        ([className containsString:@"FLEXExplorerToolbar"] ||
+         [className containsString:@"FLEXToolbar"])) {
+        UIView *legacyBackground = nil;
+        @try {
+            legacyBackground = [view valueForKey:@"backgroundView"];
+        } @catch (__unused NSException *exception) {
+        }
+        if ([legacyBackground isKindOfClass:UIView.class]) {
+            FLEXSetRestorableBackgroundColor(legacyBackground, UIColor.clearColor);
+        }
+        FLEXEnsureGlassCluster(view);
+        return;
+    }
+
     FLEXEnsureBackdrop(view, kFLEXLiquidGlassPanelTag, cornerRadius, interactive);
 }
 
@@ -299,7 +510,10 @@ static UIViewController *FLEXVisibleViewController(UIViewController *controller)
         return;
     }
 
-    viewController.view.backgroundColor = UIColor.systemBackgroundColor;
+    FLEXSetRestorableBackgroundColor(
+        viewController.view,
+        UIColor.systemBackgroundColor
+    );
     [self styleNavigationController:viewController.navigationController];
     if ([viewController isKindOfClass:UITableViewController.class]) {
         [self styleTableView:((UITableViewController *)viewController).tableView];
@@ -326,10 +540,9 @@ static UIViewController *FLEXVisibleViewController(UIViewController *controller)
 }
 
 + (void)removeTaggedBackdropsFromView:(UIView *)view {
+    FLEXRestoreBackgroundColor(view);
     for (UIView *subview in [view.subviews copy]) {
-        if (subview.tag == kFLEXLiquidGlassBackdropTag ||
-            subview.tag == kFLEXLiquidGlassPanelTag ||
-            subview.tag == kFLEXLiquidGlassSearchTag) {
+        if (FLEXIsManagedGlassView(subview)) {
             [subview removeFromSuperview];
             continue;
         }

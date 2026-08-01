@@ -82,15 +82,19 @@ Writes update the cache and defaults together, then post
 
 On iOS 26+, `FLEXLiquidGlass` uses public SDK 26 APIs:
 
-- UIKit's default SDK 26 appearances for navigation bars and toolbars;
-- `UIGlassEffect` for search and custom floating panels;
-- `UIGlassContainerEffect` as the supported grouping primitive for future
-  multi-element control clusters;
+- UIKit's default SDK 26 appearances for navigation bars, toolbars, search,
+  menus, and standard controls such as the Hook Toggles switches;
+- `UIGlassEffect` for custom floating panels and explorer-toolbar buttons;
+- `UIGlassContainerEffect` around the custom FLEX explorer toolbar, with one
+  child `UIGlassEffect` per button so nearby controls adapt and merge as a
+  coherent group; frame changes animate within the shared container so UIKit
+  performs the native merge/split morphing;
 - `UIButtonConfiguration.glassButtonConfiguration` for standalone controls.
 
 Tables and cells remain in the content layer. A FLEX toolbar receives one glass
-panel, and its child controls are not given another glass surface. This prevents
-glass-on-glass composition and preserves hierarchy and legibility.
+container whose child glass views sit behind its buttons; those buttons are not
+given an additional glass configuration. This prevents glass-on-glass
+composition and preserves hierarchy and legibility.
 
 On iOS 15-25, the same APIs return a system thin-material fallback.
 
