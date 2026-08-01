@@ -78,7 +78,7 @@ static const void *kFLEXPersistenceQueueSpecific = &kFLEXPersistenceQueueSpecifi
         NSBundle.mainBundle.bundleIdentifier.length
             ? NSBundle.mainBundle.bundleIdentifier
             : NSProcessInfo.processInfo.processName];
-    _sandboxMirrorURL = [self sandboxMirrorURL];
+    _sandboxMirrorURL = [self createSandboxMirrorURL];
     [self configureApplicationGroup];
     [self restoreNewestSnapshot];
 
@@ -193,7 +193,7 @@ static const void *kFLEXPersistenceQueueSpecific = &kFLEXPersistenceQueueSpecifi
         @"Host NSUserDefaults + atomic sandbox mirror (no valid App Group entitlement)";
 }
 
-- (NSURL *)sandboxMirrorURL {
+- (NSURL *)createSandboxMirrorURL {
     NSError *error = nil;
     NSURL *applicationSupport = [NSFileManager.defaultManager
         URLForDirectory:NSApplicationSupportDirectory
