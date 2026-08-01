@@ -95,11 +95,18 @@ The latest reference is an unoptimized debug build. It retains local function
 names, object-file records, and absolute build paths. Its `__LINKEDIT` segment is
 1,599,872 bytes, and its unoptimized `__text` section is 1,100,160 bytes.
 
-The successful SDK 26.2 release artifact is 1,529,264 bytes. Its stripped
-`__LINKEDIT` is 103,856 bytes, yet it defines more Objective-C classes and
-selectors than the reference. The smaller release size is explained by
-optimization and symbol stripping; it is not evidence that FLEX, libFLEX, or a
-provider adapter was omitted.
+The successful SDK 26.2 release artifact from workflow run 34 is 1,547,024
+bytes. Its stripped `__LINKEDIT` is 105,232 bytes and `__text` is 671,256 bytes,
+yet it defines 184 Objective-C classes. Its SHA-256 is
+`d5d0821c540606218979bb763e106d2a3f4e39bfa0838876cad1ecaba16f2ce7`.
+The smaller release size is explained by optimization and symbol stripping; it
+is not evidence that FLEX, libFLEX, or a provider adapter was omitted.
+
+The run-34 package contains exactly one tweak dylib plus its filter plist. The
+Mach-O has one arm64 slice, minimum iOS 16.3, SDK 26.2, install name
+`@rpath/AllFLEXing.dylib`, no jailbreak rpaths, 533 defined symbols, both MSHook
+imports, the embedded-fishhook ABI markers, the former libFLEX compatibility
+exports, and the native UIKit 26 glass and corner class references.
 
 CI verifies composition using exports, defined class inventory, load commands,
 provider imports, embedded-fishhook marker symbols, runtime classes, and UI
