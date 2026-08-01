@@ -369,8 +369,13 @@ static FLEXGlassClusterHostView *FLEXEnsureGlassCluster(UIView *view) {
 
     if (self.isGlassAvailable) {
         // Standard UIKit bars adopt Liquid Glass only when old opaque/custom
-        // appearances stop overriding the system-provided material.
-        bar.standardAppearance = nil;
+        // appearances stop overriding the system-provided material. UIKit 26
+        // keeps standardAppearance nonnull, so reset it with a fresh system
+        // default while nullable edge variants return to automatic behavior.
+        UINavigationBarAppearance *nativeAppearance =
+            [UINavigationBarAppearance new];
+        [nativeAppearance configureWithDefaultBackground];
+        bar.standardAppearance = nativeAppearance;
         bar.scrollEdgeAppearance = nil;
         bar.compactAppearance = nil;
         if (@available(iOS 15.0, *)) {
@@ -404,7 +409,9 @@ static FLEXGlassClusterHostView *FLEXEnsureGlassCluster(UIView *view) {
 
     if (self.isGlassAvailable) {
         toolbar.translucent = YES;
-        toolbar.standardAppearance = nil;
+        UIToolbarAppearance *nativeAppearance = [UIToolbarAppearance new];
+        [nativeAppearance configureWithDefaultBackground];
+        toolbar.standardAppearance = nativeAppearance;
         if (@available(iOS 15.0, *)) {
             toolbar.scrollEdgeAppearance = nil;
         }

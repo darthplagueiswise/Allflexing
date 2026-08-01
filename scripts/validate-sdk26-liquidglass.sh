@@ -56,12 +56,19 @@ grep -q 'applyEntryIdentifier' libflex/AllFLEXing/FLEXHookRegistry.m
 grep -q 'runtime-toggle-applied' libflex/AllFLEXing/FLEXHookRegistry.m
 grep -q 'UIApplicationDidBecomeActiveNotification' libflex/AllFLEXing/AllFLEXingLoader.m
 grep -q 'cornerConfiguration' libflex/AllFLEXing/FLEXLiquidGlass.m
+grep -q 'configureWithDefaultBackground' libflex/AllFLEXing/FLEXLiquidGlass.m
 grep -q 'hidesSharedBackground' libflex/AllFLEXing/FLEXHookToggles.m
 grep -q 'vm_protect' libflex/AllFLEXing/flex_fishhook.c
 grep -q 'VM_PROT_COPY' libflex/AllFLEXing/flex_fishhook.c
 grep -q 'systemLayoutSizeFittingSize' libflex/AllFLEXing/FLEXRuntimeHookActions.m
 if grep -q 'mprotect[[:space:]]*(' libflex/AllFLEXing/flex_fishhook.c; then
     echo "error: legacy mprotect fishhook path is not allowed" >&2
+    exit 1
+fi
+
+if grep -Eq '(navigationBar|toolbar|bar)\.standardAppearance[[:space:]]*=[[:space:]]*nil' \
+    libflex/AllFLEXing/FLEXLiquidGlass.m; then
+    echo "error: UIKit 26 standard bar appearances are nonnull" >&2
     exit 1
 fi
 
