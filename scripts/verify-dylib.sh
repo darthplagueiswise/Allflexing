@@ -46,14 +46,18 @@ grep -Eq 'sdk[[:space:]]+26\.2' <<<"$build_version" || {
     echo "error: dylib was not linked with SDK 26.2" >&2
     exit 1
 }
-grep -Eq 'minos[[:space:]]+15\.0' <<<"$build_version" || {
-    echo "error: minimum OS is not iOS 15.0" >&2
+grep -Eq 'minos[[:space:]]+16\.3' <<<"$build_version" || {
+    echo "error: minimum OS is not iOS 16.3" >&2
     exit 1
 }
 
 linked_libraries="$(otool -L "$dylib")"
-if grep -Eiq 'CydiaSubstrate|ElleKit|libhooker|substitute' <<<"$linked_libraries"; then
-    echo "error: external hook framework dependency detected" >&2
+if ! grep -Eiq 'CydiaSubstrate\.framework/CydiaSubstrate' <<<"$linked_libraries"; then
+    echo "error: Feather-rewritable CydiaSubstrate.framework dependency is missing" >&2
+    exit 1
+fi
+if grep -Eiq 'libhooker|substitute|/var/jb|\.jbroot' <<<"$linked_libraries"; then
+    echo "error: unsupported jailbreak hook dependency detected" >&2
     exit 1
 fi
 
@@ -73,12 +77,17 @@ require_text "UIKit 26 glass class reference" \
     '_OBJC_CLASS_$_UIGlassEffect' "$symbols"
 require_text "UIKit 26 container class reference" \
     '_OBJC_CLASS_$_UIGlassContainerEffect' "$symbols"
+require_text "Objective-C hook import" "_MSHookMessageEx" "$symbols"
+require_text "inline C hook import" "_MSHookFunction" "$symbols"
 
 string_dump="$(strings -a "$dylib")"
 require_text "hook persistence class" "FLEXHookPersistence" "$string_dump"
 require_text "symbol rebind class" "FLEXSymbolRebind" "$string_dump"
 require_text "Liquid Glass class" "FLEXLiquidGlass" "$string_dump"
 require_text "Liquid Glass cluster" "FLEXGlassClusterHostView" "$string_dump"
-require_text "FLEX menu entry" "Hook Toggles" "$string_dump"
+require_text "hook registry" "FLEXHookRegistry" "$string_dump"
+require_text "ABI-aware C engine" "FLEXCHookEngine" "$string_dump"
+require_text "runtime scanner" "FLEXRuntimeScanner" "$string_dump"
+require_text "FLEX menu entry" "Hook Center" "$string_dump"
 
 echo "AllFLEXing Mach-O verification: OK"

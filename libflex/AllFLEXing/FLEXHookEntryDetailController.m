@@ -1,0 +1,345 @@
+#import "FLEXHookEntryDetailController.h"
+
+#import "FLEXCHookEngine.h"
+#import "FLEXHookRegistry.h"
+#import "FLEXHooking.h"
+#import "FLEXLiquidGlass.h"
+
+typedef NS_ENUM(NSInteger, FLEXHookDetailSection) {
+    FLEXHookDetailSectionTarget = 0,
+    FLEXHookDetailSectionConfiguration,
+    FLEXHookDetailSectionRuntime,
+    FLEXHookDetailSectionApply,
+    FLEXHookDetailSectionCount,
+};
+
+@interface FLEXHookEntryDetailController ()
+@property (nonatomic) FLEXHookEntry *entry;
+@end
+
+@implementation FLEXHookEntryDetailController
+
+- (instancetype)initWithEntry:(FLEXHookEntry *)entry {
+    self = [super initWithStyle:UITableViewStyleInsetGrouped];
+    if (self) {
+        _entry = entry;
+    }
+    return self;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = self.entry.title;
+    self.tableView.rowHeight = UITableViewAutomaticDimension;
+    self.tableView.estimatedRowHeight = 58.0;
+    [NSNotificationCenter.defaultCenter
+        addObserver:self
+           selector:@selector(registryChanged:)
+               name:FLEXHookRegistryDidChangeNotification
+             object:nil];
+    [FLEXLiquidGlass applyToViewController:self];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    FLEXHookEntry *latest = [FLEXHookRegistry.sharedRegistry
+        entryForIdentifier:self.entry.identifier];
+    if (latest) {
+        self.entry = latest;
+    }
+    [self.tableView reloadData];
+    [FLEXLiquidGlass applyToViewController:self];
+}
+
+- (void)dealloc {
+    [NSNotificationCenter.defaultCenter removeObserver:self];
+}
+
+- (void)registryChanged:(NSNotification *)notification {
+    (void)notification;
+    [self.tableView reloadData];
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
+    (void)tableView;
+    return FLEXHookDetailSectionCount;
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    (void)tableView;
+    switch (section) {
+        case FLEXHookDetailSectionTarget: return 4;
+        case FLEXHookDetailSectionConfiguration: return 4;
+        case FLEXHookDetailSectionRuntime: return 3;
+        case FLEXHookDetailSectionApply: return 1;
+        default: return 0;
+    }
+}
+
+- (UITableViewCell *)baseCellForTableView:(UITableView *)tableView {
+    static NSString *identifier = @"AllFLEXingHookDetailCell";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:identifier];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1
+                                      reuseIdentifier:identifier];
+    }
+    cell.textLabel.numberOfLines = 0;
+    cell.detailTextLabel.numberOfLines = 0;
+    cell.accessoryType = UITableViewCellAccessoryNone;
+    cell.accessoryView = nil;
+    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    cell.textLabel.textColor = UIColor.labelColor;
+    return cell;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView
+         cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [self baseCellForTableView:tableView];
+    FLEXHookEntry *entry = self.entry;
+
+    if (indexPath.section == FLEXHookDetailSectionTarget) {
+        NSArray<NSString *> *titles = @[@"Surface", @"Target", @"Image", @"Locator"];
+        cell.textLabel.text = titles[indexPath.row];
+        if (indexPath.row == 0) {
+            cell.detailTextLabel.text = FLEXHookSurfaceName(entry.surface);
+        } else if (indexPath.row == 1) {
+            cell.detailTextLabel.text = entry.title;
+        } else if (indexPath.row == 2) {
+            cell.detailTextLabel.text = entry.imageName.length ? entry.imageName : @"Unknown";
+        } else {
+            cell.detailTextLabel.text = entry.identifier;
+        }
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        return cell;
+    }
+
+    if (indexPath.section == FLEXHookDetailSectionConfiguration) {
+        if (indexPath.row == 0) {
+            cell.textLabel.text = @"ABI";
+            cell.detailTextLabel.text = FLEXHookABIName(entry.abi);
+            BOOL configurable = entry.surface == FLEXHookSurfaceCImport ||
+                                entry.surface == FLEXHookSurfaceCInline;
+            cell.accessoryType = configurable
+                ? UITableViewCellAccessoryDisclosureIndicator
+                : UITableViewCellAccessoryNone;
+            cell.selectionStyle = configurable
+                ? UITableViewCellSelectionStyleDefault
+                : UITableViewCellSelectionStyleNone;
+        } else if (indexPath.row == 1) {
+            cell.textLabel.text = @"Backend";
+            cell.detailTextLabel.text = FLEXHookBackendName(entry.backend);
+            BOOL configurable = entry.surface == FLEXHookSurfaceCImport ||
+                                entry.surface == FLEXHookSurfaceCInline;
+            cell.accessoryType = configurable
+                ? UITableViewCellAccessoryDisclosureIndicator
+                : UITableViewCellAccessoryNone;
+            cell.selectionStyle = configurable
+                ? UITableViewCellSelectionStyleDefault
+                : UITableViewCellSelectionStyleNone;
+        } else if (indexPath.row == 2) {
+            cell.textLabel.text = @"Forced result";
+            UISwitch *toggle = [UISwitch new];
+            toggle.on = entry.forceValue;
+            toggle.enabled = entry.abi != FLEXHookABIUnknown;
+            [toggle addTarget:self
+                       action:@selector(forceChanged:)
+             forControlEvents:UIControlEventValueChanged];
+            cell.accessoryView = toggle;
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        } else {
+            cell.textLabel.text = @"Enabled";
+            UISwitch *toggle = [UISwitch new];
+            toggle.on = entry.pendingEnabled;
+            toggle.enabled = (entry.available && entry.hookable) || entry.pendingEnabled;
+            [toggle addTarget:self
+                       action:@selector(enabledChanged:)
+             forControlEvents:UIControlEventValueChanged];
+            cell.accessoryView = toggle;
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        }
+        return cell;
+    }
+
+    if (indexPath.section == FLEXHookDetailSectionRuntime) {
+        NSArray<NSString *> *titles = @[@"State", @"Calls", @"Provider"];
+        cell.textLabel.text = titles[indexPath.row];
+        if (indexPath.row == 0) {
+            cell.detailTextLabel.text = entry.statusSummary;
+            cell.detailTextLabel.textColor = entry.lastError.length
+                ? UIColor.systemRedColor : UIColor.secondaryLabelColor;
+        } else if (indexPath.row == 1) {
+            cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu",
+                (unsigned long)entry.hitCount];
+        } else {
+            cell.detailTextLabel.text = FLEXHookRegistry.sharedRegistry.providerName;
+        }
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        return cell;
+    }
+
+    cell.textLabel.text = @"Apply pending changes";
+    cell.textLabel.textAlignment = NSTextAlignmentCenter;
+    cell.textLabel.textColor = self.entry.pendingEnabled != self.entry.desiredEnabled ||
+                               (self.entry.desiredEnabled && !self.entry.installed)
+        ? self.view.tintColor : UIColor.tertiaryLabelColor;
+    return cell;
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    (void)tableView;
+    switch (section) {
+        case FLEXHookDetailSectionTarget: return @"Target";
+        case FLEXHookDetailSectionConfiguration: return @"Configuration";
+        case FLEXHookDetailSectionRuntime: return @"Runtime";
+        case FLEXHookDetailSectionApply: return @"Actions";
+        default: return nil;
+    }
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+    (void)tableView;
+    if (section == FLEXHookDetailSectionConfiguration) {
+        if (self.entry.abi == FLEXHookABIUnknown) {
+            return @"C symbols remain inspection-only until you choose an exact ABI. Auto uses fishhook for a confirmed import slot and ElleKit inline otherwise.";
+        }
+        return @"Disabling keeps the installed patch but immediately forwards calls to the original implementation.";
+    }
+    if (section == FLEXHookDetailSectionRuntime) {
+        return self.entry.detail;
+    }
+    return nil;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (indexPath.section == FLEXHookDetailSectionConfiguration && indexPath.row == 0 &&
+        (self.entry.surface == FLEXHookSurfaceCImport ||
+         self.entry.surface == FLEXHookSurfaceCInline)) {
+        [self presentABIChooserFromCell:[tableView cellForRowAtIndexPath:indexPath]];
+        return;
+    }
+    if (indexPath.section == FLEXHookDetailSectionConfiguration && indexPath.row == 1 &&
+        (self.entry.surface == FLEXHookSurfaceCImport ||
+         self.entry.surface == FLEXHookSurfaceCInline)) {
+        [self presentBackendChooserFromCell:[tableView cellForRowAtIndexPath:indexPath]];
+        return;
+    }
+    if (indexPath.section == FLEXHookDetailSectionApply) {
+        [self applyNow];
+    }
+}
+
+- (void)presentABIChooserFromCell:(UITableViewCell *)cell {
+    UIAlertController *sheet = [UIAlertController
+        alertControllerWithTitle:@"C ABI profile"
+                         message:@"Choose only a signature verified for this symbol."
+                  preferredStyle:UIAlertControllerStyleActionSheet];
+    NSArray<NSNumber *> *abis = @[
+        @(FLEXHookABICBoolNoArguments),
+        @(FLEXHookABICBoolPointerArgument),
+        @(FLEXHookABICInt64NoArguments),
+        @(FLEXHookABICPointerNoArguments),
+    ];
+    for (NSNumber *number in abis) {
+        FLEXHookABI abi = number.integerValue;
+        [sheet addAction:[UIAlertAction actionWithTitle:FLEXHookABIName(abi)
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(__unused UIAlertAction *action) {
+            [FLEXHookRegistry.sharedRegistry
+                configureEntryIdentifier:self.entry.identifier
+                                      abi:abi
+                                  backend:self.entry.backend == FLEXHookBackendNone
+                                      ? FLEXHookBackendAuto : self.entry.backend];
+            [FLEXCHookEngine refreshAvailabilityForEntry:self.entry];
+            [self.tableView reloadData];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Inspection only"
+                                              style:UIAlertActionStyleDestructive
+                                            handler:^(__unused UIAlertAction *action) {
+        [FLEXHookRegistry.sharedRegistry
+            configureEntryIdentifier:self.entry.identifier
+                                  abi:FLEXHookABIUnknown
+                              backend:FLEXHookBackendNone];
+        [self.tableView reloadData];
+    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    [self anchorSheet:sheet toCell:cell];
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)presentBackendChooserFromCell:(UITableViewCell *)cell {
+    UIAlertController *sheet = [UIAlertController
+        alertControllerWithTitle:@"Hook backend"
+                         message:@"Invalid providers stay disabled and fail closed."
+                  preferredStyle:UIAlertControllerStyleActionSheet];
+    NSArray<NSNumber *> *backends = @[
+        @(FLEXHookBackendAuto),
+        @(FLEXHookBackendFishhook),
+        @(FLEXHookBackendInlineElleKit),
+    ];
+    for (NSNumber *number in backends) {
+        FLEXHookBackend backend = number.integerValue;
+        BOOL fishhookPossible = [self.entry.locator[@"bindSlots"] unsignedIntegerValue] > 0;
+        if (backend == FLEXHookBackendFishhook && !fishhookPossible) {
+            continue;
+        }
+        [sheet addAction:[UIAlertAction actionWithTitle:FLEXHookBackendName(backend)
+                                                  style:UIAlertActionStyleDefault
+                                                handler:^(__unused UIAlertAction *action) {
+            [FLEXHookRegistry.sharedRegistry
+                configureEntryIdentifier:self.entry.identifier
+                                      abi:self.entry.abi
+                                  backend:backend];
+            [FLEXCHookEngine refreshAvailabilityForEntry:self.entry];
+            [self.tableView reloadData];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    [self anchorSheet:sheet toCell:cell];
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)anchorSheet:(UIAlertController *)sheet toCell:(UITableViewCell *)cell {
+    UIPopoverPresentationController *popover = sheet.popoverPresentationController;
+    if (popover && cell) {
+        popover.sourceView = cell;
+        popover.sourceRect = cell.bounds;
+        popover.permittedArrowDirections = UIPopoverArrowDirectionAny;
+    }
+}
+
+- (void)forceChanged:(UISwitch *)toggle {
+    [FLEXHookRegistry.sharedRegistry stageForceValue:toggle.isOn
+                                 forEntryIdentifier:self.entry.identifier];
+    [FLEXCHookEngine setEnabled:self.entry.effectiveEnabled forEntry:self.entry];
+}
+
+- (void)enabledChanged:(UISwitch *)toggle {
+    [FLEXHookRegistry.sharedRegistry stageEnabled:toggle.isOn
+                               forEntryIdentifier:self.entry.identifier];
+}
+
+- (void)applyNow {
+    [FLEXHookRegistry.sharedRegistry applyPendingWithCompletion:^(
+        NSArray<FLEXHookEntry *> *applied,
+        NSArray<FLEXHookEntry *> *failed
+    ) {
+        NSString *message = [NSString stringWithFormat:@"Applied: %lu\nFailed: %lu",
+            (unsigned long)applied.count, (unsigned long)failed.count];
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:
+            failed.count ? @"Applied with errors" : @"Hooks updated"
+            message:message
+            preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+                                                  style:UIAlertActionStyleDefault
+                                                handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+    }];
+}
+
+@end

@@ -1,9 +1,20 @@
 #import "FLEXHooking.h"
 
 #import <dlfcn.h>
+#import <substrate.h>
+#import <string.h>
 
 typedef void (*FLEXMSHookMessageExFunction)(Class, SEL, IMP, IMP *);
 typedef void (*FLEXMSHookFunctionFunction)(void *, void *, void **);
+
+// Strong references make the Substrate-compatible dependency part of the
+// Mach-O contract. Feather rewrites/installs that framework using ElleKit in the
+// signed host app. dlsym below remains useful for capability diagnostics, but
+// is no longer the only thing connecting the product to its hook provider.
+__attribute__((used))
+static FLEXMSHookMessageExFunction const FLEXLinkedMSHookMessageEx = MSHookMessageEx;
+__attribute__((used))
+static FLEXMSHookFunctionFunction const FLEXLinkedMSHookFunction = MSHookFunction;
 
 static NSMutableDictionary<NSString *, NSValue *> *FLEXInstalledMessageHooks(void) {
     static NSMutableDictionary<NSString *, NSValue *> *hooks;
@@ -22,7 +33,15 @@ static NSString *FLEXHookKey(Class targetClass, SEL selector, BOOL classMethod) 
 }
 
 static FLEXMSHookMessageExFunction FLEXResolveMSHookMessageEx(void) {
-    return (FLEXMSHookMessageExFunction)dlsym(RTLD_DEFAULT, "MSHookMessageEx");
+    FLEXMSHookMessageExFunction resolved =
+        (FLEXMSHookMessageExFunction)dlsym(RTLD_DEFAULT, "MSHookMessageEx");
+    return resolved ?: FLEXLinkedMSHookMessageEx;
+}
+
+static FLEXMSHookFunctionFunction FLEXResolveMSHookFunction(void) {
+    FLEXMSHookFunctionFunction resolved =
+        (FLEXMSHookFunctionFunction)dlsym(RTLD_DEFAULT, "MSHookFunction");
+    return resolved ?: FLEXLinkedMSHookFunction;
 }
 
 static BOOL FLEXInstallRuntimeMethodHook(Class dispatchClass,
@@ -116,18 +135,69 @@ BOOL FLEXHookFunctionIfAvailable(void *symbol,
         return NO;
     }
 
-    FLEXMSHookFunctionFunction hook =
-        (FLEXMSHookFunctionFunction)dlsym(RTLD_DEFAULT, "MSHookFunction");
+    FLEXMSHookFunctionFunction hook = FLEXResolveMSHookFunction();
     if (!hook) {
         return NO;
     }
 
-    hook(symbol, replacement, original);
-    return YES;
+    void *captured = NULL;
+    void **outOriginal = original ?: &captured;
+    hook(symbol, replacement, outOriginal);
+    return *outOriginal != NULL;
+}
+
+BOOL FLEXMSHookProviderAvailable(void) {
+    return FLEXResolveMSHookMessageEx() != NULL &&
+           FLEXResolveMSHookFunction() != NULL;
+}
+
+static BOOL FLEXProviderInfoForAddress(void *address, Dl_info *info) {
+    if (!address || !info) {
+        return NO;
+    }
+    memset(info, 0, sizeof(*info));
+    return dladdr(address, info) != 0 && info->dli_fname != NULL;
+}
+
+NSString *FLEXMSHookProviderPath(void) {
+    Dl_info info;
+    if (!FLEXProviderInfoForAddress((void *)FLEXResolveMSHookMessageEx(), &info)) {
+        return @"Unavailable";
+    }
+    return [NSString stringWithUTF8String:info.dli_fname] ?: @"Unknown image";
+}
+
+BOOL FLEXMSHookProviderIsElleKit(void) {
+    void *marker = dlsym(RTLD_DEFAULT, "EKEnableThreadSafety");
+    if (!marker) {
+        return NO;
+    }
+
+    Dl_info hookInfo;
+    Dl_info markerInfo;
+    if (!FLEXProviderInfoForAddress((void *)FLEXResolveMSHookMessageEx(), &hookInfo) ||
+        !FLEXProviderInfoForAddress(marker, &markerInfo)) {
+        return NO;
+    }
+    return hookInfo.dli_fbase != NULL && hookInfo.dli_fbase == markerInfo.dli_fbase;
+}
+
+NSString *FLEXMSHookProviderName(void) {
+    if (!FLEXMSHookProviderAvailable()) {
+        return @"Unavailable";
+    }
+    if (FLEXMSHookProviderIsElleKit()) {
+        return @"ElleKit (Substrate-compatible)";
+    }
+
+    NSString *path = FLEXMSHookProviderPath();
+    NSString *image = path.lastPathComponent;
+    return [NSString stringWithFormat:@"Substrate-compatible (%@)",
+        image.length ? image : @"unknown provider"];
 }
 
 NSString *FLEXMessageHookBackend(void) {
     return FLEXResolveMSHookMessageEx()
-        ? @"MSHookMessageEx (optional loaded provider)"
-        : @"Objective-C runtime (standalone fallback)";
+        ? [NSString stringWithFormat:@"MSHookMessageEx · %@", FLEXMSHookProviderName()]
+        : @"Objective-C runtime (degraded fallback)";
 }

@@ -3,6 +3,7 @@
 
 #import "FLEXGlassAutostyle.h"
 #import "FLEXHookPersistence.h"
+#import "FLEXHookRegistry.h"
 #import "FLEXHookToggles.h"
 #import "FLEXHooking.h"
 #import "FLEXLiquidGlass.h"
@@ -168,6 +169,18 @@ static void AllFLEXingRegisterRuntime(void) {
                   title:@"Log view controllers"
                  detail:@"Diagnostic logging for every viewDidAppear: callback."
            defaultValue:NO];
+    [flags registerFlag:@"engine.objc_ellekit"
+                  title:@"Objective-C / ElleKit"
+                 detail:@"Allow ABI-validated runtime methods through MSHookMessageEx."
+           defaultValue:YES];
+    [flags registerFlag:@"engine.fishhook"
+                  title:@"C imports / fishhook"
+                 detail:@"Allow rebinding only when a Mach-O import slot is confirmed."
+           defaultValue:YES];
+    [flags registerFlag:@"engine.inline_ellekit"
+                  title:@"C inline / ElleKit"
+                 detail:@"Allow MSHookFunction only for an explicit C ABI and resolved address."
+           defaultValue:YES];
     [flags registerInstallOnce:@"hook.flex_ui_autostyle"
                          title:@"Auto-style FLEX screens"
                         detail:@"Install one lifecycle hook and gate FLEX-only styling live."
@@ -177,6 +190,10 @@ static void AllFLEXingRegisterRuntime(void) {
             NSLog(@"[AllFLEXing] failed to install FLEX UI lifecycle hook");
         }
     }];
+
+    // Reapply only exact, versioned targets after engine defaults exist and
+    // before the first main-runloop turn. No broad scan or UIKit work occurs.
+    [FLEXHookRegistry.sharedRegistry bootstrap];
     [flags activateRegisteredHooks];
 }
 
@@ -184,7 +201,7 @@ static void AllFLEXingStartUI(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         [FLEXManager.sharedManager
-            registerGlobalEntryWithName:@"Hook Toggles"
+            registerGlobalEntryWithName:@"Hook Center"
             viewControllerFutureBlock:^UIViewController *{
                 return [FLEXHookToggles new];
             }];

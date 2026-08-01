@@ -1,4 +1,4 @@
-TARGET ?= iphone:clang:26.2:15.0
+TARGET ?= iphone:clang:26.2:16.3
 ARCHS ?= arm64
 
 export TARGET ARCHS
@@ -23,7 +23,6 @@ IMPORTS := -I$(FLEX_ROOT)/Classes -I$(ALLFLEXING_ROOT) $(call dtoim,$(_IMPORTS))
 
 TWEAK_NAME := AllFLEXing
 
-$(TWEAK_NAME)_GENERATOR := internal
 $(TWEAK_NAME)_FILES := $(FLEX_SOURCES) $(ALLFLEXING_SOURCES)
 $(TWEAK_NAME)_FRAMEWORKS := Foundation CoreGraphics UIKit ImageIO QuartzCore SceneKit Security WebKit AVFoundation UserNotifications
 $(TWEAK_NAME)_LIBRARIES := sqlite3 z c++
@@ -52,8 +51,10 @@ $(TWEAK_NAME)_CFLAGS += -Wno-nullability-completeness -Wno-unused-function
 $(TWEAK_NAME)_CFLAGS += -Wno-unused-but-set-variable -Wno-gnu-folding-constant
 $(TWEAK_NAME)_CCFLAGS += -std=gnu++11
 
-# A certificate-sideloaded host resolves this from its Frameworks directory.
-# No Substrate, ElleKit, or rootless rpath is required at runtime.
+# Feather places a Substrate-compatible CydiaSubstrate.framework backed by
+# ElleKit in the certificate-signed app and rewrites the dependency to @rpath.
+# The default MobileSubstrate Logos generator keeps the same working Theos
+# linkage contract used by the rest of the runtime.
 $(TWEAK_NAME)_LDFLAGS += -Wl,-install_name,@rpath/AllFLEXing.dylib
 
 ifeq ($(FINALPACKAGE),1)

@@ -1,0 +1,20 @@
+#import <Foundation/Foundation.h>
+
+NS_ASSUME_NONNULL_BEGIN
+
+@class FLEXHookEntry;
+
+typedef void (^FLEXRuntimeScanCompletion)(NSArray<FLEXHookEntry *> *entries);
+
+@interface FLEXRuntimeScanner : NSObject
+
++ (void)scanObjectiveCRuntimeIncludingSystemImages:(BOOL)includeSystemImages
+                                         completion:(FLEXRuntimeScanCompletion)completion;
++ (void)scanCImportsIncludingSystemImages:(BOOL)includeSystemImages
+                                completion:(FLEXRuntimeScanCompletion)completion;
++ (FLEXHookEntry *)manualCEntryForSymbol:(NSString *)symbol
+                               imageName:(nullable NSString *)imageName;
+
+@end
+
+NS_ASSUME_NONNULL_END

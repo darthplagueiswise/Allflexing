@@ -3,9 +3,10 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-/// Hooks an Objective-C instance method. MSHookMessageEx is used when another
-/// already-loaded framework exports it; otherwise the Objective-C runtime is
-/// used without any external dependency.
+/// Hooks an Objective-C instance method. The production sideload build links
+/// the Substrate-compatible API that Feather supplies through ElleKit. The
+/// Objective-C runtime path is retained only as an explicitly reported degraded
+/// fallback for diagnostics.
 FOUNDATION_EXPORT BOOL FLEXHookMessage(Class targetClass,
                                        SEL selector,
                                        IMP replacement,
@@ -16,12 +17,16 @@ FOUNDATION_EXPORT BOOL FLEXHookClassMessage(Class targetClass,
                                             IMP replacement,
                                             IMP _Nullable * _Nullable original);
 
-/// Optional inline hook. Returns NO when MSHookFunction is unavailable. Use
-/// FLEXSymbolRebind for the standalone, certificate-safe C-symbol path.
+/// Inline C/C++ hook through the loaded Substrate-compatible provider. Returns
+/// NO unless MSHookFunction is available and produces an original trampoline.
 FOUNDATION_EXPORT BOOL FLEXHookFunctionIfAvailable(void *symbol,
                                                    void *replacement,
                                                    void * _Nullable * _Nullable original);
 
+FOUNDATION_EXPORT BOOL FLEXMSHookProviderAvailable(void);
+FOUNDATION_EXPORT BOOL FLEXMSHookProviderIsElleKit(void);
+FOUNDATION_EXPORT NSString *FLEXMSHookProviderName(void);
+FOUNDATION_EXPORT NSString *FLEXMSHookProviderPath(void);
 FOUNDATION_EXPORT NSString *FLEXMessageHookBackend(void);
 
 NS_ASSUME_NONNULL_END

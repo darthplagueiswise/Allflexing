@@ -8,6 +8,11 @@ NS_ASSUME_NONNULL_BEGIN
           replacement:(void *)replacement
              original:(void * _Nullable * _Nullable)original;
 
++ (BOOL)rebindSymbol:(NSString *)symbol
+         inImageNamed:(nullable NSString *)imageName
+          replacement:(void *)replacement
+             original:(void * _Nullable * _Nullable)original;
+
 + (NSString *)backendDescription;
 
 @end
