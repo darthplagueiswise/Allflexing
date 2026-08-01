@@ -91,6 +91,7 @@ typedef void (^FLEXHookApplyCompletion)(NSArray<FLEXHookEntry *> *applied,
 - (NSArray<FLEXHookEntry *> *)entriesForSurface:(FLEXHookSurface)surface;
 - (void)mergeDiscoveredEntries:(NSArray<FLEXHookEntry *> *)entries
                        surface:(FLEXHookSurface)surface;
+- (FLEXHookEntry *)upsertDiscoveredEntry:(FLEXHookEntry *)entry;
 - (void)addOrUpdateManualEntry:(FLEXHookEntry *)entry;
 
 - (void)stageEnabled:(BOOL)enabled forEntryIdentifier:(NSString *)identifier;

@@ -1,6 +1,5 @@
 ALLFLEXING_HOOK_RUNTIME_SOURCES := \
-	$(ALLFLEXING_ROOT)/FLEXCHookEngine.m \
-	$(ALLFLEXING_ROOT)/FLEXHooking.m \
 	$(ALLFLEXING_ROOT)/FLEXHookRegistry.m \
-	$(ALLFLEXING_ROOT)/FLEXRuntimeScanner.m \
-	$(ALLFLEXING_ROOT)/FLEXSymbolRebind.m
+	$(ALLFLEXING_ROOT)/FLEXRuntimeHookActions.m \
+	$(ALLFLEXING_ROOT)/FLEXRuntimeHookIntegration.xm \
+	$(ALLFLEXING_ROOT)/FLEXRuntimeScanner.m

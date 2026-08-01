@@ -10,6 +10,7 @@ The project builds one `AllFLEXing.dylib` containing:
 - the persistent hook registry and safe-mode recovery;
 - the Objective-C and C Runtime Browsers;
 - namespaced fishhook and typed C replacement slots;
+- Logos-backed toggles and actions on hookable FLEX metadata rows;
 - the Hook Center and UIKit 26 Liquid Glass integration.
 
 | Property | Required value |
@@ -49,7 +50,7 @@ split FLEX/libFLEX back into multiple dylibs.
 3. The registry loads versioned persisted locators and detects an interrupted
    prior apply.
 4. It re-resolves and reinstalls only exact persisted targets that remain safe.
-5. Static AllFLEXing hooks install once.
+5. Static AllFLEXing hooks and the Logos metadata-row adapter install once.
 6. UI initialization is dispatched to the main queue.
 7. Once scenes/windows exist, FLEX registers the Hook Center and reveal gesture.
 8. Runtime scans occur only when requested and run off the main thread.
@@ -85,6 +86,12 @@ Each signature receives a separate `imp_implementationWithBlock` replacement.
 Apply resolves the class, selector, `Method`, and current type encoding again.
 The original IMP is kept exactly once, hit counts are recorded, and an OFF gate
 returns the native result.
+
+The same resolver is used contextually by the normal FLEX object explorer.
+Hookable BOOL methods and BOOL properties receive a native switch beside their
+row plus a `Runtime Hook` menu containing Force TRUE, Force FALSE, Forward
+Original, Apply, details, and Copy Hook ID. The contextual UI upserts into the
+same registry as the Runtime Browser; it never creates a parallel hook store.
 
 ## C ABI path
 
@@ -133,17 +140,20 @@ entry becomes inspection-only until explicitly classified again.
 
 ## Source module manifests
 
-The build is divided into three source manifests:
+The build is divided into four source manifests:
 
 - Core: loader and persistence;
-- HookRuntime: provider bridge, registry, scanner, resolver, fishhook adapter,
-  and typed C slots;
+- HookProviders: Substrate-compatible bridge, namespaced fishhook, fishhook
+  adapter, and typed C slots;
+- HookRuntime: registry, scanner, ABI resolver, contextual actions, and the
+  static Logos metadata-row integration;
 - LiquidGlassUI: Hook Center, entry details, Runtime Browsers, autostyle, and
   Liquid Glass components.
 
-These are build-time groups only. The namespaced fishhook source is compiled
-exactly once through the pinned FLEX source tree, and every group links into the
-single `AllFLEXing.dylib` target.
+These are build-time groups only. The namespaced fishhook source is removed from
+the broad FLEX source glob and added exactly once by HookProviders. Every group,
+including the `.xm` Logos source, links into the single `AllFLEXing.dylib`
+target.
 
 ## Live toggles
 

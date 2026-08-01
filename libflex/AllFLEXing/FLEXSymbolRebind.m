@@ -4,6 +4,19 @@
 #import <dlfcn.h>
 #import <mach-o/dyld.h>
 
+NSUInteger const FLEXEmbeddedFishhookABIVersion = 1;
+
+BOOL FLEXEmbeddedFishhookAvailable(void) {
+    // Taking both addresses creates a strong link-time contract with the
+    // namespaced implementation compiled into this Mach-O. The build cannot
+    // succeed by accidentally resolving fishhook from the host process.
+    static void *const implementations[] = {
+        (void *)&flex_rebind_symbols,
+        (void *)&flex_rebind_symbols_image,
+    };
+    return implementations[0] != NULL && implementations[1] != NULL;
+}
+
 @implementation FLEXSymbolRebind
 
 + (NSString *)retainedSymbolName:(NSString *)symbol {
@@ -44,6 +57,9 @@
         .replacement = replacement,
         .replaced = original,
     };
+    if (!FLEXEmbeddedFishhookAvailable()) {
+        return NO;
+    }
     int status = flex_rebind_symbols(&binding, 1);
     if (status != 0) {
         NSLog(@"[AllFLEXing] flex_rebind_symbols failed (%d) for %@", status, normalized);
@@ -94,6 +110,9 @@
         .replacement = replacement,
         .replaced = original,
     };
+    if (!FLEXEmbeddedFishhookAvailable()) {
+        return NO;
+    }
     int status = flex_rebind_symbols_image((void *)header, slide, &binding, 1);
     if (status != 0) {
         NSLog(@"[AllFLEXing] image fishhook failed (%d) for %@ in %@",
@@ -104,7 +123,8 @@
 }
 
 + (NSString *)backendDescription {
-    return @"embedded FLEX flex_fishhook";
+    return [NSString stringWithFormat:@"embedded FLEX flex_fishhook ABI %lu",
+        (unsigned long)FLEXEmbeddedFishhookABIVersion];
 }
 
 @end

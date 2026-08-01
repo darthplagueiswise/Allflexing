@@ -24,8 +24,11 @@ grep -q '^ARCHS := arm64$' libflex/Makefile
 test -f build.sh
 grep -q 'make package FINALPACKAGE=1' build.sh
 grep -q 'include modules/HookRuntime/Module.mk' libflex/Makefile
+grep -q 'include modules/HookProviders/Module.mk' libflex/Makefile
 grep -q 'include modules/LiquidGlassUI/Module.mk' libflex/Makefile
 grep -q 'FLEX_FISHHOOK_SOURCE' libflex/Makefile
+grep -q 'ALLFLEXING_EMBEDDED_FISHHOOK_SOURCES' libflex/Makefile
+grep -q 'LOGOS_DEFAULT_GENERATOR := MobileSubstrate' libflex/Makefile
 grep -Fq '$(TWEAK_NAME)_USE_MODULES := 0' libflex/Makefile
 grep -Eq '\$\(TWEAK_NAME\)_LIBRARIES[[:space:]]*:=[^#]*substrate' libflex/Makefile
 test -f libflex/AllFLEXing/FLEXLiquidGlass.m
@@ -35,12 +38,18 @@ grep -q '#import <substrate.h>' libflex/AllFLEXing/FLEXHooking.m
 grep -q 'MSHookMessageEx' libflex/AllFLEXing/FLEXHooking.m
 grep -q 'MSHookFunction' libflex/AllFLEXing/FLEXHooking.m
 grep -q 'FLEXHookRegistry' libflex/AllFLEXing/FLEXHookRegistry.m
+grep -q 'upsertDiscoveredEntry' libflex/AllFLEXing/FLEXHookRegistry.m
 grep -q 'FLEXRuntimeScanner' libflex/AllFLEXing/FLEXRuntimeScanner.m
+grep -q 'objectiveCEntryForClass' libflex/AllFLEXing/FLEXRuntimeScanner.m
 grep -q 'FLEXRuntimeImagesDidChangeNotification' libflex/AllFLEXing/FLEXRuntimeScanner.m
+test -f libflex/AllFLEXing/FLEXRuntimeHookActions.m
+test -f libflex/AllFLEXing/FLEXRuntimeHookIntegration.xm
+grep -q '%hook FLEXMetadataSection' libflex/AllFLEXing/FLEXRuntimeHookIntegration.xm
+grep -q 'FLEXEmbeddedFishhookAvailable' libflex/AllFLEXing/FLEXSymbolRebind.m
 
 if grep -q 'GENERATOR[[:space:]]*:=[[:space:]]*internal' libflex/Makefile; then
     echo "error: internal Logos generator cannot provide the required C hook backend" >&2
     exit 1
 fi
 
-echo "SDK 26.2, module manifests, Liquid Glass, registry, and Substrate-compatible build contract: OK"
+echo "SDK 26.2, provider modules, Logos row integration, Liquid Glass, registry, and Substrate-compatible build contract: OK"

@@ -56,6 +56,10 @@ if ! grep -Eiq 'CydiaSubstrate\.framework/CydiaSubstrate' <<<"$linked_libraries"
     echo "error: Feather-rewritable CydiaSubstrate.framework dependency is missing" >&2
     exit 1
 fi
+if grep -Eiq '/usr/lib/libFLEX\.dylib|(^|/)FLEXing\.dylib' <<<"$linked_libraries"; then
+    echo "error: FLEX/libFLEX is still linked as a separate dylib" >&2
+    exit 1
+fi
 if grep -Eiq 'libhooker|substitute|/var/jb|\.jbroot' <<<"$linked_libraries"; then
     echo "error: unsupported jailbreak hook dependency detected" >&2
     exit 1
@@ -68,7 +72,14 @@ if grep -Eiq '/var/jb|\.jbroot' <<<"$load_commands"; then
 fi
 
 symbols="$(nm -gj "$dylib")"
+defined_symbols="$(nm -gUj "$dylib")"
 echo "global symbols: $(wc -l <<<"$symbols" | tr -d ' ')"
+defined_flex_classes="$(grep -c '^_OBJC_CLASS_\$_FLEX' <<<"$defined_symbols" || true)"
+if (( defined_flex_classes < 150 )); then
+    echo "error: unified FLEX class inventory is incomplete ($defined_flex_classes)" >&2
+    exit 1
+fi
+echo "verified unified FLEX class inventory: $defined_flex_classes classes"
 require_text "public flag API" "_FLEXFlag" "$symbols"
 require_text "libFLEX compatibility API" "_FLXGetManager" "$symbols"
 require_text "libFLEX compatibility API" "_FLXRevealSEL" "$symbols"
@@ -79,6 +90,12 @@ require_text "UIKit 26 container class reference" \
     '_OBJC_CLASS_$_UIGlassContainerEffect' "$symbols"
 require_text "Objective-C hook import" "_MSHookMessageEx" "$symbols"
 require_text "inline C hook import" "_MSHookFunction" "$symbols"
+require_text "embedded fishhook link contract" \
+    "_FLEXEmbeddedFishhookAvailable" "$defined_symbols"
+require_text "embedded fishhook ABI marker" \
+    "_FLEXEmbeddedFishhookABIVersion" "$defined_symbols"
+require_text "contextual runtime hook actions" \
+    '_OBJC_CLASS_$_FLEXRuntimeHookActions' "$defined_symbols"
 
 string_dump="$(strings -a "$dylib")"
 require_text "hook persistence class" "FLEXHookPersistence" "$string_dump"
@@ -88,6 +105,9 @@ require_text "Liquid Glass cluster" "FLEXGlassClusterHostView" "$string_dump"
 require_text "hook registry" "FLEXHookRegistry" "$string_dump"
 require_text "ABI-aware C engine" "FLEXCHookEngine" "$string_dump"
 require_text "runtime scanner" "FLEXRuntimeScanner" "$string_dump"
+require_text "contextual TRUE action" "Force TRUE" "$string_dump"
+require_text "contextual FALSE action" "Force FALSE" "$string_dump"
+require_text "contextual apply action" "Apply Staged Changes" "$string_dump"
 require_text "late-image monitor" "FLEXRuntimeImagesDidChangeNotification" "$string_dump"
 require_text "idempotent late-image reapply" "late-image-reapply" "$string_dump"
 require_text "FLEX menu entry" "Hook Center" "$string_dump"

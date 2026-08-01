@@ -48,7 +48,13 @@ Regras obrigatórias:
 - Compilar todos os fontes necessários para FLEX, AllFLEXing e os módulos de
   runtime no mesmo target de tweak/dylib.
 - Compilar a implementação namespaced de fishhook diretamente no target. Não
-  depender de um fishhook já presente no app hospedeiro.
+  depender de um fishhook já presente no app hospedeiro. Retirar esse fonte do
+  glob amplo do FLEX e adicioná-lo exatamente uma vez pelo manifesto de
+  providers.
+- Manter manifestos separados para Core, HookProviders, HookRuntime e
+  LiquidGlassUI, mas ligar todos no único target `AllFLEXing`.
+- Compilar a integração estática das linhas de metadata como `.xm` com generator
+  `MobileSubstrate`; nunca trocar essa integração pelo generator `internal`.
 - Manter `-fobjc-arc` para o código Objective-C do projeto.
 - Manter as definições `TARGET_OS_*` necessárias para os headers do SDK 26.2
   quando o toolchain do Theos não as fornecer corretamente.
@@ -90,6 +96,9 @@ Regras obrigatórias:
 
 - Logos é um preprocessor para hooks conhecidos em tempo de compilação.
 - Usar Logos para hooks estáticos e declarativos que já fazem parte do produto.
+- A integração conhecida com `FLEXMetadataSection` deve usar Logos para anexar a
+  UI contextual. O alvo selecionado na linha continua sendo instalado
+  dinamicamente pelo registry após validação de ABI.
 - Não gerar dinamicamente código Logos para itens descobertos pelo Runtime
   Browser.
 - `%ctor` é apropriado para registrar/bootstrapar código pequeno após o
@@ -249,6 +258,13 @@ booleano. Um toggle persistido não prova que o hook foi instalado.
 ## 7. Semântica de toggle e Apply
 
 - Todo item realmente hookável descoberto no runtime deve ter um toggle ao lado.
+- A mesma regra vale para métodos e propriedades BOOL exibidos no explorador de
+  objetos padrão do FLEX, não somente para as telas separadas de Runtime Browser.
+- O toggle contextual deve usar o mesmo ID, entrada, estado pendente, provider,
+  contador e erro do Hook Center. É proibido recriar o dicionário de overrides
+  isolado usado por protótipos anteriores.
+- O menu contextual de uma linha hookável deve oferecer Force TRUE, Force FALSE,
+  Forward Original, Apply, detalhes e Copy Hook ID.
 - Itens sem ABI, provider ou locator seguro continuam visíveis, mas com toggle
   desabilitado e motivo concreto.
 - Alterar um toggle cria uma mudança pendente; não instalar hooks pesados durante
@@ -343,6 +359,8 @@ Restrições:
 ### 10.3 Estado compartilhado
 
 - Um toggle acionado no Browser deve aparecer imediatamente no Hook Center.
+- Um toggle acionado no explorador normal de propriedades/métodos também deve
+  aparecer imediatamente no Hook Center e no Browser.
 - O Hook Center deve abrir a mesma entrada no Browser para detalhes.
 - Hits, erro, provider e estado efetivo são os mesmos objetos de estado, não
   cópias reconstruídas pela UI.
@@ -363,6 +381,8 @@ Estrutura mínima:
   detalhes.
 - **Browser Objective-C** e **C Runtime**: descoberta com busca, filtros e
   toggles ao lado de tudo que for seguro e hookável.
+- **Explorador FLEX contextual**: métodos/propriedades BOOL hookáveis recebem
+  `UISwitch` nativo e menu Runtime Hook sem perder navegação, detalhes ou copy.
 - **Diagnóstico**: erros recentes, entradas stale, provider ausente e opção de
   exportar/copiar relatório.
 - **Ações**: `Aplicar`, `Aplicar e reiniciar`, `Reabrir em safe mode` e limpeza
@@ -435,17 +455,24 @@ Liquid Glass é hierarquia e comportamento, não apenas blur.
 
 ## 13. Análise do binário de referência
 
-O binário fornecido confirma a arquitetura de produto que deve ser preservada:
+Os binários fornecidos confirmam a arquitetura de produto que deve ser
+preservada:
 
 - FLEX e a antiga camada libFLEX estão compilados na mesma imagem;
 - classes do explorer, manager, toolbar, browser e utilitários estão presentes;
 - exports de compatibilidade da antiga libFLEX continuam disponíveis;
 - fishhook está incorporado;
 - existem loader, persistência, toggles e helper visual próprios;
-- não existe um Runtime Browser completo equivalente ao objetivo descrito neste
-  documento;
-- o tamanho maior decorre também de múltiplos slices e símbolos, portanto não é
-  uma medida confiável de funcionalidade.
+- a referência mais recente inclui `FLEXRuntimeHookActions`, ações TRUE/FALSE e
+  integração contextual em `FLEXMetadataSection`, mas limita o resolver a
+  getters BOOL sem argumento explícito;
+- `MSHookMessageEx` é importado do framework provider; o item local chamado
+  `MSHookFunction` na referência é um ponteiro resolvido em `__bss`, não o
+  backend inline incorporado;
+- a referência mais recente possui aproximadamente 1,6 MB de `__LINKEDIT`,
+  símbolos locais e caminhos de objetos de um build debug;
+- o tamanho maior decorre de debug, falta de otimização e, no binário anterior,
+  múltiplos slices; portanto não é uma medida confiável de funcionalidade.
 
 Usar o binário para conferir compatibilidade e composição, não para copiar
 endereços, presumir ABI ou substituir build reproduzível por engenharia reversa.
@@ -463,11 +490,15 @@ O build só está concluído quando passar por validação estática e runtime.
   Feather consegue redirecionar para ElleKit.
 - `otool -l`/`strings`: ausência de rpaths e paths de jailbreak.
 - `nm`/metadata Objective-C: classes completas do FLEX, classes AllFLEXing,
-  registry, resolver ABI, Hook Center e exports de compatibilidade.
+  registry, resolver ABI, `FLEXRuntimeHookActions`, Hook Center e exports de
+  compatibilidade.
 - `nm -u`/imports: chamadas `MSHookMessageEx` e `MSHookFunction` presentes quando
   o provider é obrigatório.
 - classrefs/strings: APIs reais `UIGlassEffect` e `UIGlassContainerEffect`.
-- confirmar que fishhook foi incorporado uma única vez e com namespace.
+- confirmar que fishhook foi incorporado uma única vez, com namespace e com os
+  exports marcadores `FLEXEmbeddedFishhookAvailable` e ABI versionada.
+- confirmar que as ações contextuais TRUE/FALSE/Apply e a integração Logos foram
+  compiladas.
 - confirmar que o dylib não depende de um segundo `libflex.dylib` ou
   `FLEXing.dylib`.
 
@@ -502,6 +533,8 @@ Uma entrega não pode ser descrita como concluída até que:
 - `MSHookMessageEx`, fishhook e `MSHookFunction` tenham testes reais;
 - o resolver nunca habilite uma entrada com ABI desconhecida;
 - todo alvo hookável no Browser possua toggle;
+- todo método/propriedade BOOL hookável no explorador FLEX possua o mesmo toggle
+  contextual e entrada de registry;
 - Apply revalide e instale de forma idempotente;
 - toggles desligados encaminhem ao original em tempo real;
 - persistência sobreviva ao relançamento sem salvar ponteiros absolutos;
@@ -514,10 +547,11 @@ Uma entrega não pode ser descrita como concluída até que:
 
 A base implementada já inclui target `iphone:clang:26.2:16.3`, arm64, dylib
 unificada, provider Substrate-compatible validado, `MSHookMessageEx`, fishhook,
-`MSHookFunction`, registry persistente por locators, safe mode, Runtime Browser,
-Hook Center e a camada visual UIKit 26 descrita neste arquivo. O monitor de
-imagens carregadas tarde apenas agenda rescan e reaplicação idempotente fora do
-callback do loader.
+`MSHookFunction`, manifestos explícitos de providers, integração Logos das
+linhas de metadata, `FLEXRuntimeHookActions`, registry persistente por locators,
+safe mode, Runtime Browser, Hook Center e a camada visual UIKit 26 descrita
+neste arquivo. O monitor de imagens carregadas tarde apenas agenda rescan e
+reaplicação idempotente fora do callback do loader.
 
 Compilação e inspeção estática não substituem as seguintes validações finais:
 

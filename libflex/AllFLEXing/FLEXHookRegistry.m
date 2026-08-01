@@ -446,6 +446,80 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     [self postChange:@"scan"];
 }
 
+- (FLEXHookEntry *)upsertDiscoveredEntry:(FLEXHookEntry *)entry {
+    if (entry.identifier.length == 0) {
+        return entry;
+    }
+
+    __block FLEXHookEntry *resolved = entry;
+    __block BOOL changed = NO;
+    __block BOOL shouldPersist = NO;
+    @synchronized (self) {
+        FLEXHookEntry *existing = self.entriesByIdentifier[entry.identifier];
+        if (!existing) {
+            self.entriesByIdentifier[entry.identifier] = entry;
+            [self.mutableEntries addObject:entry];
+            changed = YES;
+        } else {
+            NSString *resolvedError = existing.lastError;
+            if (!entry.available || !entry.hookable) {
+                resolvedError = entry.lastError;
+            } else if (!existing.available || !existing.hookable) {
+                // A provider/engine that was unavailable has recovered. Clear
+                // only that discovery error; do not erase an apply failure just
+                // because its row was rendered again.
+                resolvedError = nil;
+            }
+            changed = ![existing.title isEqualToString:entry.title] ||
+                ![existing.detail isEqualToString:entry.detail] ||
+                ![existing.imageName isEqualToString:entry.imageName] ||
+                ![existing.locator isEqualToDictionary:entry.locator] ||
+                existing.surface != entry.surface ||
+                existing.backend != entry.backend ||
+                existing.abi != entry.abi ||
+                existing.available != entry.available ||
+                existing.hookable != entry.hookable ||
+                existing.stale != entry.stale ||
+                !((existing.lastError == resolvedError) ||
+                  [existing.lastError isEqualToString:resolvedError]);
+
+            existing.title = entry.title;
+            existing.detail = entry.detail;
+            existing.imageName = entry.imageName;
+            existing.surface = entry.surface;
+            existing.backend = entry.backend;
+            existing.abi = entry.abi;
+            existing.locator = entry.locator;
+            existing.available = entry.available;
+            existing.hookable = entry.hookable;
+            existing.stale = entry.stale;
+            existing.lastError = resolvedError;
+            resolved = existing;
+            shouldPersist = changed &&
+                (existing.desiredEnabled || existing.userConfigured);
+        }
+
+        if (changed) {
+            [self.mutableEntries sortUsingComparator:^NSComparisonResult(
+                FLEXHookEntry *left, FLEXHookEntry *right) {
+                if (left.surface != right.surface) {
+                    return left.surface < right.surface
+                        ? NSOrderedAscending : NSOrderedDescending;
+                }
+                return [left.title localizedCaseInsensitiveCompare:right.title];
+            }];
+        }
+    }
+
+    if (shouldPersist) {
+        [self persistEntries];
+    }
+    if (changed) {
+        [self postChange:@"context-discovery"];
+    }
+    return resolved;
+}
+
 - (void)addOrUpdateManualEntry:(FLEXHookEntry *)entry {
     if (entry.identifier.length == 0) {
         return;

@@ -73,6 +73,15 @@ Every entry proven hookable has a switch beside it. An unknown C ABI stays
 visible but disabled until the user chooses a signature they have independently
 verified.
 
+The regular FLEX object explorer is connected to that same runtime registry.
+Supported BOOL methods and BOOL properties receive a native switch directly in
+their metadata row. Their **Runtime Hook** menu provides **Force TRUE**,
+**Force FALSE**, **Forward Original**, **Apply Staged Changes**, **Hook
+Details**, and **Copy Hook ID** without replacing FLEX's existing navigation or
+copy actions. This integration is generated through Logos for the known
+`FLEXMetadataSection` surface; the selected target is still resolved and
+installed dynamically only after exact ABI validation.
+
 ## Liquid Glass
 
 The dylib is compiled with real UIKit 26 headers. Standard navigation bars,
@@ -102,10 +111,13 @@ git submodule update --init --recursive
 ./build.sh verify
 ```
 
-The build uses explicit Core, HookRuntime, and LiquidGlassUI manifests, but all
-three are source groups in the same Theos target. They do not produce helper
-dylibs. The workflow performs the same SDK validation, build, Mach-O audit,
-package collection, and artifact upload automatically.
+The build uses explicit Core, HookProviders, HookRuntime, and LiquidGlassUI
+manifests, but all four are source groups in the same Theos target. They do not
+produce helper dylibs. HookProviders adds the hidden namespaced fishhook source
+exactly once and exports a small ABI marker so CI can prove it was linked. The
+Logos metadata-row integration uses the Substrate-compatible generator. The
+workflow performs the same SDK validation, build, Mach-O audit, package
+collection, and artifact upload automatically.
 
 ## Feather injection
 

@@ -11,6 +11,9 @@ FOUNDATION_EXPORT NSNotificationName const FLEXRuntimeImagesDidChangeNotificatio
 @interface FLEXRuntimeScanner : NSObject
 
 + (void)startMonitoringImages;
++ (nullable FLEXHookEntry *)objectiveCEntryForClass:(Class)targetClass
+                                           selector:(SEL)selector
+                                        classMethod:(BOOL)classMethod;
 + (void)scanObjectiveCRuntimeIncludingSystemImages:(BOOL)includeSystemImages
                                          completion:(FLEXRuntimeScanCompletion)completion;
 + (void)scanCImportsIncludingSystemImages:(BOOL)includeSystemImages

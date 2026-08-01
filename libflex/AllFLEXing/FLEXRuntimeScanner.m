@@ -167,6 +167,66 @@ static NSString *FLEXUUIDForHeader(const struct mach_header_64 *header) {
     });
 }
 
++ (FLEXHookEntry *)objectiveCEntryForClass:(Class)targetClass
+                                  selector:(SEL)selector
+                               classMethod:(BOOL)classMethod {
+    if (!targetClass || !selector ||
+        !FLEXSelectorIsSafeCandidate(sel_getName(selector))) {
+        return nil;
+    }
+
+    Method method = classMethod
+        ? class_getClassMethod(targetClass, selector)
+        : class_getInstanceMethod(targetClass, selector);
+    FLEXHookABI abi = FLEXABIForObjectiveCMethod(method);
+    if (!method || abi == FLEXHookABIUnknown) {
+        return nil;
+    }
+
+    NSString *className = NSStringFromClass(targetClass);
+    NSString *selectorName = NSStringFromSelector(selector);
+    const char *rawImage = class_getImageName(targetClass);
+    NSString *image = rawImage
+        ? [NSString stringWithUTF8String:rawImage]
+        : @"Created at Runtime";
+    NSString *encoding = [NSString stringWithUTF8String:
+        method_getTypeEncoding(method) ?: ""];
+    if (className.length == 0 || selectorName.length == 0) {
+        return nil;
+    }
+
+    BOOL providerAvailable = FLEXMSHookProviderAvailable();
+    BOOL engineEnabled = FLEXFlag(@"engine.objc_ellekit");
+    FLEXHookEntry *entry = [FLEXHookEntry new];
+    entry.identifier = FLEXStableObjectiveCIdentifier(
+        image, className, selectorName, classMethod
+    );
+    entry.title = [NSString stringWithFormat:@"%@[%@ %@]",
+        classMethod ? @"+" : @"-", className, selectorName];
+    entry.detail = [NSString stringWithFormat:@"%@ · %@",
+        FLEXHookABIName(abi), encoding];
+    entry.imageName = image.lastPathComponent ?: image;
+    entry.surface = FLEXHookSurfaceObjectiveC;
+    entry.backend = FLEXHookBackendObjectiveCElleKit;
+    entry.abi = abi;
+    entry.locator = @{
+        @"class": className,
+        @"selector": selectorName,
+        @"classMethod": @(classMethod),
+        @"encoding": encoding,
+        @"image": image,
+    };
+    entry.available = providerAvailable;
+    entry.hookable = providerAvailable && engineEnabled;
+    entry.stale = NO;
+    if (!providerAvailable) {
+        entry.lastError = @"Substrate-compatible provider unavailable";
+    } else if (!engineEnabled) {
+        entry.lastError = @"Objective-C/ElleKit engine is disabled";
+    }
+    return entry;
+}
+
 + (void)scanObjectiveCRuntimeIncludingSystemImages:(BOOL)includeSystemImages
                                          completion:(FLEXRuntimeScanCompletion)completion {
     dispatch_async(FLEXRuntimeScannerQueue(), ^{
@@ -205,39 +265,13 @@ static NSString *FLEXUUIDForHeader(const struct mach_header_64 *header) {
                         if (!FLEXSelectorIsSafeCandidate(rawSelector)) {
                             continue;
                         }
-                        FLEXHookABI abi = FLEXABIForObjectiveCMethod(method);
-                        if (abi == FLEXHookABIUnknown) {
+                        FLEXHookEntry *entry = [self
+                            objectiveCEntryForClass:targetClass
+                                          selector:selector
+                                       classMethod:classMethod];
+                        if (!entry) {
                             continue;
                         }
-
-                        NSString *selectorName = NSStringFromSelector(selector);
-                        NSString *encoding = [NSString stringWithUTF8String:
-                            method_getTypeEncoding(method) ?: ""];
-                        FLEXHookEntry *entry = [FLEXHookEntry new];
-                        entry.identifier = FLEXStableObjectiveCIdentifier(
-                            image, className, selectorName, classMethod
-                        );
-                        entry.title = [NSString stringWithFormat:@"%@[%@ %@]",
-                            classMethod ? @"+" : @"-", className, selectorName];
-                        entry.detail = [NSString stringWithFormat:@"%@ · %@",
-                            FLEXHookABIName(abi), encoding];
-                        entry.imageName = image.lastPathComponent ?: image;
-                        entry.surface = FLEXHookSurfaceObjectiveC;
-                        entry.backend = FLEXHookBackendObjectiveCElleKit;
-                        entry.abi = abi;
-                        entry.locator = @{
-                            @"class": className,
-                            @"selector": selectorName,
-                            @"classMethod": @(classMethod),
-                            @"encoding": encoding,
-                            @"image": image,
-                        };
-                        entry.available = FLEXMSHookProviderAvailable();
-                        entry.hookable = entry.available;
-                        entry.hookable = entry.hookable && FLEXFlag(@"engine.objc_ellekit");
-                        entry.stale = NO;
-                        entry.lastError = entry.available ? nil
-                            : @"Substrate-compatible provider unavailable";
                         [result addObject:entry];
                     }
                     if (methods) {

@@ -2,6 +2,9 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+FOUNDATION_EXPORT NSUInteger const FLEXEmbeddedFishhookABIVersion;
+FOUNDATION_EXPORT BOOL FLEXEmbeddedFishhookAvailable(void);
+
 @interface FLEXSymbolRebind : NSObject
 
 + (BOOL)rebindSymbol:(NSString *)symbol

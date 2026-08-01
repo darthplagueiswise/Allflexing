@@ -1,88 +1,121 @@
-# Uploaded AllFLEXing.dylib audit
+# Uploaded AllFLEXing binary audit
 
-This audit treats the uploaded Mach-O as the source of truth. No `.deb` was
-attached, so package layout, control metadata, and injector-specific scripts
-could not be verified.
+This document records structural evidence from the uploaded Mach-O binaries and
+compares it with the rebuilt SDK 26.2 artifact. File size is never used as a
+proxy for feature completeness.
 
-## Identity
+## Latest uploaded reference
 
 | Property | Observed value |
 |---|---|
-| SHA-256 | `9aafc761197495ec6b7b95930825623ad5dc2c511be13e5e44bf9666406370d3` |
-| Size | 3,038,912 bytes |
-| Slices | arm64 and arm64e (subtype 2, pointer authentication) |
-| File type | dynamically linked shared library |
-| `LC_ID_DYLIB` | `@rpath/AllFLEXing.dylib` |
+| SHA-256 | `3d82f8fae9e4675bf95f1f772a872a98c60f4c1fae1636864e08a4162761cddd` |
+| Size | 3,352,960 bytes |
+| Slice | arm64 |
+| File type | `MH_DYLIB` |
+| `LC_ID_DYLIB` | `/usr/lib/libFLEX.dylib` |
 | Minimum OS | iOS 15.0 |
 | Build SDK | iOS 16.5 |
-| Linker version | 609.0.0 |
+| UUID | `9f14512c-03d3-326b-bf6b-f2837ee52adc` |
+| Load commands | 37 |
 | Encryption | disabled (`cryptid = 0`) |
 
-The uploaded binary is therefore **not** an SDK 26.2 build. It uses runtime
-class/selector lookup to reach Liquid Glass-shaped APIs while retaining an SDK
-16.5 load command. This repository's new build pipeline changes the actual
-`LC_BUILD_VERSION` SDK to 26.2.
+The binary has 15,839 symbol-table records, 7,170 non-debug definitions, 489
+exports, and 2,037 imports. Its Objective-C inventory contains 170 defined class
+symbols, 329 class-name strings, 313 imported classes, and 4,551 selectors.
 
-## Integration evidence
+## What is genuinely unified
 
-The arm64 slice exports 499 symbols, including 174 Objective-C classes. Five
-classes are specific to the unified layer:
+The latest reference exports the compatibility functions `FLXGetManager`,
+`FLXRevealSEL`, and `FLXWindowClass` while defining the complete FLEX class
+inventory in the same Mach-O. It does not load a second FLEXing or libFLEX
+dylib. This confirms the intended composition: loader plus former libFLEX API
+plus the FLEX implementation in one image.
 
-- `AllFLEXingReveal`
-- `FLEXHookPersistence`
-- `FLEXHookToggles`
-- `FLEXLiquidGlass`
-- `FLEXSymbolRebind`
+The reference also contains a contextual runtime-hook layer that was not present
+in the first uploaded binary:
 
-It also exports `FLEXFlag`, `FLXGetManager`, `FLXRevealSEL`, and
-`FLXWindowClass`. The other classes match the pinned FLEX tree, confirming that
-FLEX is compiled into the same image rather than loaded from a second dylib.
+- class `FLEXRuntimeHookActions`;
+- `canHookMethod:target:` and `canHookBoolProperty:target:`;
+- actions for forcing `TRUE`, forcing `FALSE`, clearing a hook, and copying its
+  identifier;
+- `flex_boolHookSwitchChanged:` integrated into `FLEXMetadataSection`;
+- persistence key `flex_runtime_bool_hook_overrides_v1`;
+- an exact BOOL return check for `B`, `c`, and `C` encodings;
+- a two-hidden-argument check, so this older implementation accepts only BOOL
+  getters with no explicit argument;
+- `MSHookMessageEx` installation and one saved original IMP per key.
 
-The custom Objective-C metadata exposes the following relevant methods:
+The rebuilt implementation keeps this contextual surface but routes it through
+the stronger shared registry. It additionally supports the already validated
+one-object and one-integer Objective-C BOOL profiles, separates pending,
+desired, installed, and effective states, and requires explicit Apply.
 
-- persistence: `registerFlag:title:defaultValue:`, `boolForFlag:`,
-  `setBool:forFlag:`, `registerInstallOnce:title:defaultValue:block:`, and
-  `replayInstallOnce`;
-- UI: `glassEffectInteractive:tint:`, `containerEffectWithSpacing:`,
-  `styleNavigationController:`, `styleTableView:`, `styleCell:`,
-  `styleSearchBar:`, `styleButton:`, and `applyToViewController:`;
-- C rebinding: `rebindSymbol:replacement:original:`;
-- reveal: `handle:` and a singleton `shared` method.
+## fishhook, Logos, and the hook provider
 
-Imports of `_dyld_register_func_for_add_image` and related dyld functions, plus
-the embedded `flex_fishhook` source in the pinned FLEX commit, confirm that
-fishhook is compiled into the image.
+The reference contains local definitions for the namespaced fishhook routines:
 
-## Dependencies and sideload caveats
+- `flex_rebind_symbols`;
+- `flex_rebind_symbols_image`;
+- the lazy/non-lazy symbol pointer walkers and image callback.
 
-The uploaded reference binary does **not** contain an `LC_LOAD_DYLIB` for Cydia
-Substrate, ElleKit, or libhooker. The strings `/usr/lib/libsubstrate.dylib` and
-`MSHookFunction` come from FLEX's system-log controller, which probes them
-dynamically; they are not hard dependencies of that reference image.
+It also contains generated Logos methods and constructors. fishhook is therefore
+real code in that Mach-O, not merely a header or a string.
 
-The rebuilt product intentionally differs here: it links the
-Substrate-compatible `CydiaSubstrate.framework` contract that Feather rewrites
-and supplies with ElleKit inside a certificate-signed app. That dependency is
-not a jailbreak bootstrap and must resolve from the app's `Frameworks` rpath.
+`MSHookMessageEx` is an imported symbol backed by the
+`@rpath/CydiaSubstrate.framework/CydiaSubstrate` dependency. The symbol named
+`MSHookFunction` in the reference's local table is located in `__bss`; it is a
+runtime-resolved function pointer, not an embedded inline-hook implementation.
+The provider framework still has to be present in the signed app.
 
-It does retain four rootless rpaths:
+The rebuilt target makes these boundaries explicit:
 
-```text
-/var/jb/Library/Frameworks
-/var/jb/usr/lib
-@loader_path/.jbroot/Library/Frameworks
-@loader_path/.jbroot/usr/lib
-```
+- namespaced fishhook C source is compiled exactly once as an in-dylib provider
+  module;
+- exported `FLEXEmbeddedFishhookAvailable` and ABI-version symbols create a
+  verifiable strong link to both hidden fishhook entry points;
+- known FLEX metadata-row integration is compiled through Logos;
+- dynamic Objective-C targets call `MSHookMessageEx` through the provider;
+- C inline targets call `MSHookFunction` only after explicit ABI validation;
+- provider identity is verified at runtime instead of inferred from a string.
 
-Those paths are unnecessary for a standalone resigned app. The rebuilt target
-omits the rootless package scheme and the CI verifier rejects these rpaths.
+## Why the reference is larger
 
-Linked system libraries/frameworks are Objective-C, Foundation, CoreFoundation,
-CoreGraphics, UIKit, ImageIO, QuartzCore, SceneKit, Security, WebKit,
-AVFoundation, UserNotifications, sqlite3, zlib, libc++, and libSystem.
+The latest reference is an unoptimized debug build. It retains local function
+names, object-file records, and absolute build paths. Its `__LINKEDIT` segment is
+1,599,872 bytes, and its unoptimized `__text` section is 1,100,160 bytes.
 
-## Code signature
+The successful SDK 26.2 release artifact is 1,529,264 bytes. Its stripped
+`__LINKEDIT` is 103,856 bytes, yet it defines more Objective-C classes and
+selectors than the reference. The smaller release size is explained by
+optimization and symbol stripping; it is not evidence that FLEX, libFLEX, or a
+provider adapter was omitted.
 
-Both slices contain a CodeDirectory with no entitlements. The arm64 identifier
-is `AllFLEXing.dylib.0b01dd7e.unsigned`. The containing app still needs to be
-re-signed after the dylib and its load command are inserted.
+CI verifies composition using exports, defined class inventory, load commands,
+provider imports, embedded-fishhook marker symbols, runtime classes, and UI
+strings. It does not enforce a target byte size.
+
+## Sideload corrections required by the rebuilt artifact
+
+The latest reference is useful as a behavior reference but is not the desired
+final binary contract:
+
+- it was linked with SDK 16.5 rather than SDK 26.2;
+- its install name is `/usr/lib/libFLEX.dylib` rather than
+  `@rpath/AllFLEXing.dylib`;
+- it contains `/var/jb` and `.jbroot` rpaths;
+- it targets iOS 15.0 and contains no native UIKit 26 class references;
+- its hook persistence collapses runtime state into a smaller dictionary and
+  does not provide the full Apply/safe-mode lifecycle.
+
+The rebuilt target uses SDK 26.2, arm64, minimum iOS 16.3, no jailbreak rpaths,
+one `@rpath/AllFLEXing.dylib`, a Feather-rewritable provider dependency, native
+UIKit 26 Liquid Glass, and the shared persistent Hook Center.
+
+## Earlier uploaded reference
+
+The earlier SHA-256
+`9aafc761197495ec6b7b95930825623ad5dc2c511be13e5e44bf9666406370d3`
+is a 3,038,912-byte arm64/arm64e universal dylib. It also unifies FLEX and the
+former libFLEX exports, but it lacks the latest reference's
+`FLEXRuntimeHookActions` contextual layer and has no hard hook-provider
+dependency. Both slices were built with SDK 16.5 and retain rootless rpaths.

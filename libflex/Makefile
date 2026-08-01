@@ -9,6 +9,7 @@ FLEX_ROOT := FLEX
 ALLFLEXING_ROOT := AllFLEXing
 
 include modules/Core/Module.mk
+include modules/HookProviders/Module.mk
 include modules/HookRuntime/Module.mk
 include modules/LiquidGlassUI/Module.mk
 
@@ -17,18 +18,20 @@ dtoim = $(foreach d,$(1),-I$(d))
 FLEX_SOURCES  := $(shell find $(FLEX_ROOT)/Classes -type f -name '*.c' | sort)
 FLEX_SOURCES += $(shell find $(FLEX_ROOT)/Classes -type f -name '*.m' | sort)
 FLEX_SOURCES += $(shell find $(FLEX_ROOT)/Classes -type f -name '*.mm' | sort)
+FLEX_SOURCES := $(filter-out $(ALLFLEXING_EMBEDDED_FISHHOOK_SOURCES),$(FLEX_SOURCES))
 ALLFLEXING_SOURCES := $(sort \
 	$(ALLFLEXING_CORE_SOURCES) \
+	$(ALLFLEXING_HOOK_PROVIDER_SOURCES) \
 	$(ALLFLEXING_HOOK_RUNTIME_SOURCES) \
 	$(ALLFLEXING_LIQUID_GLASS_UI_SOURCES))
-ALLFLEXING_DISCOVERED_SOURCES := $(shell find $(ALLFLEXING_ROOT) -type f \( -name '*.c' -o -name '*.m' -o -name '*.mm' \) | sort)
+ALLFLEXING_DISCOVERED_SOURCES := $(shell find $(ALLFLEXING_ROOT) -type f \( -name '*.c' -o -name '*.m' -o -name '*.mm' -o -name '*.x' -o -name '*.xm' \) | sort)
 
 ifneq ($(sort $(ALLFLEXING_SOURCES)),$(sort $(ALLFLEXING_DISCOVERED_SOURCES)))
 $(error AllFLEXing module manifests do not match the source tree)
 endif
 
 FLEX_FISHHOOK_SOURCE := $(FLEX_ROOT)/Classes/Utility/Runtime/flex_fishhook.c
-ifeq ($(filter $(FLEX_FISHHOOK_SOURCE),$(FLEX_SOURCES)),)
+ifneq ($(ALLFLEXING_EMBEDDED_FISHHOOK_SOURCES),$(FLEX_FISHHOOK_SOURCE))
 $(error namespaced fishhook source is missing from the unified target)
 endif
 
@@ -40,10 +43,15 @@ IMPORTS := -I$(FLEX_ROOT)/Classes -I$(ALLFLEXING_ROOT) $(call dtoim,$(_IMPORTS))
 
 TWEAK_NAME := AllFLEXing
 
-$(TWEAK_NAME)_FILES := $(FLEX_SOURCES) $(ALLFLEXING_SOURCES)
+$(TWEAK_NAME)_FILES := $(FLEX_SOURCES) $(ALLFLEXING_SOURCES) $(ALLFLEXING_EMBEDDED_FISHHOOK_SOURCES)
 $(TWEAK_NAME)_FRAMEWORKS := Foundation CoreGraphics UIKit ImageIO QuartzCore SceneKit Security WebKit AVFoundation UserNotifications
 $(TWEAK_NAME)_LIBRARIES := sqlite3 z c++ substrate
 $(TWEAK_NAME)_USE_MODULES := 0
+$(TWEAK_NAME)_LOGOS_DEFAULT_GENERATOR := MobileSubstrate
+
+ifneq ($(words $(filter $(FLEX_FISHHOOK_SOURCE),$($(TWEAK_NAME)_FILES))),1)
+$(error namespaced fishhook must be compiled exactly once)
+endif
 
 # Keep the SDK/deployment contract fixed and provide the TARGET_OS definitions
 # expected by the iPhoneOS 26.2 headers when Clang modules are disabled.
