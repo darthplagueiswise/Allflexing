@@ -224,7 +224,7 @@ static NSInteger FLEXReserveSlot(FLEXHookEntry *entry) {
             ? FLEXHookBackendFishhook : FLEXHookBackendInlineElleKit;
     }
 
-    void *original = NULL;
+    slot->original = NULL;
     BOOL installed = NO;
     if (backend == FLEXHookBackendFishhook) {
         if (!FLEXFlag(@"engine.fishhook")) {
@@ -241,7 +241,7 @@ static NSInteger FLEXReserveSlot(FLEXHookEntry *entry) {
         installed = [FLEXSymbolRebind rebindSymbol:symbol
                                       inImageNamed:image
                                         replacement:replacement
-                                           original:&original];
+                                           original:&slot->original];
     } else if (backend == FLEXHookBackendInlineElleKit) {
         if (!FLEXFlag(@"engine.inline_ellekit")) {
             if (error) {
@@ -254,10 +254,11 @@ static NSInteger FLEXReserveSlot(FLEXHookEntry *entry) {
         }
         void *address = [self resolveSymbol:symbol];
         if (address && FLEXMSHookProviderAvailable()) {
-            installed = FLEXHookFunctionIfAvailable(address, replacement, &original);
+            installed = FLEXHookFunctionIfAvailable(address, replacement, &slot->original);
         }
     }
 
+    void *original = slot->original;
     if (!installed || !original || original == replacement) {
         if (error) {
             NSString *description = backend == FLEXHookBackendFishhook
@@ -270,7 +271,6 @@ static NSInteger FLEXReserveSlot(FLEXHookEntry *entry) {
         return NO;
     }
 
-    slot->original = original;
     entry.original = original;
     entry.backend = backend;
     entry.installed = YES;

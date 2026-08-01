@@ -651,7 +651,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     SEL capturedSelector = selector;
 
     switch (entry.abi) {
-        case FLEXHookABIObjCBoolNoArguments:
+        case FLEXHookABIObjCBoolNoArguments: {
             replacement = imp_implementationWithBlock(^BOOL(id receiver) {
                 FLEXHookEntry *strongEntry = weakEntry;
                 BOOL native = original
@@ -660,7 +660,8 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
                 return strongEntry.effectiveEnabled ? strongEntry.forceValue : native;
             });
             break;
-        case FLEXHookABIObjCBoolObjectArgument:
+        }
+        case FLEXHookABIObjCBoolObjectArgument: {
             replacement = imp_implementationWithBlock(^BOOL(id receiver, id argument) {
                 FLEXHookEntry *strongEntry = weakEntry;
                 BOOL native = original
@@ -669,7 +670,8 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
                 return strongEntry.effectiveEnabled ? strongEntry.forceValue : native;
             });
             break;
-        case FLEXHookABIObjCBoolIntegerArgument:
+        }
+        case FLEXHookABIObjCBoolIntegerArgument: {
             replacement = imp_implementationWithBlock(^BOOL(id receiver, uintptr_t argument) {
                 FLEXHookEntry *strongEntry = weakEntry;
                 BOOL native = original
@@ -678,6 +680,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
                 return strongEntry.effectiveEnabled ? strongEntry.forceValue : native;
             });
             break;
+        }
         default:
             break;
     }
