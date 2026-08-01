@@ -17,7 +17,7 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
 @property (nonatomic) UISearchController *searchController;
 @property (nonatomic, copy) NSArray<FLEXHookEntry *> *filteredEntries;
 @property (nonatomic) UIBarButtonItem *scopeItem;
-@property (nonatomic) UIActivityIndicatorView *activityIndicator;
+@property (nonatomic) UIBarButtonItem *reloadItem;
 @end
 
 @implementation FLEXRuntimeBrowserController
@@ -44,19 +44,26 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
     self.navigationItem.searchController = self.searchController;
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;
+    [self setContentScrollView:self.tableView
+                      forEdge:(NSDirectionalRectEdgeTop | NSDirectionalRectEdgeBottom)];
 
     self.scopeItem = [[UIBarButtonItem alloc]
-        initWithTitle:@"App"
-                style:UIBarButtonItemStylePlain
-               target:self
-               action:@selector(chooseScope:)];
-    UIBarButtonItem *reload = [[UIBarButtonItem alloc]
+        initWithTitle:@"App images"
+                 menu:[self scopeMenu]];
+    self.reloadItem = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh
                              target:self
                              action:@selector(reloadScan)];
-    NSMutableArray<UIBarButtonItem *> *items = [NSMutableArray arrayWithObjects:reload,
-                                                                              self.scopeItem,
-                                                                              nil];
+    UIBarButtonItem *separator = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemFixedSpace
+                             target:nil
+                             action:nil];
+    separator.width = 8.0;
+    if (@available(iOS 26.0, *)) {
+        separator.hidesSharedBackground = YES;
+    }
+    NSMutableArray<UIBarButtonItem *> *items = [NSMutableArray arrayWithObjects:
+        self.reloadItem, separator, self.scopeItem, nil];
     if (self.kind == FLEXRuntimeBrowserKindC) {
         UIBarButtonItem *add = [[UIBarButtonItem alloc]
             initWithBarButtonSystemItem:UIBarButtonSystemItemAdd
@@ -65,9 +72,6 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
         [items insertObject:add atIndex:0];
     }
     self.navigationItem.rightBarButtonItems = items;
-
-    self.activityIndicator = [[UIActivityIndicatorView alloc]
-        initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
 
     [NSNotificationCenter.defaultCenter
         addObserver:self
@@ -129,6 +133,8 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
     }
     self.filteredEntries = filtered.copy;
     [self.tableView reloadData];
+    [self updateNavigationStatus];
+    [self updateUnavailableConfiguration];
 }
 
 - (void)reloadScan {
@@ -136,8 +142,10 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
         return;
     }
     self.scanning = YES;
-    self.navigationItem.titleView = self.activityIndicator;
-    [self.activityIndicator startAnimating];
+    self.reloadItem.enabled = NO;
+    self.scopeItem.enabled = NO;
+    [self updateNavigationStatus];
+    [self updateUnavailableConfiguration];
 
     __weak typeof(self) weakSelf = self;
     FLEXRuntimeScanCompletion completion = ^(NSArray<FLEXHookEntry *> *entries) {
@@ -149,8 +157,8 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
             ? FLEXHookSurfaceObjectiveC : FLEXHookSurfaceCImport;
         [FLEXHookRegistry.sharedRegistry mergeDiscoveredEntries:entries surface:surface];
         self.scanning = NO;
-        [self.activityIndicator stopAnimating];
-        self.navigationItem.titleView = nil;
+        self.reloadItem.enabled = YES;
+        self.scopeItem.enabled = YES;
         [self reloadEntries];
     };
 
@@ -165,33 +173,35 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
     }
 }
 
-- (void)chooseScope:(UIBarButtonItem *)sender {
-    UIAlertController *sheet = [UIAlertController
-        alertControllerWithTitle:@"Runtime scope"
-                         message:@"App images are safer and faster. System images are inspection-oriented."
-                  preferredStyle:UIAlertControllerStyleActionSheet];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Host app images"
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(__unused UIAlertAction *action) {
-        self.includeSystemImages = NO;
-        self.scopeItem.title = @"App";
-        [self reloadScan];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"All loaded images"
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(__unused UIAlertAction *action) {
-        self.includeSystemImages = YES;
-        self.scopeItem.title = @"All";
-        [self reloadScan];
-    }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                              style:UIAlertActionStyleCancel
-                                            handler:nil]];
-    UIPopoverPresentationController *popover = sheet.popoverPresentationController;
-    if (popover) {
-        popover.barButtonItem = sender;
-    }
-    [self presentViewController:sheet animated:YES completion:nil];
+- (UIMenu *)scopeMenu {
+    __weak typeof(self) weakSelf = self;
+    UIAction *app = [UIAction
+        actionWithTitle:@"Host app images"
+                  image:[UIImage systemImageNamed:@"app"]
+             identifier:nil
+                handler:^(__unused UIAction *action) {
+        weakSelf.includeSystemImages = NO;
+        weakSelf.scopeItem.title = @"App images";
+        weakSelf.scopeItem.menu = [weakSelf scopeMenu];
+        [weakSelf reloadScan];
+    }];
+    app.state = self.includeSystemImages ? UIMenuElementStateOff : UIMenuElementStateOn;
+    UIAction *all = [UIAction
+        actionWithTitle:@"All loaded images"
+                  image:[UIImage systemImageNamed:@"square.stack.3d.up"]
+             identifier:nil
+                handler:^(__unused UIAction *action) {
+        weakSelf.includeSystemImages = YES;
+        weakSelf.scopeItem.title = @"All images";
+        weakSelf.scopeItem.menu = [weakSelf scopeMenu];
+        [weakSelf reloadScan];
+    }];
+    all.state = self.includeSystemImages ? UIMenuElementStateOn : UIMenuElementStateOff;
+    return [UIMenu menuWithTitle:@"Runtime scope"
+                         image:nil
+                    identifier:nil
+                       options:UIMenuOptionsDisplayInline
+                      children:@[app, all]];
 }
 
 - (void)addManualSymbol:(UIBarButtonItem *)sender {
@@ -259,16 +269,24 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
                                       reuseIdentifier:identifier];
     }
     FLEXHookEntry *entry = self.filteredEntries[indexPath.row];
-    cell.textLabel.text = entry.title;
-    cell.textLabel.numberOfLines = 0;
-    cell.detailTextLabel.text = [NSString stringWithFormat:@"%@\n%@ · %@",
+    UIListContentConfiguration *content = [cell defaultContentConfiguration];
+    content.text = entry.title;
+    content.secondaryText = [NSString stringWithFormat:@"%@\n%@ · %@",
         entry.detail, entry.imageName, entry.statusSummary];
-    cell.detailTextLabel.numberOfLines = 0;
+    content.secondaryTextProperties.numberOfLines = 0;
+    content.image = [UIImage systemImageNamed:entry.effectiveEnabled
+        ? @"bolt.circle.fill" : (entry.hookable ? @"circle.dashed" : @"eye")];
+    content.imageProperties.tintColor = entry.effectiveEnabled
+        ? UIColor.systemGreenColor : (entry.hookable ? self.view.tintColor : UIColor.secondaryLabelColor);
+    cell.contentConfiguration = content;
     cell.accessoryType = UITableViewCellAccessoryNone;
 
     UISwitch *toggle = [UISwitch new];
     toggle.on = entry.pendingEnabled;
     toggle.enabled = (entry.available && entry.hookable) || entry.pendingEnabled;
+    [toggle sizeToFit];
+    toggle.accessibilityLabel = [NSString stringWithFormat:@"Runtime hook for %@", entry.title];
+    toggle.accessibilityValue = entry.statusSummary;
     objc_setAssociatedObject(toggle,
                              kFLEXRuntimeBrowserEntryIDKey,
                              entry.identifier,
@@ -278,6 +296,35 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
      forControlEvents:UIControlEventValueChanged];
     cell.accessoryView = toggle;
     return cell;
+}
+
+- (void)updateNavigationStatus {
+    NSString *status = self.scanning
+        ? @"Scanning safely in the background…"
+        : [NSString stringWithFormat:@"%lu discovered target(s)",
+            (unsigned long)self.filteredEntries.count];
+    if (@available(iOS 26.0, *)) {
+        self.navigationItem.subtitle = status;
+    }
+}
+
+- (void)updateUnavailableConfiguration {
+    if (@available(iOS 17.0, *)) {
+        if (self.filteredEntries.count) {
+            self.contentUnavailableConfiguration = nil;
+            return;
+        }
+        UIContentUnavailableConfiguration *configuration = self.scanning
+            ? [UIContentUnavailableConfiguration loadingConfiguration]
+            : (self.searchController.searchBar.text.length
+                ? [UIContentUnavailableConfiguration searchConfiguration]
+                : [UIContentUnavailableConfiguration emptyConfiguration]);
+        configuration.text = self.scanning ? @"Scanning runtime" : @"No matching targets";
+        configuration.secondaryText = self.scanning
+            ? @"Class and Mach-O work is running away from the main thread."
+            : @"Change the search or runtime scope, then scan again.";
+        self.contentUnavailableConfiguration = configuration;
+    }
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {

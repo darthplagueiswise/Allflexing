@@ -9,12 +9,12 @@ typedef NS_ENUM(NSInteger, FLEXHookDetailSection) {
     FLEXHookDetailSectionTarget = 0,
     FLEXHookDetailSectionConfiguration,
     FLEXHookDetailSectionRuntime,
-    FLEXHookDetailSectionApply,
     FLEXHookDetailSectionCount,
 };
 
 @interface FLEXHookEntryDetailController ()
 @property (nonatomic) FLEXHookEntry *entry;
+@property (nonatomic) UIBarButtonItem *applyItem;
 @end
 
 @implementation FLEXHookEntryDetailController
@@ -32,6 +32,17 @@ typedef NS_ENUM(NSInteger, FLEXHookDetailSection) {
     self.title = self.entry.title;
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 58.0;
+    self.applyItem = [[UIBarButtonItem alloc]
+        initWithTitle:@"Apply"
+                style:UIBarButtonItemStyleDone
+               target:self
+               action:@selector(applyNow)];
+    if (@available(iOS 26.0, *)) {
+        self.applyItem.style = UIBarButtonItemStyleProminent;
+    }
+    [self setContentScrollView:self.tableView
+                      forEdge:(NSDirectionalRectEdgeTop | NSDirectionalRectEdgeBottom)];
+    self.navigationItem.rightBarButtonItem = self.applyItem;
     [NSNotificationCenter.defaultCenter
         addObserver:self
            selector:@selector(registryChanged:)
@@ -48,6 +59,7 @@ typedef NS_ENUM(NSInteger, FLEXHookDetailSection) {
         self.entry = latest;
     }
     [self.tableView reloadData];
+    [self updateNavigationState];
     [FLEXLiquidGlass applyToViewController:self];
 }
 
@@ -57,7 +69,13 @@ typedef NS_ENUM(NSInteger, FLEXHookDetailSection) {
 
 - (void)registryChanged:(NSNotification *)notification {
     (void)notification;
+    FLEXHookEntry *latest = [FLEXHookRegistry.sharedRegistry
+        entryForIdentifier:self.entry.identifier];
+    if (latest) {
+        self.entry = latest;
+    }
     [self.tableView reloadData];
+    [self updateNavigationState];
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
@@ -71,7 +89,6 @@ typedef NS_ENUM(NSInteger, FLEXHookDetailSection) {
         case FLEXHookDetailSectionTarget: return 4;
         case FLEXHookDetailSectionConfiguration: return 4;
         case FLEXHookDetailSectionRuntime: return 3;
-        case FLEXHookDetailSectionApply: return 1;
         default: return 0;
     }
 }
@@ -92,6 +109,20 @@ typedef NS_ENUM(NSInteger, FLEXHookDetailSection) {
     return cell;
 }
 
+- (void)configureCell:(UITableViewCell *)cell
+                  text:(NSString *)text
+             secondary:(NSString *)secondary
+                 image:(NSString *)image
+                  tint:(UIColor *)tint {
+    UIListContentConfiguration *content = [cell defaultContentConfiguration];
+    content.text = text;
+    content.secondaryText = secondary;
+    content.secondaryTextProperties.numberOfLines = 0;
+    content.image = image.length ? [UIImage systemImageNamed:image] : nil;
+    content.imageProperties.tintColor = tint;
+    cell.contentConfiguration = content;
+}
+
 - (UITableViewCell *)tableView:(UITableView *)tableView
          cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [self baseCellForTableView:tableView];
@@ -99,24 +130,33 @@ typedef NS_ENUM(NSInteger, FLEXHookDetailSection) {
 
     if (indexPath.section == FLEXHookDetailSectionTarget) {
         NSArray<NSString *> *titles = @[@"Surface", @"Target", @"Image", @"Locator"];
-        cell.textLabel.text = titles[indexPath.row];
+        NSString *value = nil;
         if (indexPath.row == 0) {
-            cell.detailTextLabel.text = FLEXHookSurfaceName(entry.surface);
+            value = FLEXHookSurfaceName(entry.surface);
         } else if (indexPath.row == 1) {
-            cell.detailTextLabel.text = entry.title;
+            value = entry.title;
         } else if (indexPath.row == 2) {
-            cell.detailTextLabel.text = entry.imageName.length ? entry.imageName : @"Unknown";
+            value = entry.imageName.length ? entry.imageName : @"Unknown";
         } else {
-            cell.detailTextLabel.text = entry.identifier;
+            value = entry.identifier;
         }
+        NSArray<NSString *> *images = @[@"square.stack.3d.up", @"scope", @"shippingbox", @"number"];
+        [self configureCell:cell
+                       text:titles[indexPath.row]
+                  secondary:value
+                      image:images[indexPath.row]
+                       tint:UIColor.secondaryLabelColor];
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
         return cell;
     }
 
     if (indexPath.section == FLEXHookDetailSectionConfiguration) {
         if (indexPath.row == 0) {
-            cell.textLabel.text = @"ABI";
-            cell.detailTextLabel.text = FLEXHookABIName(entry.abi);
+            [self configureCell:cell
+                           text:@"ABI profile"
+                      secondary:FLEXHookABIName(entry.abi)
+                          image:@"point.3.filled.connected.trianglepath.dotted"
+                           tint:self.view.tintColor];
             BOOL configurable = entry.surface == FLEXHookSurfaceCImport ||
                                 entry.surface == FLEXHookSurfaceCInline;
             cell.accessoryType = configurable
@@ -126,8 +166,11 @@ typedef NS_ENUM(NSInteger, FLEXHookDetailSection) {
                 ? UITableViewCellSelectionStyleDefault
                 : UITableViewCellSelectionStyleNone;
         } else if (indexPath.row == 1) {
-            cell.textLabel.text = @"Backend";
-            cell.detailTextLabel.text = FLEXHookBackendName(entry.backend);
+            [self configureCell:cell
+                           text:@"Hook backend"
+                      secondary:FLEXHookBackendName(entry.backend)
+                          image:@"cpu"
+                           tint:self.view.tintColor];
             BOOL configurable = entry.surface == FLEXHookSurfaceCImport ||
                                 entry.surface == FLEXHookSurfaceCInline;
             cell.accessoryType = configurable
@@ -137,20 +180,30 @@ typedef NS_ENUM(NSInteger, FLEXHookDetailSection) {
                 ? UITableViewCellSelectionStyleDefault
                 : UITableViewCellSelectionStyleNone;
         } else if (indexPath.row == 2) {
-            cell.textLabel.text = @"Forced result";
+            [self configureCell:cell
+                           text:@"Forced result"
+                      secondary:entry.forceValue ? @"TRUE" : @"FALSE"
+                          image:@"arrow.triangle.branch"
+                           tint:UIColor.systemPurpleColor];
             UISwitch *toggle = [UISwitch new];
             toggle.on = entry.forceValue;
             toggle.enabled = entry.abi != FLEXHookABIUnknown;
+            [toggle sizeToFit];
             [toggle addTarget:self
                        action:@selector(forceChanged:)
              forControlEvents:UIControlEventValueChanged];
             cell.accessoryView = toggle;
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
         } else {
-            cell.textLabel.text = @"Enabled";
+            [self configureCell:cell
+                           text:@"Runtime hook"
+                      secondary:entry.pendingEnabled ? @"Requested ON" : @"Requested OFF"
+                          image:@"bolt.circle"
+                           tint:entry.pendingEnabled ? UIColor.systemGreenColor : UIColor.secondaryLabelColor];
             UISwitch *toggle = [UISwitch new];
             toggle.on = entry.pendingEnabled;
             toggle.enabled = (entry.available && entry.hookable) || entry.pendingEnabled;
+            [toggle sizeToFit];
             [toggle addTarget:self
                        action:@selector(enabledChanged:)
              forControlEvents:UIControlEventValueChanged];
@@ -162,26 +215,25 @@ typedef NS_ENUM(NSInteger, FLEXHookDetailSection) {
 
     if (indexPath.section == FLEXHookDetailSectionRuntime) {
         NSArray<NSString *> *titles = @[@"State", @"Calls", @"Provider"];
-        cell.textLabel.text = titles[indexPath.row];
+        NSArray<NSString *> *images = @[@"waveform.path.ecg", @"number.circle", @"shield.lefthalf.filled"];
+        NSString *value = nil;
         if (indexPath.row == 0) {
-            cell.detailTextLabel.text = entry.statusSummary;
-            cell.detailTextLabel.textColor = entry.lastError.length
-                ? UIColor.systemRedColor : UIColor.secondaryLabelColor;
+            value = entry.statusSummary;
         } else if (indexPath.row == 1) {
-            cell.detailTextLabel.text = [NSString stringWithFormat:@"%lu",
+            value = [NSString stringWithFormat:@"%lu",
                 (unsigned long)entry.hitCount];
         } else {
-            cell.detailTextLabel.text = FLEXHookRegistry.sharedRegistry.providerName;
+            value = FLEXHookRegistry.sharedRegistry.providerName;
         }
+        [self configureCell:cell
+                       text:titles[indexPath.row]
+                  secondary:value
+                      image:images[indexPath.row]
+                       tint:indexPath.row == 0 && entry.lastError.length
+                            ? UIColor.systemRedColor : UIColor.secondaryLabelColor];
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
         return cell;
     }
-
-    cell.textLabel.text = @"Apply pending changes";
-    cell.textLabel.textAlignment = NSTextAlignmentCenter;
-    cell.textLabel.textColor = self.entry.pendingEnabled != self.entry.desiredEnabled ||
-                               (self.entry.desiredEnabled && !self.entry.installed)
-        ? self.view.tintColor : UIColor.tertiaryLabelColor;
     return cell;
 }
 
@@ -191,7 +243,6 @@ typedef NS_ENUM(NSInteger, FLEXHookDetailSection) {
         case FLEXHookDetailSectionTarget: return @"Target";
         case FLEXHookDetailSectionConfiguration: return @"Configuration";
         case FLEXHookDetailSectionRuntime: return @"Runtime";
-        case FLEXHookDetailSectionApply: return @"Actions";
         default: return nil;
     }
 }
@@ -224,8 +275,14 @@ typedef NS_ENUM(NSInteger, FLEXHookDetailSection) {
         [self presentBackendChooserFromCell:[tableView cellForRowAtIndexPath:indexPath]];
         return;
     }
-    if (indexPath.section == FLEXHookDetailSectionApply) {
-        [self applyNow];
+}
+
+- (void)updateNavigationState {
+    BOOL pending = self.entry.pendingEnabled != self.entry.desiredEnabled ||
+                   (self.entry.desiredEnabled && !self.entry.installed);
+    self.applyItem.enabled = pending && !FLEXHookRegistry.sharedRegistry.isApplying;
+    if (@available(iOS 26.0, *)) {
+        self.navigationItem.subtitle = self.entry.statusSummary;
     }
 }
 

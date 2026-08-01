@@ -150,8 +150,8 @@ The build is divided into four source manifests:
   adapter, and typed C slots;
 - HookRuntime: registry, scanner, ABI resolver, contextual actions, and the
   static Logos metadata-row integration;
-- LiquidGlassUI: Hook Center, entry details, Runtime Browsers, autostyle, and
-  Liquid Glass components.
+- LiquidGlassUI: adaptive workspace, Hook Center, settings, entry details,
+  Runtime Browsers, and explicit Liquid Glass components.
 
 These are build-time groups only. The upstream fishhook source is removed from
 the broad FLEX source glob and the vendored provider copy is added exactly once
@@ -176,10 +176,15 @@ Stock iOS cannot relaunch a jailed app, so the user opens it again manually.
 
 ## Liquid Glass hierarchy
 
+- The runtime workspace uses UIKit tabs in compact width and the adaptive
+  tab/sidebar mode in regular width. Each surface owns its navigation stack.
 - Standard UIKit 26 bars, search, menus, popovers, switches, and toolbar actions
-  provide the primary control layer.
-- Custom FLEX toolbar elements use `UIGlassEffect` inside one
-  `UIGlassContainerEffect`.
+  provide the primary control layer and automatic morphing from source items.
+- The FLEX explorer toolbar owns one explicit `UIGlassEffect`; its description
+  surface materializes and dematerializes by animating `effect`.
+- The hierarchy selector moves one `UIGlassEffect` inside one
+  `UIGlassContainerEffect`, producing a bounded selection morph without putting
+  glass behind every label.
 - Effect materialization animates `effect`, not just alpha.
 - Merge/split morphing animates frames inside the shared container.
 - Runtime tables/cells remain content and do not receive a glass panel each.
@@ -190,6 +195,9 @@ Stock iOS cannot relaunch a jailed app, so the user opens it again manually.
 - Action sheets are anchored to their source cell/item for native transitions.
 - Reduce Motion suppresses optional toolbar and custom material morphing
   animations.
+- No global `UIViewController` lifecycle hook or recursive view-tree scan is
+  allowed. The pinned FLEX presentation patch is applied idempotently before
+  compilation and fails closed if the submodule revision no longer matches.
 
 ## Local commands
 

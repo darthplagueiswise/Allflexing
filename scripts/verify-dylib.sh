@@ -88,6 +88,8 @@ require_text "UIKit 26 glass class reference" \
     '_OBJC_CLASS_$_UIGlassEffect' "$symbols"
 require_text "UIKit 26 container class reference" \
     '_OBJC_CLASS_$_UIGlassContainerEffect' "$symbols"
+require_text "adaptive UIKit workspace class reference" \
+    '_OBJC_CLASS_$_UITab' "$symbols"
 require_text "UIKit 26 corner configuration" \
     '_OBJC_CLASS_$_UICornerConfiguration' "$symbols"
 require_text "Objective-C hook import" "_MSHookMessageEx" "$symbols"
@@ -107,7 +109,11 @@ string_dump="$(strings -a "$dylib")"
 require_text "hook persistence class" "FLEXHookPersistence" "$string_dump"
 require_text "symbol rebind class" "FLEXSymbolRebind" "$string_dump"
 require_text "Liquid Glass class" "FLEXLiquidGlass" "$string_dump"
-require_text "Liquid Glass cluster" "FLEXGlassClusterHostView" "$string_dump"
+require_text "adaptive runtime workspace" "FLEXHookWorkspaceController" "$string_dump"
+require_text "separate runtime settings" "FLEXHookSettingsController" "$string_dump"
+require_text "responsive Hook Center header" "FLEXHookCenterHeaderView" "$string_dump"
+require_text "explicit glass materialization" "materializeGlassView:interactive:tint:animated:" "$string_dump"
+require_text "modern runtime control plane" "Runtime control plane" "$string_dump"
 require_text "hook registry" "FLEXHookRegistry" "$string_dump"
 require_text "ABI-aware C engine" "FLEXCHookEngine" "$string_dump"
 require_text "runtime scanner" "FLEXRuntimeScanner" "$string_dump"
@@ -118,6 +124,11 @@ require_text "real-time targeted registry apply" "runtime-toggle-applied" "$stri
 require_text "late-image monitor" "FLEXRuntimeImagesDidChangeNotification" "$string_dump"
 require_text "idempotent late-image reapply" "late-image-reapply" "$string_dump"
 require_text "UIApplication activation reapply" "UIApplicationDidBecomeActiveNotification" "$symbols"
-require_text "FLEX menu entry" "Hook Center" "$string_dump"
+require_text "FLEX menu entry" "AllFLEXing Runtime Workspace" "$string_dump"
+
+if grep -Fq 'FLEXGlassAutostyle' <<<"$string_dump"; then
+    echo "error: legacy global view-tree autostyle is still linked" >&2
+    exit 1
+fi
 
 echo "AllFLEXing Mach-O verification: OK"

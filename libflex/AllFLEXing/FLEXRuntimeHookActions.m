@@ -398,17 +398,10 @@ static const void *kFLEXRuntimeHookToggleTargetKey =
         return;
     }
 
-    UITableViewCellAccessoryType originalAccessory = cell.accessoryType;
-    UIImageView *status = [[UIImageView alloc] initWithImage:
-        [self statusImageForEntry:entry]];
-    status.tintColor = [self statusColorForEntry:entry];
-    status.contentMode = UIViewContentModeScaleAspectFit;
-    [status.widthAnchor constraintEqualToConstant:18.0].active = YES;
-    [status.heightAnchor constraintEqualToConstant:18.0].active = YES;
-
     UISwitch *toggle = [UISwitch new];
     toggle.on = entry.pendingEnabled;
     toggle.enabled = (entry.available && entry.hookable) || entry.pendingEnabled;
+    [toggle sizeToFit];
     toggle.accessibilityLabel = [NSString stringWithFormat:@"Runtime hook for %@",
         entry.title];
     toggle.accessibilityValue = entry.statusSummary;
@@ -424,33 +417,8 @@ static const void *kFLEXRuntimeHookToggleTargetKey =
                              target,
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    NSMutableArray<UIView *> *views = [NSMutableArray arrayWithObjects:status,
-                                                                        toggle,
-                                                                        nil];
-    if (originalAccessory == UITableViewCellAccessoryDisclosureIndicator ||
-        originalAccessory == UITableViewCellAccessoryDetailDisclosureButton) {
-        UIImageView *chevron = [[UIImageView alloc] initWithImage:
-            [UIImage systemImageNamed:@"chevron.forward"]];
-        chevron.tintColor = UIColor.tertiaryLabelColor;
-        chevron.contentMode = UIViewContentModeScaleAspectFit;
-        [chevron.widthAnchor constraintEqualToConstant:9.0].active = YES;
-        [chevron.heightAnchor constraintEqualToConstant:14.0].active = YES;
-        [views insertObject:chevron atIndex:0];
-    }
-
-    UIStackView *accessory = [[UIStackView alloc] initWithArrangedSubviews:views];
-    accessory.axis = UILayoutConstraintAxisHorizontal;
-    accessory.alignment = UIStackViewAlignmentCenter;
-    accessory.spacing = 8.0;
-    accessory.accessibilityLabel = entry.statusSummary;
-    CGSize fittingSize = [accessory systemLayoutSizeFittingSize:
-        UILayoutFittingCompressedSize];
-    accessory.frame = (CGRect){CGPointZero, {
-        fittingSize.width,
-        fittingSize.height,
-    }};
     cell.accessoryType = UITableViewCellAccessoryNone;
-    cell.accessoryView = accessory;
+    cell.accessoryView = toggle;
 
     NSString *baseSubtitle = cell.subtitleLabel.text ?: @"";
     NSString *hookSubtitle = [NSString stringWithFormat:@"Runtime hook: %@",

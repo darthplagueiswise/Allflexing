@@ -58,9 +58,11 @@ retried idempotently; installed targets are never patched a second time. A C
 entry whose saved Mach-O UUID changed is reset to inspection-only until its ABI
 is explicitly revalidated.
 
-## Hook Center
+## Runtime workspace
 
-Open FLEX and select **Hook Center**. It provides:
+Open FLEX and select **AllFLEXing Runtime Workspace**. On iPhone it uses a
+floating tab bar; on iPad or another regular-width presentation it adapts to a
+sidebar. The workspace provides:
 
 - verified provider and engine status;
 - global toggles for Objective-C/ElleKit, fishhook, and inline ElleKit;
@@ -69,6 +71,7 @@ Open FLEX and select **Hook Center**. It provides:
 - installed hooks with effective state and live hit counts;
 - an Objective-C Runtime Browser for supported BOOL method ABIs;
 - a C Runtime Browser that reads actual Mach-O import sections;
+- a dedicated settings and recovery surface;
 - manual C symbol entry for known inline targets;
 - per-target ABI and backend selection;
 - stale-target, apply-error, and safe-mode diagnostics.
@@ -89,10 +92,14 @@ installed dynamically only after exact ABI validation.
 ## Liquid Glass
 
 The dylib is compiled with real UIKit 26 headers. Standard navigation bars,
-toolbars, searches, menus, popovers, buttons, and switches keep their native
-iOS 26 behavior. Custom FLEX control surfaces use `UIGlassEffect`; related
-toolbar elements share `UIGlassContainerEffect` so frame changes can merge and
-split as one material.
+tab/sidebar navigation, searches, menus, popovers, buttons, and switches keep
+their native iOS 26 behavior. Menus are attached to their source bar items so
+UIKit provides the transition and morphing behavior.
+
+The FLEX hierarchy selector moves a single `UIGlassEffect` selection inside a
+shared `UIGlassContainerEffect`. The explorer toolbar and its materializing
+description panel are explicit components; no global view-controller hook or
+recursive view-tree scan injects styling after layout.
 
 UIKit 26 bars have legacy background appearances cleared so the system material
 can activate. Custom glass geometry uses adaptive `UICornerConfiguration`;
@@ -118,6 +125,10 @@ git submodule update --init --recursive
 ./build.sh package
 ./build.sh verify
 ```
+
+`build.sh` verifies and applies the pinned UIKit 26 presentation patch to the
+exact FLEX submodule revision before compilation. A mismatched revision fails
+the build instead of silently dropping the responsive UI changes.
 
 The build uses explicit Core, HookProviders, HookRuntime, and LiquidGlassUI
 manifests, but all four are source groups in the same Theos target. They do not

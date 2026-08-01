@@ -1,36 +1,193 @@
 #import "FLEXHookToggles.h"
 
 #import "FLEXHookEntryDetailController.h"
-#import "FLEXHookPersistence.h"
 #import "FLEXHookRegistry.h"
 #import "FLEXHooking.h"
 #import "FLEXLiquidGlass.h"
-#import "FLEXRuntimeBrowserController.h"
 #import "FLEXSymbolRebind.h"
 
+#import <math.h>
 #import <objc/runtime.h>
 #import <stdlib.h>
 
 static const void *kFLEXHookCenterIdentifierKey = &kFLEXHookCenterIdentifierKey;
 
 typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
-    FLEXHookCenterSectionStatus = 0,
+    FLEXHookCenterSectionEngines = 0,
     FLEXHookCenterSectionPending,
     FLEXHookCenterSectionActive,
-    FLEXHookCenterSectionBrowsers,
-    FLEXHookCenterSectionSettings,
-    FLEXHookCenterSectionDiagnostics,
+    FLEXHookCenterSectionRecovery,
     FLEXHookCenterSectionCount,
 };
 
+@interface FLEXHookMetricView : UIView
+@property (nonatomic) UILabel *valueLabel;
+@property (nonatomic) UILabel *captionLabel;
+- (void)setValue:(NSString *)value caption:(NSString *)caption tint:(UIColor *)tint;
+@end
+
+@implementation FLEXHookMetricView
+
+- (instancetype)init {
+    self = [super initWithFrame:CGRectZero];
+    if (self) {
+        self.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+        [FLEXLiquidGlass configureCornersForView:self radius:18.0 capsule:NO];
+
+        _valueLabel = [UILabel new];
+        _valueLabel.font = [UIFont monospacedDigitSystemFontOfSize:22.0
+                                                           weight:UIFontWeightSemibold];
+        _valueLabel.adjustsFontForContentSizeCategory = YES;
+        _valueLabel.translatesAutoresizingMaskIntoConstraints = NO;
+
+        _captionLabel = [UILabel new];
+        _captionLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
+        _captionLabel.textColor = UIColor.secondaryLabelColor;
+        _captionLabel.adjustsFontForContentSizeCategory = YES;
+        _captionLabel.translatesAutoresizingMaskIntoConstraints = NO;
+
+        UIStackView *stack = [[UIStackView alloc]
+            initWithArrangedSubviews:@[_valueLabel, _captionLabel]];
+        stack.axis = UILayoutConstraintAxisVertical;
+        stack.spacing = 2.0;
+        stack.translatesAutoresizingMaskIntoConstraints = NO;
+        [self addSubview:stack];
+        [NSLayoutConstraint activateConstraints:@[
+            [stack.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:14.0],
+            [stack.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-14.0],
+            [stack.topAnchor constraintEqualToAnchor:self.topAnchor constant:12.0],
+            [stack.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-12.0],
+            [self.heightAnchor constraintGreaterThanOrEqualToConstant:68.0],
+        ]];
+    }
+    return self;
+}
+
+- (void)setValue:(NSString *)value caption:(NSString *)caption tint:(UIColor *)tint {
+    self.valueLabel.text = value;
+    self.valueLabel.textColor = tint;
+    self.captionLabel.text = caption;
+}
+
+@end
+
+@interface FLEXHookCenterHeaderView : UIView
+@property (nonatomic) UILabel *providerLabel;
+@property (nonatomic) UILabel *summaryLabel;
+@property (nonatomic) UIStackView *metricsStack;
+@property (nonatomic) FLEXHookMetricView *activeMetric;
+@property (nonatomic) FLEXHookMetricView *pendingMetric;
+@property (nonatomic) FLEXHookMetricView *errorMetric;
+- (void)updateWithRegistry:(FLEXHookRegistry *)registry;
+@end
+
+@implementation FLEXHookCenterHeaderView
+
+- (instancetype)init {
+    self = [super initWithFrame:CGRectZero];
+    if (self) {
+        self.backgroundColor = UIColor.clearColor;
+
+        UIImageView *icon = [[UIImageView alloc]
+            initWithImage:[UIImage systemImageNamed:@"bolt.shield.fill"]];
+        icon.tintColor = UIColor.systemBlueColor;
+        icon.preferredSymbolConfiguration = [UIImageSymbolConfiguration
+            configurationWithTextStyle:UIFontTextStyleTitle1];
+        [icon setContentHuggingPriority:UILayoutPriorityRequired
+                               forAxis:UILayoutConstraintAxisHorizontal];
+
+        UILabel *title = [UILabel new];
+        title.text = @"Runtime control plane";
+        title.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle2];
+        title.adjustsFontForContentSizeCategory = YES;
+
+        _providerLabel = [UILabel new];
+        _providerLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+        _providerLabel.textColor = UIColor.secondaryLabelColor;
+        _providerLabel.adjustsFontForContentSizeCategory = YES;
+
+        UIStackView *headingLabels = [[UIStackView alloc]
+            initWithArrangedSubviews:@[title, _providerLabel]];
+        headingLabels.axis = UILayoutConstraintAxisVertical;
+        headingLabels.spacing = 2.0;
+
+        UIStackView *heading = [[UIStackView alloc]
+            initWithArrangedSubviews:@[icon, headingLabels]];
+        heading.axis = UILayoutConstraintAxisHorizontal;
+        heading.alignment = UIStackViewAlignmentCenter;
+        heading.spacing = 12.0;
+
+        _summaryLabel = [UILabel new];
+        _summaryLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+        _summaryLabel.textColor = UIColor.secondaryLabelColor;
+        _summaryLabel.adjustsFontForContentSizeCategory = YES;
+        _summaryLabel.numberOfLines = 0;
+
+        _activeMetric = [FLEXHookMetricView new];
+        _pendingMetric = [FLEXHookMetricView new];
+        _errorMetric = [FLEXHookMetricView new];
+        _metricsStack = [[UIStackView alloc]
+            initWithArrangedSubviews:@[_activeMetric, _pendingMetric, _errorMetric]];
+        _metricsStack.axis = UILayoutConstraintAxisHorizontal;
+        _metricsStack.distribution = UIStackViewDistributionFillEqually;
+        _metricsStack.spacing = 10.0;
+
+        UIStackView *content = [[UIStackView alloc]
+            initWithArrangedSubviews:@[heading, _summaryLabel, _metricsStack]];
+        content.axis = UILayoutConstraintAxisVertical;
+        content.spacing = 14.0;
+        content.translatesAutoresizingMaskIntoConstraints = NO;
+        [self addSubview:content];
+        [NSLayoutConstraint activateConstraints:@[
+            [content.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:20.0],
+            [content.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-20.0],
+            [content.topAnchor constraintEqualToAnchor:self.topAnchor constant:16.0],
+            [content.bottomAnchor constraintEqualToAnchor:self.bottomAnchor constant:-18.0],
+        ]];
+    }
+    return self;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    BOOL accessibility = UIContentSizeCategoryIsAccessibilityCategory(
+        self.traitCollection.preferredContentSizeCategory
+    );
+    self.metricsStack.axis = CGRectGetWidth(self.bounds) >= 540.0 && !accessibility
+        ? UILayoutConstraintAxisHorizontal
+        : UILayoutConstraintAxisVertical;
+}
+
+- (void)updateWithRegistry:(FLEXHookRegistry *)registry {
+    BOOL providerReady = FLEXMSHookProviderAvailable();
+    self.providerLabel.text = [NSString stringWithFormat:@"Provider: %@",
+        registry.providerName ?: @"Unavailable"];
+    self.providerLabel.textColor = providerReady
+        ? UIColor.systemGreenColor : UIColor.systemOrangeColor;
+    self.summaryLabel.text = registry.safeMode
+        ? @"Safe mode is active. Review the blocked target before applying another batch."
+        : @"Validated Objective-C and C targets share one registry, live gates, persistence and diagnostics.";
+    [self.activeMetric setValue:[NSString stringWithFormat:@"%lu", (unsigned long)registry.activeCount]
+                         caption:@"Effective"
+                            tint:UIColor.systemGreenColor];
+    [self.pendingMetric setValue:[NSString stringWithFormat:@"%lu", (unsigned long)registry.pendingCount]
+                          caption:@"Pending"
+                             tint:UIColor.systemBlueColor];
+    [self.errorMetric setValue:[NSString stringWithFormat:@"%lu", (unsigned long)registry.failureCount]
+                        caption:@"Errors"
+                           tint:registry.failureCount ? UIColor.systemOrangeColor : UIColor.secondaryLabelColor];
+    [self setNeedsLayout];
+}
+
+@end
+
 @interface FLEXHookToggles ()
-@property (nonatomic, copy) NSArray<FLEXHookFlag *> *flags;
 @property (nonatomic, copy) NSArray<FLEXHookEntry *> *pendingEntries;
 @property (nonatomic, copy) NSArray<FLEXHookEntry *> *activeEntries;
 @property (nonatomic, copy) NSArray<FLEXHookEntry *> *failedEntries;
 @property (nonatomic) UIBarButtonItem *applyItem;
-@property (nonatomic) UIBarButtonItem *discardItem;
-@property (nonatomic) UIBarButtonItem *restartItem;
+@property (nonatomic) UIBarButtonItem *moreItem;
+@property (nonatomic) FLEXHookCenterHeaderView *statusHeader;
 @end
 
 @implementation FLEXHookToggles
@@ -42,28 +199,29 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"Hook Center";
-    self.tableView.rowHeight = UITableViewAutomaticDimension;
-    self.tableView.estimatedRowHeight = 72.0;
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeAlways;
+    self.tableView.rowHeight = UITableViewAutomaticDimension;
+    self.tableView.estimatedRowHeight = 76.0;
+    [FLEXLiquidGlass applyToViewController:self];
+    [self setContentScrollView:self.tableView
+                      forEdge:(NSDirectionalRectEdgeTop | NSDirectionalRectEdgeBottom)];
 
-    self.discardItem = [[UIBarButtonItem alloc]
-        initWithTitle:@"Discard"
-                style:UIBarButtonItemStylePlain
-               target:self
-               action:@selector(discardPending)];
+    self.statusHeader = [FLEXHookCenterHeaderView new];
+    self.tableView.tableHeaderView = self.statusHeader;
+
     self.applyItem = [[UIBarButtonItem alloc]
         initWithTitle:@"Apply"
                 style:UIBarButtonItemStyleDone
                target:self
                action:@selector(applyPending)];
-    self.restartItem = [[UIBarButtonItem alloc]
-        initWithTitle:@"Apply & Restart"
-                style:UIBarButtonItemStylePlain
-               target:self
-               action:@selector(applyAndRestart)];
     if (@available(iOS 26.0, *)) {
         self.applyItem.style = UIBarButtonItemStyleProminent;
     }
+    self.moreItem = [[UIBarButtonItem alloc]
+        initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"]
+                 menu:[UIMenu menuWithChildren:@[]]];
+    self.moreItem.accessibilityLabel = @"Hook Center actions";
+    [self updateNavigationActions];
 
     [NSNotificationCenter.defaultCenter
         addObserver:self
@@ -72,25 +230,21 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
              object:nil];
     [NSNotificationCenter.defaultCenter
         addObserver:self
-           selector:@selector(flagsChanged:)
+           selector:@selector(registryChanged:)
                name:FLEXHookFlagsDidChangeNotification
              object:nil];
     [self reloadState];
-    [FLEXLiquidGlass applyToViewController:self];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self reloadState];
-    [self.navigationController setToolbarHidden:NO animated:animated];
     [FLEXLiquidGlass applyToViewController:self];
 }
 
-- (void)viewWillDisappear:(BOOL)animated {
-    [super viewWillDisappear:animated];
-    if (self.isMovingFromParentViewController) {
-        [self.navigationController setToolbarHidden:YES animated:animated];
-    }
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    [self layoutStatusHeader];
 }
 
 - (void)dealloc {
@@ -102,16 +256,29 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
     [self reloadState];
 }
 
-- (void)flagsChanged:(NSNotification *)notification {
-    (void)notification;
-    [FLEXHookRegistry.sharedRegistry refreshCapabilities];
-    [self reloadState];
+- (void)layoutStatusHeader {
+    FLEXHookCenterHeaderView *header = self.statusHeader;
+    CGFloat width = CGRectGetWidth(self.tableView.bounds);
+    if (!header || width <= 0.0) {
+        return;
+    }
+    CGRect frame = header.frame;
+    frame.size.width = width;
+    header.frame = frame;
+    [header setNeedsLayout];
+    [header layoutIfNeeded];
+    CGSize size = [header systemLayoutSizeFittingSize:CGSizeMake(width, UILayoutFittingCompressedSize.height)
+                       withHorizontalFittingPriority:UILayoutPriorityRequired
+                             verticalFittingPriority:UILayoutPriorityFittingSizeLevel];
+    if (fabs(CGRectGetHeight(frame) - size.height) > 0.5) {
+        frame.size.height = size.height;
+        header.frame = frame;
+        self.tableView.tableHeaderView = header;
+    }
 }
 
 - (void)reloadState {
     FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
-    self.flags = FLEXHookPersistence.sharedManager.registeredFlags;
-
     NSMutableArray<FLEXHookEntry *> *pending = [NSMutableArray array];
     NSMutableArray<FLEXHookEntry *> *active = [NSMutableArray array];
     NSMutableArray<FLEXHookEntry *> *failed = [NSMutableArray array];
@@ -130,41 +297,77 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
     self.pendingEntries = pending.copy;
     self.activeEntries = active.copy;
     self.failedEntries = failed.copy;
+    [self.statusHeader updateWithRegistry:registry];
     [self.tableView reloadData];
-    [self updateToolbarAnimated:YES];
+    [self updateNavigationActions];
+    [self layoutStatusHeader];
 }
 
-- (void)updateToolbarAnimated:(BOOL)animated {
-    BOOL hasPending = FLEXHookRegistry.sharedRegistry.hasPendingChanges;
-    BOOL applying = FLEXHookRegistry.sharedRegistry.isApplying;
+- (void)updateNavigationActions {
+    FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
+    BOOL hasPending = registry.hasPendingChanges;
+    BOOL applying = registry.isApplying;
     self.applyItem.enabled = hasPending && !applying;
-    self.discardItem.enabled = hasPending && !applying;
-    self.restartItem.enabled = !applying;
+    self.applyItem.title = applying ? @"Applying…" : @"Apply";
 
-    UIBarButtonItem *flexibleA = [[UIBarButtonItem alloc]
-        initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace
-                             target:nil
-                             action:nil];
-    UIBarButtonItem *flexibleB = [[UIBarButtonItem alloc]
-        initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace
-                             target:nil
-                             action:nil];
-    if (@available(iOS 26.0, *)) {
-        // These actions have different consequences. Keep the flexible spaces
-        // as real glass separators; the system can then give Apply its own
-        // prominent material instead of stretching one giant pill edge-to-edge.
-        flexibleA.hidesSharedBackground = YES;
-        flexibleB.hidesSharedBackground = YES;
+    __weak typeof(self) weakSelf = self;
+    UIAction *discard = [UIAction
+        actionWithTitle:@"Discard pending changes"
+                  image:[UIImage systemImageNamed:@"arrow.uturn.backward"]
+             identifier:nil
+                handler:^(__unused UIAction *action) {
+        [weakSelf discardPending];
+    }];
+    if (!hasPending || applying) {
+        discard.attributes = UIMenuElementAttributesDisabled;
     }
-    NSArray *items = @[
-        self.discardItem,
-        flexibleA,
-        self.applyItem,
-        flexibleB,
-        self.restartItem,
-    ];
-    BOOL shouldAnimate = animated && !UIAccessibilityIsReduceMotionEnabled();
-    [self setToolbarItems:items animated:shouldAnimate];
+    UIAction *restart = [UIAction
+        actionWithTitle:@"Apply and close app"
+                  image:[UIImage systemImageNamed:@"arrow.clockwise.circle"]
+             identifier:nil
+                handler:^(__unused UIAction *action) {
+        [weakSelf applyAndRestart];
+    }];
+    if (applying) {
+        restart.attributes = UIMenuElementAttributesDisabled;
+    }
+    UIAction *diagnostics = [UIAction
+        actionWithTitle:@"Copy diagnostics"
+                  image:[UIImage systemImageNamed:@"doc.on.doc"]
+             identifier:nil
+                handler:^(__unused UIAction *action) {
+        [weakSelf presentErrorSummary];
+    }];
+    if (!self.failedEntries.count) {
+        diagnostics.attributes = UIMenuElementAttributesDisabled;
+    }
+    UIAction *safeMode = [UIAction
+        actionWithTitle:@"Leave safe mode"
+                  image:[UIImage systemImageNamed:@"shield.checkered"]
+             identifier:nil
+                handler:^(__unused UIAction *action) {
+        [weakSelf confirmClearSafeMode];
+    }];
+    if (!registry.safeMode) {
+        safeMode.attributes = UIMenuElementAttributesDisabled;
+    }
+    self.moreItem.menu = [UIMenu menuWithTitle:@"Runtime actions"
+                                     children:@[discard, restart, diagnostics, safeMode]];
+
+    UIBarButtonItem *separator = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemFixedSpace
+                             target:nil
+                             action:nil];
+    separator.width = 8.0;
+    if (@available(iOS 26.0, *)) {
+        separator.hidesSharedBackground = YES;
+    }
+    self.navigationItem.rightBarButtonItems = @[self.applyItem, separator, self.moreItem];
+    if (@available(iOS 26.0, *)) {
+        self.navigationItem.subtitle = [NSString stringWithFormat:@"%lu effective · %lu pending",
+            (unsigned long)registry.activeCount,
+            (unsigned long)registry.pendingCount];
+    }
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
@@ -175,131 +378,108 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     (void)tableView;
     switch (section) {
-        case FLEXHookCenterSectionStatus: return 3;
+        case FLEXHookCenterSectionEngines: return 3;
         case FLEXHookCenterSectionPending: return MAX((NSInteger)self.pendingEntries.count, 1);
         case FLEXHookCenterSectionActive: return MAX((NSInteger)self.activeEntries.count, 1);
-        case FLEXHookCenterSectionBrowsers: return 2;
-        case FLEXHookCenterSectionSettings: return self.flags.count;
-        case FLEXHookCenterSectionDiagnostics: return 2;
+        case FLEXHookCenterSectionRecovery: return 2;
         default: return 0;
     }
 }
 
-- (UITableViewCell *)cellForTableView:(UITableView *)tableView identifier:(NSString *)identifier {
+- (UITableViewCell *)baseCellForTableView:(UITableView *)tableView {
+    static NSString *identifier = @"AllFLEXingHookCenterCell";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:identifier];
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
                                       reuseIdentifier:identifier];
     }
-    cell.textLabel.numberOfLines = 0;
-    cell.detailTextLabel.numberOfLines = 0;
     cell.accessoryView = nil;
     cell.accessoryType = UITableViewCellAccessoryNone;
     cell.selectionStyle = UITableViewCellSelectionStyleDefault;
-    cell.textLabel.textColor = UIColor.labelColor;
-    cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
     return cell;
+}
+
+- (void)configureCell:(UITableViewCell *)cell
+                  text:(NSString *)text
+             secondary:(NSString *)secondary
+                 image:(NSString *)image
+                  tint:(UIColor *)tint {
+    UIListContentConfiguration *content = [cell defaultContentConfiguration];
+    content.text = text;
+    content.secondaryText = secondary;
+    content.secondaryTextProperties.numberOfLines = 0;
+    content.image = [UIImage systemImageNamed:image];
+    content.imageProperties.tintColor = tint;
+    cell.contentConfiguration = content;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView
          cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    UITableViewCell *cell = [self cellForTableView:tableView
-                                        identifier:@"AllFLEXingHookCenterCell"];
+    UITableViewCell *cell = [self baseCellForTableView:tableView];
     FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
-
-    if (indexPath.section == FLEXHookCenterSectionStatus) {
+    if (indexPath.section == FLEXHookCenterSectionEngines) {
+        NSArray<NSString *> *titles = @[@"Objective-C methods", @"Imported C symbols", @"Inline C functions"];
+        NSArray<NSString *> *images = @[@"curlybraces", @"link", @"function"];
+        NSArray<NSString *> *details = @[
+            FLEXMSHookMessageProviderAvailable()
+                ? [NSString stringWithFormat:@"%@ · MSHookMessageEx ready", registry.providerName]
+                : @"Substrate-compatible Objective-C provider unavailable",
+            FLEXSymbolRebind.backendDescription,
+            FLEXMSHookFunctionProviderAvailable()
+                ? [NSString stringWithFormat:@"%@ · MSHookFunction ready", registry.providerName]
+                : @"Substrate-compatible inline provider unavailable",
+        ];
+        BOOL ready = indexPath.row == 0
+            ? FLEXMSHookMessageProviderAvailable()
+            : (indexPath.row == 1
+                ? FLEXEmbeddedFishhookAvailable()
+                : FLEXMSHookFunctionProviderAvailable());
+        [self configureCell:cell
+                       text:titles[indexPath.row]
+                  secondary:details[indexPath.row]
+                      image:images[indexPath.row]
+                       tint:ready ? UIColor.systemGreenColor : UIColor.systemOrangeColor];
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        if (indexPath.row == 0) {
-            cell.textLabel.text = @"Hook provider";
-            cell.detailTextLabel.text = registry.providerName;
-            cell.imageView.image = [UIImage systemImageNamed:
-                FLEXMSHookProviderAvailable() ? @"checkmark.shield.fill" : @"exclamationmark.shield.fill"];
-            cell.imageView.tintColor = FLEXMSHookProviderAvailable()
-                ? UIColor.systemGreenColor : UIColor.systemRedColor;
-        } else if (indexPath.row == 1) {
-            cell.textLabel.text = @"Engines";
-            cell.detailTextLabel.text = [NSString stringWithFormat:
-                @"Objective-C: %@\nC imports: %@\nC inline: %@",
-                FLEXMSHookMessageProviderAvailable() ? @"MSHookMessageEx ready" : @"unavailable",
-                FLEXSymbolRebind.backendDescription,
-                FLEXMSHookFunctionProviderAvailable() ? @"MSHookFunction ready" : @"unavailable"];
-            cell.imageView.image = [UIImage systemImageNamed:@"gearshape.2.fill"];
-        } else {
-            cell.textLabel.text = @"Runtime summary";
-            cell.detailTextLabel.text = [NSString stringWithFormat:
-                @"%lu active · %lu pending · %lu errors",
-                (unsigned long)registry.activeCount,
-                (unsigned long)registry.pendingCount,
-                (unsigned long)registry.failureCount];
-            cell.imageView.image = [UIImage systemImageNamed:@"waveform.path.ecg"];
-        }
         return cell;
     }
-
     if (indexPath.section == FLEXHookCenterSectionPending) {
-        if (self.pendingEntries.count == 0) {
-            cell.textLabel.text = @"No pending changes";
-            cell.detailTextLabel.text = @"Runtime and persisted intent are synchronized.";
-            cell.imageView.image = [UIImage systemImageNamed:@"checkmark.circle"];
+        if (!self.pendingEntries.count) {
+            [self configureCell:cell
+                           text:@"Nothing waiting"
+                      secondary:@"Persisted intent and effective runtime state are synchronized."
+                          image:@"checkmark.circle.fill"
+                           tint:UIColor.systemGreenColor];
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
         } else {
-            FLEXHookEntry *entry = self.pendingEntries[indexPath.row];
-            [self configureEntryCell:cell entry:entry];
+            [self configureEntryCell:cell entry:self.pendingEntries[indexPath.row]];
         }
         return cell;
     }
-
     if (indexPath.section == FLEXHookCenterSectionActive) {
-        if (self.activeEntries.count == 0) {
-            cell.textLabel.text = @"No installed runtime hooks";
-            cell.detailTextLabel.text = @"Browse a runtime surface and stage a validated target.";
-            cell.imageView.image = [UIImage systemImageNamed:@"power"];
+        if (!self.activeEntries.count) {
+            [self configureCell:cell
+                           text:@"No installed runtime hooks"
+                      secondary:@"Choose a validated target in either Runtime tab."
+                          image:@"power"
+                           tint:UIColor.secondaryLabelColor];
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
         } else {
-            FLEXHookEntry *entry = self.activeEntries[indexPath.row];
-            [self configureEntryCell:cell entry:entry];
+            [self configureEntryCell:cell entry:self.activeEntries[indexPath.row]];
         }
         return cell;
     }
-
-    if (indexPath.section == FLEXHookCenterSectionBrowsers) {
-        BOOL objc = indexPath.row == 0;
-        cell.textLabel.text = objc ? @"Objective-C Runtime" : @"C Runtime";
-        cell.detailTextLabel.text = objc
-            ? @"ABI-validated BOOL methods with live per-target toggles"
-            : @"Mach-O imports, explicit ABI profiles, fishhook and inline hooks";
-        cell.imageView.image = [UIImage systemImageNamed:objc ? @"curlybraces" : @"function"];
-        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
-        return cell;
-    }
-
-    if (indexPath.section == FLEXHookCenterSectionSettings) {
-        FLEXHookFlag *flag = self.flags[indexPath.row];
-        cell.textLabel.text = flag.title;
-        cell.detailTextLabel.text = [NSString stringWithFormat:@"%@\n%@",
-            flag.detail, flag.identifier];
-        UISwitch *toggle = [UISwitch new];
-        toggle.on = [FLEXHookPersistence.sharedManager boolForFlag:flag.identifier];
-        objc_setAssociatedObject(toggle,
-                                 kFLEXHookCenterIdentifierKey,
-                                 flag.identifier,
-                                 OBJC_ASSOCIATION_COPY_NONATOMIC);
-        [toggle addTarget:self
-                   action:@selector(featureToggleChanged:)
-         forControlEvents:UIControlEventValueChanged];
-        cell.accessoryView = toggle;
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        return cell;
-    }
-
     if (indexPath.row == 0) {
-        cell.textLabel.text = registry.safeMode ? @"Safe mode active" : @"Safe mode";
-        cell.detailTextLabel.text = registry.safeMode
+        NSString *secondary = registry.safeMode
             ? [NSString stringWithFormat:@"Blocked target: %@",
                 registry.safeModeEntryIdentifier ?: @"unknown"]
-            : @"No interrupted hook transaction detected.";
-        cell.imageView.image = [UIImage systemImageNamed:
-            registry.safeMode ? @"shield.lefthalf.filled.badge.checkmark" : @"shield.checkered"];
+            : @"No interrupted transaction detected.";
+        NSString *image = registry.safeMode
+            ? @"shield.lefthalf.filled" : @"shield.checkered";
+        [self configureCell:cell
+                       text:registry.safeMode ? @"Safe mode active" : @"Safe mode ready"
+                  secondary:secondary
+                      image:image
+                       tint:registry.safeMode ? UIColor.systemOrangeColor : UIColor.systemGreenColor];
         cell.accessoryType = registry.safeMode
             ? UITableViewCellAccessoryDisclosureIndicator
             : UITableViewCellAccessoryNone;
@@ -307,15 +487,17 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
             ? UITableViewCellSelectionStyleDefault
             : UITableViewCellSelectionStyleNone;
     } else {
-        cell.textLabel.text = @"Errors and stale targets";
-        cell.detailTextLabel.text = self.failedEntries.count
-            ? [NSString stringWithFormat:@"%lu entries need attention",
+        NSString *secondary = self.failedEntries.count
+            ? [NSString stringWithFormat:@"%lu target(s) need attention.",
                 (unsigned long)self.failedEntries.count]
-            : @"No runtime errors.";
-        cell.imageView.image = [UIImage systemImageNamed:self.failedEntries.count
-            ? @"exclamationmark.triangle.fill" : @"checkmark.seal.fill"];
-        cell.imageView.tintColor = self.failedEntries.count
-            ? UIColor.systemOrangeColor : UIColor.systemGreenColor;
+            : @"No runtime hook errors.";
+        NSString *image = self.failedEntries.count
+            ? @"exclamationmark.triangle.fill" : @"checkmark.seal.fill";
+        [self configureCell:cell
+                       text:@"Errors and stale targets"
+                  secondary:secondary
+                      image:image
+                       tint:self.failedEntries.count ? UIColor.systemOrangeColor : UIColor.systemGreenColor];
         cell.accessoryType = self.failedEntries.count
             ? UITableViewCellAccessoryDisclosureIndicator
             : UITableViewCellAccessoryNone;
@@ -327,18 +509,16 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
 }
 
 - (void)configureEntryCell:(UITableViewCell *)cell entry:(FLEXHookEntry *)entry {
-    cell.textLabel.text = entry.title;
-    cell.detailTextLabel.text = [NSString stringWithFormat:@"%@\n%@",
-        entry.detail, entry.statusSummary];
-    cell.imageView.image = [UIImage systemImageNamed:
-        entry.effectiveEnabled ? @"bolt.circle.fill" : @"circle.dashed"];
-    cell.imageView.tintColor = entry.effectiveEnabled
-        ? UIColor.systemGreenColor : UIColor.secondaryLabelColor;
+    [self configureCell:cell
+                   text:entry.title
+              secondary:[NSString stringWithFormat:@"%@\n%@", entry.detail, entry.statusSummary]
+                  image:entry.effectiveEnabled ? @"bolt.circle.fill" : @"circle.dashed"
+                   tint:entry.effectiveEnabled ? UIColor.systemGreenColor : UIColor.secondaryLabelColor];
     UISwitch *toggle = [UISwitch new];
     toggle.on = entry.pendingEnabled;
     toggle.enabled = (entry.available && entry.hookable) || entry.pendingEnabled;
-    toggle.accessibilityLabel = [NSString stringWithFormat:@"Runtime hook for %@",
-        entry.title];
+    [toggle sizeToFit];
+    toggle.accessibilityLabel = [NSString stringWithFormat:@"Runtime hook for %@", entry.title];
     toggle.accessibilityValue = entry.statusSummary;
     objc_setAssociatedObject(toggle,
                              kFLEXHookCenterIdentifierKey,
@@ -348,18 +528,15 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
                action:@selector(hookToggleChanged:)
      forControlEvents:UIControlEventValueChanged];
     cell.accessoryView = toggle;
-    cell.accessoryType = UITableViewCellAccessoryNone;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
     (void)tableView;
     switch (section) {
-        case FLEXHookCenterSectionStatus: return @"Runtime";
+        case FLEXHookCenterSectionEngines: return @"Runtime engines";
         case FLEXHookCenterSectionPending: return @"Pending";
         case FLEXHookCenterSectionActive: return @"Installed";
-        case FLEXHookCenterSectionBrowsers: return @"Runtime Browsers";
-        case FLEXHookCenterSectionSettings: return @"AllFLEXing UI and diagnostics";
-        case FLEXHookCenterSectionDiagnostics: return @"Recovery";
+        case FLEXHookCenterSectionRecovery: return @"Health";
         default: return nil;
     }
 }
@@ -367,14 +544,10 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     (void)tableView;
     if (section == FLEXHookCenterSectionPending) {
-        return @"Runtime switches apply one target immediately. Apply commits any remaining batch edits after revalidating target, ABI and provider.";
+        return @"Each switch applies only its own target. Apply commits any remaining batch after revalidating target, ABI and provider.";
     }
     if (section == FLEXHookCenterSectionActive) {
-        return @"An OFF installed hook forwards to the original implementation; physical unhooking is intentionally avoided at runtime.";
-    }
-    if (section == FLEXHookCenterSectionSettings) {
-        return [NSString stringWithFormat:@"Feature preferences persist in the signed host sandbox: %@.",
-            FLEXHookPersistence.sharedManager.storageDomainDescription];
+        return @"Turning an installed hook off forwards calls to its original implementation; unsafe physical unhooking is avoided.";
     }
     return nil;
 }
@@ -385,16 +558,10 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
         [self showEntry:self.pendingEntries[indexPath.row]];
     } else if (indexPath.section == FLEXHookCenterSectionActive && self.activeEntries.count) {
         [self showEntry:self.activeEntries[indexPath.row]];
-    } else if (indexPath.section == FLEXHookCenterSectionBrowsers) {
-        FLEXRuntimeBrowserKind kind = indexPath.row == 0
-            ? FLEXRuntimeBrowserKindObjectiveC : FLEXRuntimeBrowserKindC;
-        FLEXRuntimeBrowserController *browser =
-            [[FLEXRuntimeBrowserController alloc] initWithKind:kind];
-        [self.navigationController pushViewController:browser animated:YES];
-    } else if (indexPath.section == FLEXHookCenterSectionDiagnostics && indexPath.row == 0 &&
+    } else if (indexPath.section == FLEXHookCenterSectionRecovery && indexPath.row == 0 &&
                FLEXHookRegistry.sharedRegistry.safeMode) {
         [self confirmClearSafeMode];
-    } else if (indexPath.section == FLEXHookCenterSectionDiagnostics && indexPath.row == 1 &&
+    } else if (indexPath.section == FLEXHookCenterSectionRecovery && indexPath.row == 1 &&
                self.failedEntries.count) {
         [self presentErrorSummary];
     }
@@ -404,16 +571,6 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
     FLEXHookEntryDetailController *detail =
         [[FLEXHookEntryDetailController alloc] initWithEntry:entry];
     [self.navigationController pushViewController:detail animated:YES];
-}
-
-- (void)featureToggleChanged:(UISwitch *)toggle {
-    NSString *identifier = objc_getAssociatedObject(toggle, kFLEXHookCenterIdentifierKey);
-    if (identifier.length == 0) {
-        return;
-    }
-    [FLEXHookPersistence.sharedManager setBool:toggle.isOn forFlag:identifier];
-    UISelectionFeedbackGenerator *feedback = [UISelectionFeedbackGenerator new];
-    [feedback selectionChanged];
 }
 
 - (void)hookToggleChanged:(UISwitch *)toggle {
@@ -428,7 +585,6 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
         [self reloadState];
         return;
     }
-
     UISelectionFeedbackGenerator *selection = [UISelectionFeedbackGenerator new];
     [selection selectionChanged];
     __weak typeof(self) weakSelf = self;
@@ -499,7 +655,7 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
 - (void)confirmCloseAndReopen {
     UIAlertController *alert = [UIAlertController
         alertControllerWithTitle:@"Apply & Restart"
-                         message:@"iOS does not allow a jailed app to relaunch itself. All settings will be saved, the app will close, and you can open it again manually."
+                         message:@"A jailed iOS app cannot relaunch itself. Settings will be synchronized, the app will close, and you must open it again manually."
                   preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
                                               style:UIAlertActionStyleCancel
@@ -537,19 +693,23 @@ typedef NS_ENUM(NSInteger, FLEXHookCenterSection) {
     for (FLEXHookEntry *entry in self.failedEntries) {
         [lines addObject:[NSString stringWithFormat:@"• %@ — %@",
             entry.title, entry.lastError ?: @"Unknown error"]];
-        if (lines.count >= 12) {
-            [lines addObject:@"• More entries are available in their Runtime Browser."];
+        if (lines.count == 12) {
+            [lines addObject:@"• More entries are available in their Runtime tab."];
             break;
         }
     }
+    if (!lines.count) {
+        [lines addObject:@"No runtime errors."];
+    }
+    NSString *report = [lines componentsJoinedByString:@"\n\n"];
     UIAlertController *alert = [UIAlertController
         alertControllerWithTitle:@"Runtime diagnostics"
-                         message:[lines componentsJoinedByString:@"\n\n"]
+                         message:report
                   preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"Copy"
                                               style:UIAlertActionStyleDefault
                                             handler:^(__unused UIAlertAction *action) {
-        UIPasteboard.generalPasteboard.string = [lines componentsJoinedByString:@"\n"];
+        UIPasteboard.generalPasteboard.string = report;
     }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"Close"
                                               style:UIAlertActionStyleCancel

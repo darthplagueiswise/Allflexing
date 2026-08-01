@@ -11,6 +11,7 @@ fi
 
 readonly PRODUCT_NAME="AllFLEXing"
 readonly RELEASE_DIR="$PROJECT_ROOT/release"
+readonly FLEX_UI_PATCH="$PROJECT_ROOT/patches/flex-uikit26-liquid-glass.patch"
 
 log() {
 	printf '[AllFLEXing] %s\n' "$*"
@@ -30,6 +31,21 @@ ensure_theos() {
 		return
 	fi
 	die "THEOS is not set and ${HOME}/theos does not exist"
+}
+
+prepare_flex_ui() {
+	[ -f "$FLEX_UI_PATCH" ] || die "missing pinned FLEX UIKit 26 patch"
+	[ -d "$PROJECT_ROOT/libflex/FLEX" ] || die "FLEX submodule is missing"
+
+	if git -C "$PROJECT_ROOT/libflex/FLEX" apply --reverse --check "$FLEX_UI_PATCH" >/dev/null 2>&1; then
+		log "pinned FLEX UIKit 26 patch is already applied"
+		return
+	fi
+	if ! git -C "$PROJECT_ROOT/libflex/FLEX" apply --check "$FLEX_UI_PATCH"; then
+		die "FLEX submodule does not match the pinned Liquid Glass patch base"
+	fi
+	git -C "$PROJECT_ROOT/libflex/FLEX" apply "$FLEX_UI_PATCH"
+	log "applied pinned FLEX UIKit 26 presentation patch"
 }
 
 clean_build() {
@@ -82,6 +98,7 @@ stage_artifacts() {
 build_product() {
 	local package="$1"
 	local incremental="$2"
+	prepare_flex_ui
 	if [ "$incremental" != "1" ]; then
 		clean_build
 	fi

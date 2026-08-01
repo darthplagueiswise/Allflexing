@@ -474,6 +474,38 @@ Liquid Glass é hierarquia e comportamento, não apenas blur.
 - Em sistemas anteriores ao iOS 26, usar material UIKit simples como fallback,
   sem imitar de forma pesada o shader de Liquid Glass.
 
+### 12.4 Arquitetura visual obrigatória
+
+- É proibido instalar hook global em `UIViewController` para estilizar telas e
+  é proibido percorrer recursivamente a árvore de views procurando nomes de
+  classes. Aparência é responsabilidade explícita do controller ou componente
+  que cria a superfície.
+- A entrada global abre um workspace próprio. Em largura compacta ele usa tab
+  bar flutuante; em largura regular usa o modo tab/sidebar adaptativo do UIKit.
+  Center, Objective-C, C Runtime e Settings mantêm navigation controllers
+  independentes e compartilham o mesmo registry.
+- O Hook Center usa header auto-dimensionável, métricas que mudam de linha em
+  largura compacta ou categoria de texto de acessibilidade, conteúdo de lista
+  nativo e `UIBarButtonItem` proeminente para Apply.
+- Ações secundárias ficam em `UIMenu` ligado ao item que as originou. Escopo do
+  scanner, popovers e action sheets sempre informam seu source item/view para o
+  UIKit executar continuidade e morphing.
+- O seletor horizontal de hierarquia do FLEX contém uma única seleção
+  `UIGlassEffect` dentro de um `UIGlassContainerEffect`. A seleção muda de forma
+  animando o frame entre os atributos reais do collection layout; as labels
+  continuam na camada de conteúdo.
+- A toolbar flutuante do explorer é uma superfície glass explícita. O painel de
+  descrição materializa e desmaterializa animando `effect`; nenhuma rotina
+  posterior tenta inserir backdrops por heurística.
+- O submódulo FLEX permanece fixado em commit conhecido. Alterações de
+  apresentação indispensáveis são armazenadas num patch versionado, verificadas
+  e aplicadas idempotentemente antes do build. O build deve falhar se a base não
+  corresponder ao patch, em vez de produzir UI parcialmente aplicada.
+- Tamanhos fixos legados de toolbar não são usados no iOS 26. Layout usa métricas
+  do sistema, safe areas, readable width, fitting size, Dynamic Type e
+  `setContentScrollView:forEdge:` para adaptação de scroll edges e minimização
+  nativas.
+
 ## 13. Análise do binário de referência
 
 Os binários fornecidos confirmam a arquitetura de produto que deve ser

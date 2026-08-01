@@ -1,10 +1,9 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
-#import "FLEXGlassAutostyle.h"
 #import "FLEXHookPersistence.h"
 #import "FLEXHookRegistry.h"
-#import "FLEXHookToggles.h"
+#import "FLEXHookWorkspaceController.h"
 #import "FLEXHooking.h"
 #import "FLEXLiquidGlass.h"
 #import "FLEXManager.h"
@@ -166,10 +165,6 @@ static void AllFLEXingRegisterRuntime(void) {
                   title:@"Three-finger reveal"
                  detail:@"Open FLEX with a 0.55 second three-finger long press."
            defaultValue:YES];
-    [flags registerFlag:@"hook.log_view_controllers"
-                  title:@"Log view controllers"
-                 detail:@"Diagnostic logging for every viewDidAppear: callback."
-           defaultValue:NO];
     [flags registerFlag:@"engine.objc_ellekit"
                   title:@"Objective-C / ElleKit"
                  detail:@"Allow ABI-validated runtime methods through MSHookMessageEx."
@@ -182,16 +177,6 @@ static void AllFLEXingRegisterRuntime(void) {
                   title:@"C inline / ElleKit"
                  detail:@"Allow MSHookFunction only for an explicit C ABI and resolved address."
            defaultValue:YES];
-    [flags registerInstallOnce:@"hook.flex_ui_autostyle"
-                         title:@"Auto-style FLEX screens"
-                        detail:@"Install one lifecycle hook and gate FLEX-only styling live."
-                  defaultValue:YES
-                         block:^{
-        if (!FLEXGlassAutostyleInstall()) {
-            NSLog(@"[AllFLEXing] failed to install FLEX UI lifecycle hook");
-        }
-    }];
-
     // Reapply only exact, versioned targets after engine defaults exist and
     // before the first main-runloop turn. No broad scan or UIKit work occurs.
     [FLEXHookRegistry.sharedRegistry bootstrap];
@@ -202,9 +187,11 @@ static void AllFLEXingStartUI(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         [FLEXManager.sharedManager
-            registerGlobalEntryWithName:@"Hook Center"
-            viewControllerFutureBlock:^UIViewController *{
-                return [FLEXHookToggles new];
+            registerGlobalEntryWithName:@"AllFLEXing Runtime Workspace"
+            action:^(__kindof UITableViewController *host) {
+                FLEXHookWorkspaceController *workspace =
+                    [FLEXHookWorkspaceController new];
+                [host presentViewController:workspace animated:YES completion:nil];
             }];
         [AllFLEXingReveal.shared start];
         [FLEXLiquidGlass refreshVisibleFLEXViewControllers];

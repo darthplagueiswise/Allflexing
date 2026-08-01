@@ -26,6 +26,12 @@ grep -q '^ARCHS := arm64$' Makefile
 grep -q '^ARCHS := arm64$' libflex/Makefile
 test -f build.sh
 grep -q 'make package FINALPACKAGE=1' build.sh
+grep -q 'prepare_flex_ui' build.sh
+grep -q 'flex-uikit26-liquid-glass.patch' build.sh
+test -f patches/flex-uikit26-liquid-glass.patch
+grep -q 'FLEXScopeCarousel.m' patches/flex-uikit26-liquid-glass.patch
+grep -q 'FLEXExplorerToolbar.m' patches/flex-uikit26-liquid-glass.patch
+grep -q 'FLEXNavigationController.m' patches/flex-uikit26-liquid-glass.patch
 grep -q 'include modules/HookRuntime/Module.mk' libflex/Makefile
 grep -q 'include modules/HookProviders/Module.mk' libflex/Makefile
 grep -q 'include modules/LiquidGlassUI/Module.mk' libflex/Makefile
@@ -38,6 +44,15 @@ grep -Eq '\$\(TWEAK_NAME\)_LIBRARIES[[:space:]]*:=[^#]*substrate' libflex/Makefi
 test -f libflex/AllFLEXing/FLEXLiquidGlass.m
 grep -q "UIGlassEffect" libflex/AllFLEXing/FLEXLiquidGlass.m
 grep -q "UIGlassContainerEffect" libflex/AllFLEXing/FLEXLiquidGlass.m
+grep -q 'glassContainerViewWithSpacing' libflex/AllFLEXing/FLEXLiquidGlass.m
+grep -q 'materializeGlassView' libflex/AllFLEXing/FLEXLiquidGlass.m
+test -f libflex/AllFLEXing/FLEXHookWorkspaceController.m
+grep -q 'UITabBarControllerModeTabSidebar' libflex/AllFLEXing/FLEXHookWorkspaceController.m
+grep -q 'UITabBarMinimizeBehaviorOnScrollDown' libflex/AllFLEXing/FLEXHookWorkspaceController.m
+grep -q 'setContentScrollView' libflex/AllFLEXing/FLEXHookToggles.m
+grep -q 'menu:\[self scopeMenu\]' libflex/AllFLEXing/FLEXRuntimeBrowserController.m
+grep -q 'UIContentUnavailableConfiguration' libflex/AllFLEXing/FLEXRuntimeBrowserController.m
+grep -q 'UIListContentConfiguration' libflex/AllFLEXing/FLEXHookToggles.m
 grep -q '#import <substrate.h>' libflex/AllFLEXing/FLEXHooking.m
 grep -q 'MSHookMessageEx' libflex/AllFLEXing/FLEXHooking.m
 grep -q 'MSHookFunction' libflex/AllFLEXing/FLEXHooking.m
@@ -60,7 +75,11 @@ grep -q 'configureWithDefaultBackground' libflex/AllFLEXing/FLEXLiquidGlass.m
 grep -q 'hidesSharedBackground' libflex/AllFLEXing/FLEXHookToggles.m
 grep -q 'vm_protect' libflex/AllFLEXing/flex_fishhook.c
 grep -q 'VM_PROT_COPY' libflex/AllFLEXing/flex_fishhook.c
-grep -q 'systemLayoutSizeFittingSize' libflex/AllFLEXing/FLEXRuntimeHookActions.m
+grep -q '\[toggle sizeToFit\]' libflex/AllFLEXing/FLEXRuntimeHookActions.m
+if grep -q 'UIStackView \*accessory' libflex/AllFLEXing/FLEXRuntimeHookActions.m; then
+    echo "error: contextual hook rows must not restore the clipped accessory stack" >&2
+    exit 1
+fi
 if grep -q 'mprotect[[:space:]]*(' libflex/AllFLEXing/flex_fishhook.c; then
     echo "error: legacy mprotect fishhook path is not allowed" >&2
     exit 1
@@ -69,6 +88,12 @@ fi
 if grep -Eq '(navigationBar|toolbar|bar)\.standardAppearance[[:space:]]*=[[:space:]]*nil' \
     libflex/AllFLEXing/FLEXLiquidGlass.m; then
     echo "error: UIKit 26 standard bar appearances are nonnull" >&2
+    exit 1
+fi
+
+if test -e libflex/AllFLEXing/FLEXGlassAutostyle.m || \
+   grep -Rq 'FLEXWalkViewTree\|UIViewController.class.*viewDidAppear' libflex/AllFLEXing; then
+    echo "error: global FLEX view-tree autostyle must not return" >&2
     exit 1
 fi
 
