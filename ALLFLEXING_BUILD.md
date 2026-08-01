@@ -82,7 +82,8 @@ Writes update the cache and defaults together, then post
 
 On iOS 26+, `FLEXLiquidGlass` uses public SDK 26 APIs:
 
-- `UIGlassEffect` for navigation, toolbars, search, and floating panels;
+- UIKit's default SDK 26 appearances for navigation bars and toolbars;
+- `UIGlassEffect` for search and custom floating panels;
 - `UIGlassContainerEffect` as the supported grouping primitive for future
   multi-element control clusters;
 - `UIButtonConfiguration.glassButtonConfiguration` for standalone controls.

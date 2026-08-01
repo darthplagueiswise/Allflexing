@@ -155,9 +155,17 @@ static UIViewController *FLEXVisibleViewController(UIViewController *controller)
     bar.translucent = YES;
 
     UINavigationBarAppearance *appearance = [UINavigationBarAppearance new];
-    [appearance configureWithTransparentBackground];
-    appearance.backgroundColor = UIColor.clearColor;
-    appearance.backgroundEffect = [self glassEffectInteractive:NO tint:nil];
+    if (self.isGlassAvailable) {
+        // UIKit 26 bars adopt Liquid Glass automatically when linked with the
+        // new SDK. backgroundEffect remains typed as UIBlurEffect, so assigning
+        // a UIGlassEffect here would be both unnecessary and type-incorrect.
+        [appearance configureWithDefaultBackground];
+    } else {
+        [appearance configureWithTransparentBackground];
+        appearance.backgroundColor = UIColor.clearColor;
+        appearance.backgroundEffect =
+            [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial];
+    }
     appearance.shadowColor = UIColor.clearColor;
 
     bar.standardAppearance = appearance;
@@ -176,9 +184,14 @@ static UIViewController *FLEXVisibleViewController(UIViewController *controller)
     }
 
     UIToolbarAppearance *appearance = [UIToolbarAppearance new];
-    [appearance configureWithTransparentBackground];
-    appearance.backgroundColor = UIColor.clearColor;
-    appearance.backgroundEffect = [self glassEffectInteractive:NO tint:nil];
+    if (self.isGlassAvailable) {
+        [appearance configureWithDefaultBackground];
+    } else {
+        [appearance configureWithTransparentBackground];
+        appearance.backgroundColor = UIColor.clearColor;
+        appearance.backgroundEffect =
+            [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial];
+    }
     appearance.shadowColor = UIColor.clearColor;
 
     toolbar.translucent = YES;
