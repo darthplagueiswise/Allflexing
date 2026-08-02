@@ -1,12 +1,13 @@
 #import <Foundation/Foundation.h>
+#import <objc/message.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
 @class FLEXHookEntry;
 
 /// Foundation has removal/union APIs but no public mutable intersection
-/// selector. The runtime search index uses this small compatibility category
-/// to intersect precomputed posting lists without rescanning symbol strings.
+/// selector. The runtime search indexes use this compatibility category to
+/// intersect precomputed posting lists without rescanning symbol strings.
 @interface NSMutableIndexSet (AllFLEXingIntersection)
 - (void)intersectIndexes:(NSIndexSet *)indexes;
 @end
@@ -21,8 +22,8 @@ NS_ASSUME_NONNULL_BEGIN
 + (nullable void *)resolveSymbol:(NSString *)symbol;
 /// Resolves an inline C target from its selected-image locator. Unlike dlsym,
 /// this supports private/local symbols and LC_FUNCTION_STARTS entries by
-/// rebuilding the live address from the loaded Mach-O header plus the persisted
-/// image-relative offset, then validating that it lies in an executable segment.
+/// validating the recorded live address against the loaded image UUID and its
+/// executable segments.
 + (nullable void *)resolveAddressForEntry:(FLEXHookEntry *)entry;
 
 @end
