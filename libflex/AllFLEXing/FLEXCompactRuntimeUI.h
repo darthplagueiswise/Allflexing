@@ -35,13 +35,17 @@ FOUNDATION_EXPORT void FLEXStyleCompactRuntimeCell(
 FOUNDATION_EXPORT void FLEXConfigureCompactRuntimeContent(
     UITableViewCell *cell,
     NSString *title,
-    nullable NSString *secondary,
-    nullable NSString *symbolName,
+    NSString * _Nullable secondary,
+    NSString * _Nullable symbolName,
     UIColor *tint
 );
 FOUNDATION_EXPORT UIView *FLEXCompactAccessoryContainer(
     UIView *accessory,
     CGFloat visualScale
+);
+FOUNDATION_EXPORT FLEXCompactCellPosition FLEXCompactPositionForRow(
+    NSUInteger row,
+    NSUInteger count
 );
 
 NS_ASSUME_NONNULL_END
