@@ -5,6 +5,9 @@
 
 #import <objc/runtime.h>
 
+const char *FLEXDeferredPersistenceIntegrationABIVersion =
+    "AllFLEXing deferred coalesced persistence integration ABI 1";
+
 static void FLEXPersistenceExchange(Class cls, SEL original, SEL replacement) {
     Method originalMethod = class_getInstanceMethod(cls, original);
     Method replacementMethod = class_getInstanceMethod(cls, replacement);
@@ -22,7 +25,8 @@ static void FLEXPersistenceExchange(Class cls, SEL original, SEL replacement) {
 + (void)load {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        (void)FLEXPersistenceStore.sharedStore;
+        // Install the lightweight method exchanges only. Do not create the
+        // persistence store or touch the filesystem from +load.
         FLEXPersistenceExchange(
             FLEXHookPersistence.class,
             @selector(setBool:forFlag:),
@@ -43,7 +47,7 @@ static void FLEXPersistenceExchange(Class cls, SEL original, SEL replacement) {
 
 - (void)af_persist_setBool:(BOOL)value forFlag:(NSString *)identifier {
     [self af_persist_setBool:value forFlag:identifier];
-    [FLEXPersistenceStore.sharedStore synchronizeNow];
+    [FLEXPersistenceStore.sharedStore synchronizeSoon];
 }
 
 - (NSString *)af_persist_storageDomainDescription {
@@ -56,7 +60,7 @@ static void FLEXPersistenceExchange(Class cls, SEL original, SEL replacement) {
 
 - (void)af_persist_registryEntries {
     [self af_persist_registryEntries];
-    [FLEXPersistenceStore.sharedStore synchronizeNow];
+    [FLEXPersistenceStore.sharedStore synchronizeSoon];
 }
 
 @end
