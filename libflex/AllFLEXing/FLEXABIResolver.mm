@@ -3,7 +3,6 @@
 #import "FLEXHooking.h"
 
 #import <cxxabi.h>
-#import <dlfcn.h>
 #import <mach-o/dyld.h>
 #import <mach-o/loader.h>
 #import <mach/vm_prot.h>
@@ -31,12 +30,10 @@ static dispatch_queue_t FLEXABIResolverQueue(void) {
     return queue;
 }
 
-static const char *FLEXSkipTypeQualifiers(const char *type) {
+static const char *FLEXSkipQualifiers(const char *type) {
     if (!type) return "";
     while (*type == 'r' || *type == 'n' || *type == 'N' || *type == 'o' ||
-           *type == 'O' || *type == 'R' || *type == 'V') {
-        type++;
-    }
+           *type == 'O' || *type == 'R' || *type == 'V') type++;
     return type;
 }
 
@@ -44,8 +41,7 @@ static FLEXHookABI FLEXObjectiveCABI(Method method) {
     if (!method) return FLEXHookABIUnknown;
     char returnType[64] = {0};
     method_getReturnType(method, returnType, sizeof(returnType));
-    const char *returnCode = FLEXSkipTypeQualifiers(returnType);
-    if (*returnCode != 'B') return FLEXHookABIUnknown;
+    if (*FLEXSkipQualifiers(returnType) != 'B') return FLEXHookABIUnknown;
 
     unsigned int count = method_getNumberOfArguments(method);
     if (count == 2) return FLEXHookABIObjCBoolNoArguments;
@@ -53,21 +49,20 @@ static FLEXHookABI FLEXObjectiveCABI(Method method) {
 
     char argumentType[64] = {0};
     method_getArgumentType(method, 2, argumentType, sizeof(argumentType));
-    const char *argumentCode = FLEXSkipTypeQualifiers(argumentType);
-    if (*argumentCode == '@' || *argumentCode == '#' || *argumentCode == ':') {
+    const char *code = FLEXSkipQualifiers(argumentType);
+    if (*code == '@' || *code == '#' || *code == ':') {
         return FLEXHookABIObjCBoolObjectArgument;
     }
-    if (strchr("BcCsSiIlLqQ", *argumentCode)) {
-        return FLEXHookABIObjCBoolIntegerArgument;
-    }
-    return FLEXHookABIUnknown;
+    return strchr("BcCsSiIlLqQ", *code)
+        ? FLEXHookABIObjCBoolIntegerArgument
+        : FLEXHookABIUnknown;
 }
 
 static NSString *FLEXNormalizedSymbol(NSString *symbol) {
     return [symbol hasPrefix:@"_"] ? [symbol substringFromIndex:1] : symbol;
 }
 
-static NSDictionary<NSString *, NSNumber *> *FLEXKnownCSignatures(void) {
+static NSDictionary<NSString *, NSNumber *> *FLEXExactCSignatures(void) {
     static NSDictionary<NSString *, NSNumber *> *signatures;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
@@ -85,7 +80,7 @@ static NSDictionary<NSString *, NSNumber *> *FLEXKnownCSignatures(void) {
     return signatures;
 }
 
-static NSString *FLEXDemangleSymbol(NSString *symbol) {
+static NSString *FLEXDemangledIdentity(NSString *symbol) {
     NSString *normalized = FLEXNormalizedSymbol(symbol);
     if (!normalized.length) return @"";
     int status = 0;
@@ -99,16 +94,15 @@ static NSString *FLEXDemangleSymbol(NSString *symbol) {
     return result;
 }
 
-static BOOL FLEXLoadedImage(NSString *path,
-                            const struct mach_header_64 **header,
-                            intptr_t *slide) {
+static BOOL FLEXFindLoadedImage(NSString *path,
+                                const struct mach_header_64 **header,
+                                intptr_t *slide) {
     for (uint32_t index = 0; index < _dyld_image_count(); index++) {
         const char *rawPath = _dyld_get_image_name(index);
-        const struct mach_header *generic = _dyld_get_image_header(index);
-        if (!rawPath || !generic || generic->magic != MH_MAGIC_64) continue;
-        NSString *candidate = [NSString stringWithUTF8String:rawPath];
-        if (![candidate isEqualToString:path]) continue;
-        if (header) *header = (const struct mach_header_64 *)generic;
+        const struct mach_header *candidate = _dyld_get_image_header(index);
+        if (!rawPath || !candidate || candidate->magic != MH_MAGIC_64) continue;
+        if (![[NSString stringWithUTF8String:rawPath] isEqualToString:path]) continue;
+        if (header) *header = (const struct mach_header_64 *)candidate;
         if (slide) *slide = _dyld_get_image_vmaddr_slide(index);
         return YES;
     }
@@ -120,92 +114,74 @@ static int64_t FLEXSignExtend(uint64_t value, unsigned bits) {
     return (int64_t)((value ^ mask) - mask);
 }
 
-static BOOL FLEXARM64BranchTarget(uint32_t instruction,
-                                  uintptr_t pc,
-                                  uintptr_t *target) {
+static BOOL FLEXBLTarget(uint32_t instruction, uintptr_t pc, uintptr_t *target) {
     if ((instruction & 0xFC000000u) != 0x94000000u) return NO;
     int64_t displacement = FLEXSignExtend(instruction & 0x03FFFFFFu, 26) << 2;
     if (target) *target = (uintptr_t)((int64_t)pc + displacement);
     return YES;
 }
 
-static BOOL FLEXARM64WritesRegister(uint32_t instruction,
-                                    unsigned *registerIndex,
-                                    BOOL *pointerLike) {
-    unsigned rd = instruction & 0x1f;
-    if (rd > 7) return NO;
-
+static BOOL FLEXInstructionWritesArgumentRegister(uint32_t instruction,
+                                                  unsigned *reg,
+                                                  BOOL *pointerLike) {
+    unsigned destination = instruction & 0x1f;
+    if (destination > 7) return NO;
     BOOL writes = NO;
     BOOL pointer = NO;
+
     if ((instruction & 0x1F000000u) == 0x10000000u) {
         writes = YES;
         pointer = YES; // ADR/ADRP
-    } else if ((instruction & 0x1F800000u) == 0x12800000u) {
-        writes = YES; // MOVN/MOVZ/MOVK
-    } else if ((instruction & 0x1F000000u) == 0x11000000u) {
-        writes = YES; // ADD/SUB immediate
-    } else if ((instruction & 0x1F000000u) == 0x0A000000u ||
-               (instruction & 0x1F000000u) == 0x0B000000u) {
-        writes = YES; // logical/add-sub register
+    } else if ((instruction & 0x1F800000u) == 0x12800000u ||
+               (instruction & 0x1F000000u) == 0x11000000u ||
+               (instruction & 0x1F000000u) == 0x0A000000u ||
+               (instruction & 0x1F000000u) == 0x0B000000u ||
+               (instruction & 0x1FE00000u) == 0x1A800000u) {
+        writes = YES;
     } else if ((instruction & 0x3B000000u) == 0x18000000u) {
         writes = YES;
-        pointer = (instruction & 0x40000000u) != 0; // literal load width
+        pointer = (instruction & 0x40000000u) != 0;
     } else if ((instruction & 0x3B000000u) == 0x39000000u &&
                (instruction & (1u << 22))) {
-        writes = YES; // load from memory
+        writes = YES;
         pointer = ((instruction >> 30) & 0x3) == 0x3;
-    } else if ((instruction & 0x1FE00000u) == 0x1A800000u) {
-        writes = YES; // conditional select
     }
 
     if (!writes) return NO;
-    if (registerIndex) *registerIndex = rd;
+    if (reg) *reg = destination;
     if (pointerLike) *pointerLike = pointer;
     return YES;
 }
 
-static void FLEXAnalyzeReturnUse(uint32_t instruction,
+static void FLEXVoteForReturnUse(uint32_t instruction,
                                  NSUInteger *boolVotes,
                                  NSUInteger *integerVotes,
                                  NSUInteger *pointerVotes) {
     unsigned rt = instruction & 0x1f;
     if (rt != 0) return;
-
     if ((instruction & 0x7E000000u) == 0x34000000u) {
-        BOOL xRegister = (instruction & 0x80000000u) != 0;
-        if (xRegister) (*pointerVotes)++;
-        else (*boolVotes)++;
-        return;
-    }
-    if ((instruction & 0x7E000000u) == 0x36000000u) {
+        ((instruction & 0x80000000u) ? pointerVotes : boolVotes)[0]++;
+    } else if ((instruction & 0x7E000000u) == 0x36000000u) {
         (*boolVotes)++;
-        return;
-    }
-    if ((instruction & 0x7F00001Fu) == 0x7100001Fu &&
-        ((instruction >> 5) & 0x1f) == 0) {
+    } else if ((instruction & 0x7F00001Fu) == 0x7100001Fu &&
+               ((instruction >> 5) & 0x1f) == 0) {
         (*integerVotes)++;
-        return;
-    }
-    if ((instruction & 0x3B000000u) == 0x39000000u) {
-        unsigned rn = (instruction >> 5) & 0x1f;
-        BOOL load = (instruction & (1u << 22)) != 0;
-        if (load && rn == 0) (*pointerVotes)++;
+    } else if ((instruction & 0x3B000000u) == 0x39000000u &&
+               (instruction & (1u << 22)) &&
+               ((instruction >> 5) & 0x1f) == 0) {
+        (*pointerVotes)++;
     }
 }
 
-static BOOL FLEXAddressMatchesTargets(uintptr_t address,
-                                      NSSet<NSNumber *> *targets) {
-    return [targets containsObject:@(address)];
-}
-
-static FLEXHookABI FLEXAnalyzeARM64CallSites(FLEXHookEntry *entry,
-                                             NSMutableArray<NSString *> *evidence,
-                                             FLEXABIResolutionConfidence *confidence) {
-    NSString *imagePath = entry.locator[@"image"];
+static FLEXHookABI FLEXInferCABIFromCallSites(
+    FLEXHookEntry *entry,
+    NSMutableArray<NSString *> *evidence,
+    FLEXABIResolutionConfidence *confidence
+) {
     const struct mach_header_64 *header = NULL;
     intptr_t slide = 0;
-    if (!FLEXLoadedImage(imagePath, &header, &slide)) {
-        [evidence addObject:@"Selected image is not currently loaded."];
+    if (!FLEXFindLoadedImage(entry.locator[@"image"], &header, &slide)) {
+        [evidence addObject:@"The selected image is no longer loaded."];
         return FLEXHookABIUnknown;
     }
 
@@ -214,26 +190,18 @@ static FLEXHookABI FLEXAnalyzeARM64CallSites(FLEXHookEntry *entry,
     if ([address isKindOfClass:NSNumber.class] && address.unsignedLongLongValue) {
         [targets addObject:address];
     }
-    NSArray *stubs = entry.locator[@"stubAddresses"];
-    if ([stubs isKindOfClass:NSArray.class]) {
-        for (NSNumber *stub in stubs) {
-            if ([stub isKindOfClass:NSNumber.class] && stub.unsignedLongLongValue) {
-                [targets addObject:stub];
-            }
+    for (NSNumber *stub in entry.locator[@"stubAddresses"] ?: @[]) {
+        if ([stub isKindOfClass:NSNumber.class] && stub.unsignedLongLongValue) {
+            [targets addObject:stub];
         }
     }
     if (!targets.count) {
-        [evidence addObject:@"No executable address or call stub was recorded for this entry."];
+        [evidence addObject:@"No executable address or call stub is recorded."];
         return FLEXHookABIUnknown;
     }
 
-    NSUInteger callSites = 0;
-    NSUInteger boolVotes = 0;
-    NSUInteger integerVotes = 0;
-    NSUInteger pointerVotes = 0;
-    NSUInteger maximumArguments = 0;
-    NSUInteger pointerArgumentVotes = 0;
-
+    NSUInteger calls = 0, boolVotes = 0, integerVotes = 0, pointerVotes = 0;
+    NSUInteger maxArguments = 0, pointerArgumentVotes = 0;
     const uint8_t *cursor = (const uint8_t *)(header + 1);
     for (uint32_t commandIndex = 0; commandIndex < header->ncmds; commandIndex++) {
         const struct load_command *command = (const struct load_command *)cursor;
@@ -243,34 +211,32 @@ static FLEXHookABI FLEXAnalyzeARM64CallSites(FLEXHookEntry *entry,
                 (const struct segment_command_64 *)command;
             if ((segment->initprot & VM_PROT_EXECUTE) && segment->vmsize) {
                 uintptr_t start = (uintptr_t)(segment->vmaddr + slide);
-                uintptr_t end = start + (uintptr_t)segment->vmsize;
+                NSUInteger count = (NSUInteger)(segment->vmsize / sizeof(uint32_t));
                 const uint32_t *instructions = (const uint32_t *)start;
-                NSUInteger count = (end - start) / sizeof(uint32_t);
                 for (NSUInteger index = 0; index < count; index++) {
-                    uintptr_t pc = start + index * sizeof(uint32_t);
                     uintptr_t target = 0;
-                    if (!FLEXARM64BranchTarget(instructions[index], pc, &target) ||
-                        !FLEXAddressMatchesTargets(target, targets)) {
-                        continue;
-                    }
-                    callSites++;
-                    unsigned highestArgument = 0;
+                    uintptr_t pc = start + index * sizeof(uint32_t);
+                    if (!FLEXBLTarget(instructions[index], pc, &target) ||
+                        ![targets containsObject:@(target)]) continue;
+                    calls++;
                     BOOL sawArgument = NO;
-                    BOOL firstArgumentPointer = NO;
+                    unsigned highest = 0;
+                    BOOL x0Pointer = NO;
                     NSUInteger beginning = index > 8 ? index - 8 : 0;
                     for (NSUInteger previous = beginning; previous < index; previous++) {
                         unsigned reg = 0;
                         BOOL pointerLike = NO;
-                        if (FLEXARM64WritesRegister(instructions[previous], &reg, &pointerLike)) {
-                            highestArgument = MAX(highestArgument, reg);
+                        if (FLEXInstructionWritesArgumentRegister(
+                                instructions[previous], &reg, &pointerLike)) {
                             sawArgument = YES;
-                            if (reg == 0 && pointerLike) firstArgumentPointer = YES;
+                            highest = MAX(highest, reg);
+                            if (reg == 0 && pointerLike) x0Pointer = YES;
                         }
                     }
-                    if (sawArgument) maximumArguments = MAX(maximumArguments, highestArgument + 1);
-                    if (firstArgumentPointer) pointerArgumentVotes++;
+                    if (sawArgument) maxArguments = MAX(maxArguments, highest + 1);
+                    if (x0Pointer) pointerArgumentVotes++;
                     for (NSUInteger after = 1; after <= 4 && index + after < count; after++) {
-                        FLEXAnalyzeReturnUse(instructions[index + after],
+                        FLEXVoteForReturnUse(instructions[index + after],
                                              &boolVotes,
                                              &integerVotes,
                                              &pointerVotes);
@@ -282,36 +248,36 @@ static FLEXHookABI FLEXAnalyzeARM64CallSites(FLEXHookEntry *entry,
     }
 
     [evidence addObject:[NSString stringWithFormat:
-        @"ARM64 call-site analysis: %lu caller%@, bool=%lu, integer=%lu, pointer=%lu, max x0-x%lu arguments.",
-        (unsigned long)callSites, callSites == 1 ? @"" : @"s",
+        @"ARM64 callers=%lu, bool=%lu, integer=%lu, pointer=%lu, observed argument registers=%lu.",
+        (unsigned long)calls,
         (unsigned long)boolVotes,
         (unsigned long)integerVotes,
         (unsigned long)pointerVotes,
-        (unsigned long)(maximumArguments ? maximumArguments - 1 : 0)]];
+        (unsigned long)maxArguments]];
 
-    NSUInteger requiredVotes = callSites >= 2 ? 2 : NSUIntegerMax;
-    if (boolVotes >= requiredVotes && boolVotes >= integerVotes && boolVotes >= pointerVotes) {
-        if (maximumArguments == 0) {
+    if (calls < 2) {
+        if (calls) *confidence = FLEXABIResolutionConfidenceHeuristic;
+        return FLEXHookABIUnknown;
+    }
+    if (boolVotes >= 2 && boolVotes >= integerVotes && boolVotes >= pointerVotes) {
+        if (maxArguments == 0) {
             *confidence = FLEXABIResolutionConfidenceStrong;
             return FLEXHookABICBoolNoArguments;
         }
-        if (maximumArguments == 1 && pointerArgumentVotes >= requiredVotes) {
+        if (maxArguments == 1 && pointerArgumentVotes >= 2) {
             *confidence = FLEXABIResolutionConfidenceStrong;
             return FLEXHookABICBoolPointerArgument;
         }
     }
-    if (integerVotes >= requiredVotes && maximumArguments == 0) {
+    if (integerVotes >= 2 && maxArguments == 0) {
         *confidence = FLEXABIResolutionConfidenceStrong;
         return FLEXHookABICInt64NoArguments;
     }
-    if (pointerVotes >= requiredVotes && maximumArguments == 0) {
+    if (pointerVotes >= 2 && maxArguments == 0) {
         *confidence = FLEXABIResolutionConfidenceStrong;
         return FLEXHookABICPointerNoArguments;
     }
-    if (callSites > 0) {
-        *confidence = FLEXABIResolutionConfidenceHeuristic;
-        [evidence addObject:@"The observed callers do not agree strongly enough for automatic activation."];
-    }
+    *confidence = FLEXABIResolutionConfidenceHeuristic;
     return FLEXHookABIUnknown;
 }
 
@@ -330,99 +296,83 @@ static FLEXHookABI FLEXAnalyzeARM64CallSites(FLEXHookEntry *entry,
           completion:(void (^)(FLEXABIResolution *resolution))completion {
     FLEXHookEntry *snapshot = [entry copy];
     dispatch_async(FLEXABIResolverQueue(), ^{
-        FLEXABIResolution *resolution = [FLEXABIResolution new];
-        resolution.abi = FLEXHookABIUnknown;
-        resolution.backend = FLEXHookBackendNone;
-        resolution.confidence = FLEXABIResolutionConfidenceUnknown;
+        FLEXABIResolution *result = [FLEXABIResolution new];
+        result.abi = FLEXHookABIUnknown;
+        result.backend = FLEXHookBackendNone;
+        result.confidence = FLEXABIResolutionConfidenceUnknown;
         NSMutableArray<NSString *> *evidence = [NSMutableArray array];
+        NSUInteger bindSlots = [snapshot.locator[@"bindSlots"] unsignedIntegerValue];
 
         if (snapshot.surface == FLEXHookSurfaceObjectiveC) {
-            NSString *className = snapshot.locator[@"class"];
-            NSString *selectorName = snapshot.locator[@"selector"];
+            Class cls = NSClassFromString(snapshot.locator[@"class"]);
+            SEL selector = NSSelectorFromString(snapshot.locator[@"selector"]);
             BOOL classMethod = [snapshot.locator[@"classMethod"] boolValue];
-            Class targetClass = NSClassFromString(className);
-            SEL selector = NSSelectorFromString(selectorName);
             Method method = classMethod
-                ? class_getClassMethod(targetClass, selector)
-                : class_getInstanceMethod(targetClass, selector);
-            resolution.symbolResolved = method != NULL;
-            resolution.backend = FLEXHookBackendObjectiveCElleKit;
-            resolution.abi = FLEXObjectiveCABI(method);
-            if (resolution.abi != FLEXHookABIUnknown) {
-                resolution.confidence = FLEXABIResolutionConfidenceExact;
-                const char *encoding = method_getTypeEncoding(method);
+                ? class_getClassMethod(cls, selector)
+                : class_getInstanceMethod(cls, selector);
+            result.symbolResolved = method != NULL;
+            result.backend = FLEXHookBackendObjectiveCElleKit;
+            result.abi = FLEXObjectiveCABI(method);
+            if (result.abi != FLEXHookABIUnknown) {
+                result.confidence = FLEXABIResolutionConfidenceExact;
                 [evidence addObject:[NSString stringWithFormat:
-                    @"Objective-C runtime encoding is authoritative: %s",
-                    encoding ?: ""]];
+                    @"Objective-C runtime encoding: %s",
+                    method_getTypeEncoding(method) ?: ""]];
             } else {
-                [evidence addObject:@"Objective-C metadata is available, but the type encoding does not match a supported replacement profile."];
+                [evidence addObject:@"The Objective-C encoding is real, but no supported replacement profile matches it."];
             }
         } else {
-            NSUInteger bindSlots = [snapshot.locator[@"bindSlots"] unsignedIntegerValue];
             NSNumber *address = snapshot.locator[@"address"];
             if (bindSlots > 0) {
-                resolution.backend = FLEXHookBackendFishhook;
-                resolution.symbolResolved = YES;
+                result.backend = FLEXHookBackendFishhook;
+                result.symbolResolved = YES;
                 [evidence addObject:[NSString stringWithFormat:
-                    @"%lu Mach-O bind slot%@ select the embedded fishhook backend.",
+                    @"%lu confirmed Mach-O bind slot%@ select fishhook.",
                     (unsigned long)bindSlots, bindSlots == 1 ? @"" : @"s"]];
             } else if ([address isKindOfClass:NSNumber.class] &&
                        address.unsignedLongLongValue) {
-                resolution.backend = FLEXHookBackendInlineElleKit;
-                resolution.symbolResolved = FLEXMSHookFunctionProviderAvailable();
-                [evidence addObject:@"Executable function address selects the MSHookFunction backend."];
+                result.backend = FLEXHookBackendInlineElleKit;
+                result.symbolResolved = FLEXMSHookFunctionProviderAvailable();
+                [evidence addObject:@"A loaded executable address selects MSHookFunction."];
             }
 
             NSString *symbol = snapshot.locator[@"symbol"] ?: snapshot.title;
-            NSNumber *known = FLEXKnownCSignatures()[FLEXNormalizedSymbol(symbol)];
+            NSNumber *known = FLEXExactCSignatures()[FLEXNormalizedSymbol(symbol)];
             if (known) {
-                resolution.abi = (FLEXHookABI)known.integerValue;
-                resolution.confidence = FLEXABIResolutionConfidenceExact;
-                [evidence addObject:@"Matched an exact public C signature in the built-in signature table."];
+                result.abi = (FLEXHookABI)known.integerValue;
+                result.confidence = FLEXABIResolutionConfidenceExact;
+                [evidence addObject:@"Matched an exact public C signature."];
             } else {
-                NSString *demangled = FLEXDemangleSymbol(symbol);
+                NSString *demangled = FLEXDemangledIdentity(symbol);
                 if (demangled.length) {
-                    [evidence addObject:[@"Demangled C++ identity: " stringByAppendingString:demangled]];
-                    [evidence addObject:@"C++ mangling proves parameter identity but normally does not encode the return type; ARM64 callers are still required."];
+                    [evidence addObject:[@"Demangled identity: " stringByAppendingString:demangled]];
+                    [evidence addObject:@"Return type still requires caller evidence."];
                 }
-                FLEXABIResolutionConfidence callSiteConfidence =
+                FLEXABIResolutionConfidence confidence =
                     FLEXABIResolutionConfidenceUnknown;
-                FLEXHookABI callSiteABI = FLEXAnalyzeARM64CallSites(
-                    snapshot, evidence, &callSiteConfidence);
-                if (callSiteABI != FLEXHookABIUnknown) {
-                    resolution.abi = callSiteABI;
-                    resolution.confidence = callSiteConfidence;
-                } else if (callSiteConfidence > resolution.confidence) {
-                    resolution.confidence = callSiteConfidence;
-                }
+                result.abi = FLEXInferCABIFromCallSites(snapshot, evidence, &confidence);
+                result.confidence = confidence;
             }
         }
 
         BOOL backendAvailable = NO;
-        switch (resolution.backend) {
-            case FLEXHookBackendObjectiveCElleKit:
-                backendAvailable = FLEXMSHookMessageProviderAvailable();
-                break;
-            case FLEXHookBackendFishhook:
-                backendAvailable = bindSlots > 0;
-                break;
-            case FLEXHookBackendInlineElleKit:
-                backendAvailable = FLEXMSHookFunctionProviderAvailable();
-                break;
-            default:
-                backendAvailable = NO;
-                break;
+        if (result.backend == FLEXHookBackendObjectiveCElleKit) {
+            backendAvailable = FLEXMSHookMessageProviderAvailable();
+        } else if (result.backend == FLEXHookBackendFishhook) {
+            backendAvailable = bindSlots > 0;
+        } else if (result.backend == FLEXHookBackendInlineElleKit) {
+            backendAvailable = FLEXMSHookFunctionProviderAvailable();
         }
-        resolution.canAutoApply = resolution.abi != FLEXHookABIUnknown &&
+        result.canAutoApply = result.abi != FLEXHookABIUnknown &&
             backendAvailable &&
-            resolution.confidence >= FLEXABIResolutionConfidenceStrong;
-        resolution.evidence = evidence.copy;
-        resolution.summary = [NSString stringWithFormat:@"%@ · %@ · %@",
-            [self confidenceName:resolution.confidence],
-            FLEXHookABIName(resolution.abi),
-            FLEXHookBackendName(resolution.backend)];
+            result.confidence >= FLEXABIResolutionConfidenceStrong;
+        result.evidence = evidence.copy;
+        result.summary = [NSString stringWithFormat:@"%@ · %@ · %@",
+            [self confidenceName:result.confidence],
+            FLEXHookABIName(result.abi),
+            FLEXHookBackendName(result.backend)];
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (completion) completion(resolution);
+            if (completion) completion(result);
         });
     });
 }
