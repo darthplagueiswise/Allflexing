@@ -9,6 +9,8 @@ typedef NS_ENUM(NSInteger, FLEXRuntimeBrowserKind) {
 
 @interface FLEXRuntimeBrowserController : UITableViewController
 
+@property (nonatomic, readonly) UISearchController *searchController;
+
 - (instancetype)initWithKind:(FLEXRuntimeBrowserKind)kind;
 
 @end
