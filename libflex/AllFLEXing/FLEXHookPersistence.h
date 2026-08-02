@@ -3,6 +3,7 @@
 NS_ASSUME_NONNULL_BEGIN
 
 FOUNDATION_EXPORT NSNotificationName const FLEXHookFlagsDidChangeNotification;
+FOUNDATION_EXPORT const char *FLEXHookPersistenceReloadABIVersion;
 
 @interface FLEXHookFlag : NSObject
 
@@ -34,6 +35,10 @@ typedef void (^FLEXHookInstallBlock)(void);
 
 - (BOOL)boolForFlag:(NSString *)identifier;
 - (void)setBool:(BOOL)value forFlag:(NSString *)identifier;
+
+/// Reloads every registered flag from standard defaults after the durable
+/// mirror store has restored the newest post-scene snapshot.
+- (void)reloadPersistedValues;
 
 /// Installs every registered hook exactly once. Flag values gate hook bodies;
 /// they never cause a running process to be re-hooked.
