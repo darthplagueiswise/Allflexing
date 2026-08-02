@@ -10,6 +10,11 @@
 #import <objc/runtime.h>
 
 static const void *kFLEXCompactEntryIdentifierKey = &kFLEXCompactEntryIdentifierKey;
+static const void *kFLEXRuntimeGroupSourceKey = &kFLEXRuntimeGroupSourceKey;
+static const void *kFLEXRuntimeGroupsKey = &kFLEXRuntimeGroupsKey;
+static const void *kFLEXHookPendingSourceKey = &kFLEXHookPendingSourceKey;
+static const void *kFLEXHookActiveSourceKey = &kFLEXHookActiveSourceKey;
+static const void *kFLEXHookSectionsKey = &kFLEXHookSectionsKey;
 
 static void FLEXCompactExchangeInstanceMethods(Class cls, SEL original, SEL replacement) {
     Method originalMethod = class_getInstanceMethod(cls, original);
@@ -41,38 +46,48 @@ static void FLEXCompactExchangeInstanceMethods(Class cls, SEL original, SEL repl
                                             @selector(af_compact_tableView:cellForRowAtIndexPath:));
         FLEXCompactExchangeInstanceMethods(cls, @selector(tableView:didSelectRowAtIndexPath:),
                                             @selector(af_compact_tableView:didSelectRowAtIndexPath:));
+        FLEXCompactExchangeInstanceMethods(cls, @selector(tableView:titleForHeaderInSection:),
+                                            @selector(af_compact_tableView:titleForHeaderInSection:));
+        FLEXCompactExchangeInstanceMethods(cls, @selector(tableView:titleForFooterInSection:),
+                                            @selector(af_compact_tableView:titleForFooterInSection:));
     });
 }
 
 - (instancetype)af_compact_initWithKind:(FLEXRuntimeBrowserKind)kind {
-    FLEXRuntimeBrowserController *controller =
-        (FLEXRuntimeBrowserController *)[super initWithStyle:UITableViewStylePlain];
-    if (controller) {
-        [controller setValue:@(kind) forKey:@"kind"];
-    }
-    return controller;
+    return [self af_compact_initWithKind:kind];
 }
 
 - (void)af_compact_viewDidLoad {
     [self af_compact_viewDidLoad];
     FLEXConfigureCompactRuntimeTable(self.tableView);
-    [self.tableView registerClass:FLEXRuntimeGroupHeaderView.class
-           forHeaderFooterViewReuseIdentifier:@"AllFLEXingRuntimeGroupHeader"];
     self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
-    self.searchController.searchBar.searchTextField.font =
-        [[UIFontMetrics metricsForTextStyle:UIFontTextStyleBody]
-            scaledFontForFont:[UIFont systemFontOfSize:13.5]
-              maximumPointSize:16.0];
 }
 
 - (NSArray<FLEXRuntimeEntryGroup *> *)af_compact_runtimeGroups {
     NSArray<FLEXHookEntry *> *entries = nil;
     @try {
-        entries = [self valueForKey:@"filteredEntries"];
+        entries = [self valueForKey:@"filteredEntries"] ?: @[];
     } @catch (__unused NSException *exception) {
         entries = @[];
     }
-    return FLEXRuntimeGroupEntries(entries ?: @[]);
+
+    NSArray *cachedSource = objc_getAssociatedObject(self, kFLEXRuntimeGroupSourceKey);
+    NSArray<FLEXRuntimeEntryGroup *> *cachedGroups =
+        objc_getAssociatedObject(self, kFLEXRuntimeGroupsKey);
+    if (cachedSource == entries && cachedGroups) {
+        return cachedGroups;
+    }
+
+    NSArray<FLEXRuntimeEntryGroup *> *groups = FLEXRuntimeGroupEntries(entries);
+    objc_setAssociatedObject(self,
+                             kFLEXRuntimeGroupSourceKey,
+                             entries,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(self,
+                             kFLEXRuntimeGroupsKey,
+                             groups,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return groups;
 }
 
 - (NSInteger)af_compact_numberOfSectionsInTableView:(UITableView *)tableView {
@@ -90,12 +105,13 @@ static void FLEXCompactExchangeInstanceMethods(Class cls, SEL original, SEL repl
 
 - (UITableViewCell *)af_compact_tableView:(UITableView *)tableView
                     cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    static NSString *identifier = @"AllFLEXingCompactRuntimeCell";
+    static NSString *identifier = @"AllFLEXingNativeRuntimeCell";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:identifier];
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
                                       reuseIdentifier:identifier];
     }
+
     NSArray<FLEXRuntimeEntryGroup *> *groups = self.af_compact_runtimeGroups;
     FLEXRuntimeEntryGroup *group = groups[indexPath.section];
     FLEXHookEntry *entry = group.entries[indexPath.row];
@@ -121,7 +137,6 @@ static void FLEXCompactExchangeInstanceMethods(Class cls, SEL original, SEL repl
     UISwitch *toggle = [UISwitch new];
     toggle.on = entry.pendingEnabled;
     toggle.enabled = (entry.available && entry.hookable) || entry.pendingEnabled;
-    [toggle sizeToFit];
     toggle.accessibilityLabel = [NSString stringWithFormat:@"Runtime hook for %@",
         entry.title];
     toggle.accessibilityValue = entry.statusSummary;
@@ -132,32 +147,26 @@ static void FLEXCompactExchangeInstanceMethods(Class cls, SEL original, SEL repl
     [toggle addTarget:self
                action:@selector(af_compactRuntimeToggleChanged:)
      forControlEvents:UIControlEventValueChanged];
-    cell.accessoryView = FLEXCompactAccessoryContainer(toggle, 0.82);
+    cell.accessoryView = toggle;
     cell.accessoryType = UITableViewCellAccessoryNone;
     return cell;
 }
 
-- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
-    FLEXRuntimeGroupHeaderView *header = [tableView
-        dequeueReusableHeaderFooterViewWithIdentifier:@"AllFLEXingRuntimeGroupHeader"];
+- (NSString *)af_compact_tableView:(UITableView *)tableView
+           titleForHeaderInSection:(NSInteger)section {
+    (void)tableView;
     NSArray<FLEXRuntimeEntryGroup *> *groups = self.af_compact_runtimeGroups;
-    FLEXRuntimeEntryGroup *group = groups[section];
-    [header configureWithTitle:group.title
-                       detail:[NSString stringWithFormat:@"%lu",
-                           (unsigned long)group.entries.count]];
-    return header;
+    if (section < 0 || section >= (NSInteger)groups.count) {
+        return nil;
+    }
+    return groups[section].title;
 }
 
-- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
+- (NSString *)af_compact_tableView:(UITableView *)tableView
+           titleForFooterInSection:(NSInteger)section {
     (void)tableView;
     (void)section;
-    return 30.0;
-}
-
-- (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section {
-    (void)tableView;
-    (void)section;
-    return 4.0;
+    return nil;
 }
 
 - (void)af_compact_tableView:(UITableView *)tableView
@@ -186,6 +195,7 @@ static void FLEXCompactExchangeInstanceMethods(Class cls, SEL original, SEL repl
         [self reloadEntries];
         return;
     }
+
     [UISelectionFeedbackGenerator.new selectionChanged];
     __weak typeof(self) weakSelf = self;
     [registry applyEntryIdentifier:identifier completion:^(
@@ -217,7 +227,6 @@ typedef NS_ENUM(NSInteger, FLEXCompactHookSectionKind) {
 @interface FLEXCompactHookSection : NSObject
 @property (nonatomic) FLEXCompactHookSectionKind kind;
 @property (nonatomic, copy) NSString *title;
-@property (nonatomic, copy) NSString *detail;
 @property (nonatomic, copy) NSArray<FLEXHookEntry *> *entries;
 @end
 @implementation FLEXCompactHookSection
@@ -238,11 +247,18 @@ static NSArray<FLEXCompactHookSection *> *FLEXCompactHookSections(FLEXHookToggle
     } @catch (__unused NSException *exception) {
     }
 
+    NSArray *cachedPending = objc_getAssociatedObject(controller, kFLEXHookPendingSourceKey);
+    NSArray *cachedActive = objc_getAssociatedObject(controller, kFLEXHookActiveSourceKey);
+    NSArray<FLEXCompactHookSection *> *cachedSections =
+        objc_getAssociatedObject(controller, kFLEXHookSectionsKey);
+    if (cachedPending == pending && cachedActive == active && cachedSections) {
+        return cachedSections;
+    }
+
     NSMutableArray<FLEXCompactHookSection *> *sections = [NSMutableArray array];
     FLEXCompactHookSection *engines = [FLEXCompactHookSection new];
     engines.kind = FLEXCompactHookSectionEngines;
     engines.title = @"Runtime engines";
-    engines.detail = @"3";
     engines.entries = @[];
     [sections addObject:engines];
 
@@ -257,8 +273,6 @@ static NSArray<FLEXCompactHookSection *> *FLEXCompactHookSections(FLEXHookToggle
             FLEXCompactHookSection *section = [FLEXCompactHookSection new];
             section.kind = FLEXCompactHookSectionPendingGroup;
             section.title = group.title;
-            section.detail = [NSString stringWithFormat:@"Pending · %lu",
-                (unsigned long)group.entries.count];
             section.entries = group.entries;
             [sections addObject:section];
         }
@@ -275,8 +289,6 @@ static NSArray<FLEXCompactHookSection *> *FLEXCompactHookSections(FLEXHookToggle
             FLEXCompactHookSection *section = [FLEXCompactHookSection new];
             section.kind = FLEXCompactHookSectionActiveGroup;
             section.title = group.title;
-            section.detail = [NSString stringWithFormat:@"Installed · %lu",
-                (unsigned long)group.entries.count];
             section.entries = group.entries;
             [sections addObject:section];
         }
@@ -285,10 +297,23 @@ static NSArray<FLEXCompactHookSection *> *FLEXCompactHookSections(FLEXHookToggle
     FLEXCompactHookSection *recovery = [FLEXCompactHookSection new];
     recovery.kind = FLEXCompactHookSectionRecovery;
     recovery.title = @"Health";
-    recovery.detail = @"2";
     recovery.entries = @[];
     [sections addObject:recovery];
-    return sections.copy;
+
+    NSArray<FLEXCompactHookSection *> *result = sections.copy;
+    objc_setAssociatedObject(controller,
+                             kFLEXHookPendingSourceKey,
+                             pending,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(controller,
+                             kFLEXHookActiveSourceKey,
+                             active,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(controller,
+                             kFLEXHookSectionsKey,
+                             result,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return result;
 }
 
 @implementation FLEXHookToggles (AllFLEXingCompactGroups)
@@ -309,19 +334,20 @@ static NSArray<FLEXCompactHookSection *> *FLEXCompactHookSections(FLEXHookToggle
                                             @selector(af_compact_tableView:cellForRowAtIndexPath:));
         FLEXCompactExchangeInstanceMethods(cls, @selector(tableView:didSelectRowAtIndexPath:),
                                             @selector(af_compact_tableView:didSelectRowAtIndexPath:));
+        FLEXCompactExchangeInstanceMethods(cls, @selector(tableView:titleForHeaderInSection:),
+                                            @selector(af_compact_tableView:titleForHeaderInSection:));
+        FLEXCompactExchangeInstanceMethods(cls, @selector(tableView:titleForFooterInSection:),
+                                            @selector(af_compact_tableView:titleForFooterInSection:));
     });
 }
 
 - (instancetype)af_compact_init {
-    return [super initWithStyle:UITableViewStylePlain];
+    return [self af_compact_init];
 }
 
 - (void)af_compact_viewDidLoad {
     [self af_compact_viewDidLoad];
     FLEXConfigureCompactRuntimeTable(self.tableView);
-    [self.tableView registerClass:FLEXRuntimeGroupHeaderView.class
-           forHeaderFooterViewReuseIdentifier:@"AllFLEXingHookGroupHeader"];
-    self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
 }
 
 - (NSInteger)af_compact_numberOfSectionsInTableView:(UITableView *)tableView {
@@ -344,7 +370,7 @@ static NSArray<FLEXCompactHookSection *> *FLEXCompactHookSections(FLEXHookToggle
 }
 
 - (UITableViewCell *)af_compact_baseCell:(UITableView *)tableView {
-    static NSString *identifier = @"AllFLEXingCompactHookCenterCell";
+    static NSString *identifier = @"AllFLEXingNativeHookCenterCell";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:identifier];
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
@@ -377,7 +403,6 @@ static NSArray<FLEXCompactHookSection *> *FLEXCompactHookSections(FLEXHookToggle
     UISwitch *toggle = [UISwitch new];
     toggle.on = entry.pendingEnabled;
     toggle.enabled = (entry.available && entry.hookable) || entry.pendingEnabled;
-    [toggle sizeToFit];
     toggle.accessibilityLabel = [NSString stringWithFormat:@"Runtime hook for %@",
         entry.title];
     toggle.accessibilityValue = entry.statusSummary;
@@ -388,7 +413,7 @@ static NSArray<FLEXCompactHookSection *> *FLEXCompactHookSections(FLEXHookToggle
     [toggle addTarget:self
                action:@selector(af_compactHookToggleChanged:)
      forControlEvents:UIControlEventValueChanged];
-    cell.accessoryView = FLEXCompactAccessoryContainer(toggle, 0.82);
+    cell.accessoryView = toggle;
 }
 
 - (UITableViewCell *)af_compact_tableView:(UITableView *)tableView
@@ -499,24 +524,25 @@ static NSArray<FLEXCompactHookSection *> *FLEXCompactHookSections(FLEXHookToggle
     return cell;
 }
 
-- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
-    FLEXRuntimeGroupHeaderView *header = [tableView
-        dequeueReusableHeaderFooterViewWithIdentifier:@"AllFLEXingHookGroupHeader"];
+- (NSString *)af_compact_tableView:(UITableView *)tableView
+           titleForHeaderInSection:(NSInteger)section {
+    (void)tableView;
     FLEXCompactHookSection *descriptor = FLEXCompactHookSections(self)[section];
-    [header configureWithTitle:descriptor.title detail:descriptor.detail];
-    return header;
+    switch (descriptor.kind) {
+        case FLEXCompactHookSectionPendingGroup:
+            return [NSString stringWithFormat:@"Pending · %@", descriptor.title];
+        case FLEXCompactHookSectionActiveGroup:
+            return [NSString stringWithFormat:@"Installed · %@", descriptor.title];
+        default:
+            return descriptor.title;
+    }
 }
 
-- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
+- (NSString *)af_compact_tableView:(UITableView *)tableView
+           titleForFooterInSection:(NSInteger)section {
     (void)tableView;
     (void)section;
-    return 30.0;
-}
-
-- (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section {
-    (void)tableView;
-    (void)section;
-    return 4.0;
+    return nil;
 }
 
 - (void)af_compact_tableView:(UITableView *)tableView
@@ -561,6 +587,7 @@ static NSArray<FLEXCompactHookSection *> *FLEXCompactHookSections(FLEXHookToggle
         [self reloadState];
         return;
     }
+
     [UISelectionFeedbackGenerator.new selectionChanged];
     __weak typeof(self) weakSelf = self;
     [registry applyEntryIdentifier:identifier completion:^(
