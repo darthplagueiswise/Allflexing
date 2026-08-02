@@ -7,12 +7,12 @@
 #import <objc/runtime.h>
 
 const char *FLEXRuntimeSearchABIVersion =
-    "AllFLEXing selected-image complete-snapshot prefix-index search ABI 6";
+    "AllFLEXing selected-image transient-snapshot prefix-index search ABI 7";
 
-static const void *kFLEXRuntimeSelectedImageKey = &kFLEXRuntimeSelectedImageKey;
-static const void *kFLEXRuntimeImageSessionKey = &kFLEXRuntimeImageSessionKey;
-static const void *kFLEXRuntimeSearchIndexKey = &kFLEXRuntimeSearchIndexKey;
-static const void *kFLEXRuntimeSearchRequestKey = &kFLEXRuntimeSearchRequestKey;
+static const void *kFLEXSelectedImageKey = &kFLEXSelectedImageKey;
+static const void *kFLEXImageSessionKey = &kFLEXImageSessionKey;
+static const void *kFLEXSearchIndexKey = &kFLEXSearchIndexKey;
+static const void *kFLEXSearchRequestKey = &kFLEXSearchRequestKey;
 
 @interface FLEXRuntimeSearchRequest : NSObject
 @property (atomic) BOOL cancelled;
@@ -20,18 +20,11 @@ static const void *kFLEXRuntimeSearchRequestKey = &kFLEXRuntimeSearchRequestKey;
 @implementation FLEXRuntimeSearchRequest
 @end
 
-@interface FLEXRuntimeSearchRecord : NSObject
-@property (nonatomic) FLEXHookEntry *entry;
-@end
-@implementation FLEXRuntimeSearchRecord
-@end
-
 @interface FLEXRuntimeSearchIndex : NSObject
+@property (nonatomic, copy) NSArray<FLEXHookEntry *> *entries;
+@property (nonatomic, copy) NSDictionary<NSString *, NSIndexSet *> *prefixes;
 @property (nonatomic, copy) NSString *imageUUID;
 @property (nonatomic) FLEXRuntimeBrowserKind kind;
-@property (nonatomic, copy) NSArray<FLEXRuntimeSearchRecord *> *records;
-@property (nonatomic, copy) NSArray<FLEXHookEntry *> *allEntries;
-@property (nonatomic, copy) NSDictionary<NSString *, NSIndexSet *> *prefixMap;
 @end
 @implementation FLEXRuntimeSearchIndex
 @end
@@ -61,12 +54,10 @@ static void FLEXExchangeInstanceMethods(Class cls, SEL original, SEL replacement
     }
 }
 
-static NSString *FLEXSearchNormalizedText(NSString *source) {
-    if (!source.length) {
-        return @"";
-    }
+static NSString *FLEXNormalizedSearchText(NSString *source) {
+    if (!source.length) return @"";
 
-    NSMutableString *spaced = [NSMutableString stringWithCapacity:source.length + 8];
+    NSMutableString *output = [NSMutableString stringWithCapacity:source.length + 8];
     NSCharacterSet *letters = NSCharacterSet.letterCharacterSet;
     NSCharacterSet *digits = NSCharacterSet.decimalDigitCharacterSet;
     NSCharacterSet *upper = NSCharacterSet.uppercaseLetterCharacterSet;
@@ -77,14 +68,13 @@ static NSString *FLEXSearchNormalizedText(NSString *source) {
         BOOL alphanumeric = [letters characterIsMember:current] ||
                             [digits characterIsMember:current];
         if (!alphanumeric) {
-            if (spaced.length && [spaced characterAtIndex:spaced.length - 1] != ' ') {
-                [spaced appendString:@" "];
+            if (output.length && [output characterAtIndex:output.length - 1] != ' ') {
+                [output appendString:@" "];
             }
             continue;
         }
-
-        if ([upper characterIsMember:current] && index > 0 && spaced.length &&
-            [spaced characterAtIndex:spaced.length - 1] != ' ') {
+        if ([upper characterIsMember:current] && index > 0 && output.length &&
+            [output characterAtIndex:output.length - 1] != ' ') {
             unichar previous = [source characterAtIndex:index - 1];
             BOOL boundary = [lower characterIsMember:previous] ||
                             [digits characterIsMember:previous];
@@ -93,67 +83,61 @@ static NSString *FLEXSearchNormalizedText(NSString *source) {
                 boundary = [upper characterIsMember:previous] &&
                            [lower characterIsMember:next];
             }
-            if (boundary) {
-                [spaced appendString:@" "];
-            }
+            if (boundary) [output appendString:@" "];
         }
-        [spaced appendFormat:@"%C", current];
+        [output appendFormat:@"%C", current];
     }
 
-    NSString *folded = [spaced stringByFoldingWithOptions:
+    NSString *folded = [output stringByFoldingWithOptions:
         (NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch |
          NSWidthInsensitiveSearch)
         locale:NSLocale.currentLocale];
     NSArray<NSString *> *parts = [folded.lowercaseString
         componentsSeparatedByCharactersInSet:
             NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    NSMutableArray<NSString *> *tokens = [NSMutableArray arrayWithCapacity:parts.count];
+    NSMutableArray<NSString *> *tokens = [NSMutableArray array];
     for (NSString *part in parts) {
-        if (part.length) {
-            [tokens addObject:part];
-        }
+        if (part.length) [tokens addObject:part];
     }
     return [tokens componentsJoinedByString:@" "];
 }
 
 static NSArray<NSString *> *FLEXSearchTokens(NSString *source) {
-    NSString *normalized = FLEXSearchNormalizedText(source);
+    NSString *normalized = FLEXNormalizedSearchText(source);
     return normalized.length
         ? [normalized componentsSeparatedByString:@" "] : @[];
 }
 
-static void FLEXAppendSearchField(NSMutableString *raw, id value) {
+static void FLEXAppendSearchValue(NSMutableString *text, id value) {
     if ([value isKindOfClass:NSString.class] && [value length]) {
-        [raw appendString:value];
-        [raw appendString:@" "];
+        [text appendString:value];
+        [text appendString:@" "];
     } else if ([value isKindOfClass:NSNumber.class]) {
-        [raw appendString:[value stringValue]];
-        [raw appendString:@" "];
+        [text appendString:[value stringValue]];
+        [text appendString:@" "];
     }
 }
 
-static FLEXRuntimeImageDescriptor *FLEXDefaultImage(void) {
+static FLEXRuntimeImageDescriptor *FLEXDefaultRuntimeImage(void) {
     NSArray<FLEXRuntimeImageDescriptor *> *images =
         FLEXRuntimeImageSession.loadedAppImages;
     for (FLEXRuntimeImageDescriptor *image in images) {
-        if (image.mainExecutable) {
-            return image;
-        }
+        if (image.mainExecutable) return image;
     }
     return images.firstObject;
 }
 
-static FLEXRuntimeImageDescriptor *FLEXSelectedImage(id controller) {
+static FLEXRuntimeImageDescriptor *FLEXRuntimeImageForController(id controller) {
     FLEXRuntimeImageDescriptor *image = objc_getAssociatedObject(
         controller,
-        kFLEXRuntimeSelectedImageKey
+        kFLEXSelectedImageKey
     );
     if (!image) {
-        image = FLEXDefaultImage();
+        image = FLEXDefaultRuntimeImage();
         if (image) {
             objc_setAssociatedObject(
                 controller,
-                kFLEXRuntimeSelectedImageKey,
+                kFLEXSelectedImageKey,
                 image,
                 OBJC_ASSOCIATION_RETAIN_NONATOMIC
             );
@@ -162,12 +146,12 @@ static FLEXRuntimeImageDescriptor *FLEXSelectedImage(id controller) {
     return image;
 }
 
-static BOOL FLEXEntryIsVerifiedForBrowser(FLEXHookEntry *entry,
-                                          FLEXRuntimeBrowserKind kind) {
-    if (!entry.available || entry.stale) {
-        return NO;
-    }
+static BOOL FLEXEntryHasVerifiedBackend(FLEXHookEntry *entry,
+                                        FLEXRuntimeBrowserKind kind) {
+    if (!entry.available || entry.stale) return NO;
+
     if (kind == FLEXRuntimeBrowserKindObjectiveC) {
+        // AllFLEXing currently owns typed BOOL replacement profiles only.
         return entry.surface == FLEXHookSurfaceObjectiveC &&
                entry.backend == FLEXHookBackendObjectiveCElleKit &&
                entry.abi != FLEXHookABIUnknown;
@@ -177,35 +161,36 @@ static BOOL FLEXEntryIsVerifiedForBrowser(FLEXHookEntry *entry,
         return entry.backend == FLEXHookBackendFishhook &&
                [entry.locator[@"bindSlots"] unsignedIntegerValue] > 0;
     }
+
     if (entry.surface == FLEXHookSurfaceCInline) {
         if (entry.backend != FLEXHookBackendInlineElleKit ||
             ![entry.locator[@"source"] isEqualToString:@"mach-o-symbol-table"]) {
             return NO;
         }
-        NSNumber *recordedAddress = [entry.locator[@"address"]
+        NSNumber *address = [entry.locator[@"address"]
             isKindOfClass:NSNumber.class] ? entry.locator[@"address"] : nil;
         NSString *symbol = [entry.locator[@"symbol"]
             isKindOfClass:NSString.class] ? entry.locator[@"symbol"] : nil;
         void *resolved = [FLEXCHookEngine resolveSymbol:symbol];
-        return recordedAddress.unsignedLongLongValue != 0 &&
-            resolved == (void *)(uintptr_t)recordedAddress.unsignedLongLongValue;
+        return address.unsignedLongLongValue != 0 &&
+               resolved == (void *)(uintptr_t)address.unsignedLongLongValue;
     }
     return NO;
 }
 
-static NSArray<FLEXHookEntry *> *FLEXVerifiedEntries(
+static NSArray<FLEXHookEntry *> *FLEXVerifiedSnapshotEntries(
     FLEXRuntimeImageSnapshot *snapshot
 ) {
     NSMutableArray<FLEXHookEntry *> *verified = [NSMutableArray array];
     for (FLEXHookEntry *entry in snapshot.entries) {
-        if (FLEXEntryIsVerifiedForBrowser(entry, snapshot.kind)) {
+        if (FLEXEntryHasVerifiedBackend(entry, snapshot.kind)) {
             [verified addObject:entry];
         }
     }
     return verified.copy;
 }
 
-static FLEXRuntimeSearchIndex *FLEXBuildSearchIndex(
+static FLEXRuntimeSearchIndex *FLEXBuildRuntimeIndex(
     NSArray<FLEXHookEntry *> *entries,
     FLEXRuntimeBrowserKind kind,
     NSString *imageUUID,
@@ -222,142 +207,115 @@ static FLEXRuntimeSearchIndex *FLEXBuildSearchIndex(
         return [left.title localizedCaseInsensitiveCompare:right.title];
     }];
 
-    NSMutableArray<FLEXRuntimeSearchRecord *> *records =
-        [NSMutableArray arrayWithCapacity:sorted.count];
-    NSMutableDictionary<NSString *, NSMutableIndexSet *> *mutablePrefixMap =
+    NSMutableDictionary<NSString *, NSMutableIndexSet *> *mutablePrefixes =
         [NSMutableDictionary dictionary];
     NSArray<NSString *> *locatorKeys = @[
-        @"symbol", @"class", @"selector", @"encoding",
-        @"image", @"imageUUID", @"backendEvidence", @"abiEvidence",
-        @"source"
+        @"symbol", @"class", @"selector", @"encoding", @"image",
+        @"imageUUID", @"backendEvidence", @"abiEvidence", @"source"
     ];
 
-    NSUInteger recordIndex = 0;
-    for (FLEXHookEntry *entry in sorted) {
-        if ((recordIndex & 127) == 0 && request.cancelled) {
-            return nil;
-        }
+    for (NSUInteger entryIndex = 0; entryIndex < sorted.count; entryIndex++) {
+        if ((entryIndex & 127) == 0 && request.cancelled) return nil;
+        FLEXHookEntry *entry = sorted[entryIndex];
         @autoreleasepool {
             NSMutableString *raw = [NSMutableString string];
-            FLEXAppendSearchField(raw, entry.title);
-            FLEXAppendSearchField(raw, entry.identifier);
-            FLEXAppendSearchField(raw, entry.detail);
-            FLEXAppendSearchField(raw, entry.imageName);
-            if ([entry.locator isKindOfClass:NSDictionary.class]) {
-                for (NSString *key in locatorKeys) {
-                    FLEXAppendSearchField(raw, entry.locator[key]);
-                }
+            FLEXAppendSearchValue(raw, entry.title);
+            FLEXAppendSearchValue(raw, entry.identifier);
+            FLEXAppendSearchValue(raw, entry.detail);
+            FLEXAppendSearchValue(raw, entry.imageName);
+            for (NSString *key in locatorKeys) {
+                FLEXAppendSearchValue(raw, entry.locator[key]);
             }
 
-            NSArray<NSString *> *tokens = FLEXSearchTokens(raw);
-            FLEXRuntimeSearchRecord *record = [FLEXRuntimeSearchRecord new];
-            record.entry = entry;
-            [records addObject:record];
-
-            NSSet<NSString *> *uniqueTokens = [NSSet setWithArray:tokens];
+            NSSet<NSString *> *uniqueTokens =
+                [NSSet setWithArray:FLEXSearchTokens(raw)];
             for (NSString *token in uniqueTokens) {
-                NSUInteger maximumPrefix = MIN((NSUInteger)32, token.length);
-                for (NSUInteger length = 1; length <= maximumPrefix; length++) {
+                NSUInteger prefixLength = MIN((NSUInteger)32, token.length);
+                for (NSUInteger length = 1; length <= prefixLength; length++) {
                     NSString *prefix = [token substringToIndex:length];
-                    NSMutableIndexSet *indexes = mutablePrefixMap[prefix];
+                    NSMutableIndexSet *indexes = mutablePrefixes[prefix];
                     if (!indexes) {
                         indexes = [NSMutableIndexSet indexSet];
-                        mutablePrefixMap[prefix] = indexes;
+                        mutablePrefixes[prefix] = indexes;
                     }
-                    [indexes addIndex:recordIndex];
+                    [indexes addIndex:entryIndex];
                 }
-                if (token.length > maximumPrefix) {
-                    NSMutableIndexSet *indexes = mutablePrefixMap[token];
+                if (token.length > prefixLength) {
+                    NSMutableIndexSet *indexes = mutablePrefixes[token];
                     if (!indexes) {
                         indexes = [NSMutableIndexSet indexSet];
-                        mutablePrefixMap[token] = indexes;
+                        mutablePrefixes[token] = indexes;
                     }
-                    [indexes addIndex:recordIndex];
+                    [indexes addIndex:entryIndex];
                 }
             }
         }
-        recordIndex++;
     }
+    if (request.cancelled) return nil;
 
-    if (request.cancelled) {
-        return nil;
-    }
-    NSMutableDictionary<NSString *, NSIndexSet *> *prefixMap =
-        [NSMutableDictionary dictionaryWithCapacity:mutablePrefixMap.count];
-    [mutablePrefixMap enumerateKeysAndObjectsUsingBlock:^(
+    NSMutableDictionary<NSString *, NSIndexSet *> *prefixes =
+        [NSMutableDictionary dictionaryWithCapacity:mutablePrefixes.count];
+    [mutablePrefixes enumerateKeysAndObjectsUsingBlock:^(
         NSString *key,
         NSMutableIndexSet *indexes,
         BOOL *stop
     ) {
         (void)stop;
-        prefixMap[key] = indexes.copy;
+        prefixes[key] = indexes.copy;
     }];
 
     FLEXRuntimeSearchIndex *index = [FLEXRuntimeSearchIndex new];
+    index.entries = sorted;
+    index.prefixes = prefixes.copy;
     index.imageUUID = imageUUID ?: @"";
     index.kind = kind;
-    index.records = records.copy;
-    index.allEntries = sorted;
-    index.prefixMap = prefixMap.copy;
     return index;
 }
 
-static NSArray<FLEXHookEntry *> *FLEXSearchIndex(
+static NSArray<FLEXHookEntry *> *FLEXQueryRuntimeIndex(
     FLEXRuntimeSearchIndex *index,
     NSString *query,
     FLEXRuntimeSearchRequest *request
 ) {
     NSArray<NSString *> *tokens = FLEXSearchTokens(query);
-    if (!tokens.count) {
-        return index.allEntries;
-    }
+    if (!tokens.count) return index.entries;
 
-    NSMutableIndexSet *candidates = nil;
+    NSMutableIndexSet *matches = nil;
     for (NSString *token in tokens) {
-        if (request.cancelled) {
-            return nil;
-        }
-        NSIndexSet *tokenIndexes = index.prefixMap[token];
-        if (!tokenIndexes.count) {
-            return @[];
-        }
-        if (!candidates) {
-            candidates = tokenIndexes.mutableCopy;
-        } else {
-            [candidates intersectIndexes:tokenIndexes];
-        }
-        if (!candidates.count) {
-            return @[];
-        }
+        if (request.cancelled) return nil;
+        NSIndexSet *tokenMatches = index.prefixes[token];
+        if (!tokenMatches.count) return @[];
+        if (!matches) matches = tokenMatches.mutableCopy;
+        else [matches intersectIndexes:tokenMatches];
+        if (!matches.count) return @[];
     }
 
     NSMutableArray<FLEXHookEntry *> *results =
-        [NSMutableArray arrayWithCapacity:candidates.count];
-    [candidates enumerateIndexesUsingBlock:^(NSUInteger recordIndex,
-                                              BOOL *stop) {
+        [NSMutableArray arrayWithCapacity:matches.count];
+    [matches enumerateIndexesUsingBlock:^(NSUInteger indexValue, BOOL *stop) {
         if (request.cancelled) {
             *stop = YES;
             return;
         }
-        if (recordIndex < index.records.count) {
-            [results addObject:index.records[recordIndex].entry];
+        if (indexValue < index.entries.count) {
+            [results addObject:index.entries[indexValue]];
         }
     }];
     return request.cancelled ? nil : results.copy;
 }
 
-static void FLEXSetRuntimeLoading(UIViewController *controller,
-                                  UISearchController *search,
-                                  BOOL loading,
-                                  NSString *title,
-                                  NSString *detail) {
+static void FLEXSetLoading(UIViewController *controller,
+                           UISearchController *search,
+                           BOOL loading,
+                           NSString *title,
+                           NSString *detail) {
     search.searchBar.userInteractionEnabled = !loading;
     if (@available(iOS 17.0, *)) {
         if (loading) {
             UIContentUnavailableConfiguration *configuration =
                 [UIContentUnavailableConfiguration loadingConfiguration];
             configuration.text = title ?: @"Scanning selected image";
-            configuration.secondaryText = detail ?: @"Reading runtime metadata.";
+            configuration.secondaryText = detail ?: @"Reading complete runtime metadata.";
             controller.contentUnavailableConfiguration = configuration;
         } else {
             controller.contentUnavailableConfiguration = nil;
@@ -365,8 +323,7 @@ static void FLEXSetRuntimeLoading(UIViewController *controller,
     }
 }
 
-static void FLEXSetRuntimeFailure(UIViewController *controller,
-                                  NSString *message) {
+static void FLEXSetFailure(UIViewController *controller, NSString *message) {
     if (@available(iOS 17.0, *)) {
         UIContentUnavailableConfiguration *configuration =
             [UIContentUnavailableConfiguration emptyConfiguration];
@@ -377,7 +334,7 @@ static void FLEXSetRuntimeFailure(UIViewController *controller,
     }
 }
 
-static void FLEXRemoveManualSymbolButton(FLEXRuntimeBrowserController *controller) {
+static void FLEXRemoveManualTargetButton(FLEXRuntimeBrowserController *controller) {
     NSMutableArray<UIBarButtonItem *> *items =
         [controller.navigationItem.rightBarButtonItems mutableCopy];
     NSIndexSet *indexes = [items indexesOfObjectsPassingTest:^BOOL(
@@ -409,18 +366,14 @@ static void FLEXRemoveManualSymbolButton(FLEXRuntimeBrowserController *controlle
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         Class cls = FLEXRuntimeBrowserController.class;
-        FLEXExchangeInstanceMethods(cls,
-            @selector(viewDidLoad),
-            @selector(af_image_viewDidLoad));
-        FLEXExchangeInstanceMethods(cls,
-            @selector(reloadEntries),
-            @selector(af_image_reloadEntries));
-        FLEXExchangeInstanceMethods(cls,
-            @selector(reloadScan),
-            @selector(af_image_reloadScan));
-        FLEXExchangeInstanceMethods(cls,
-            @selector(scopeMenu),
-            @selector(af_image_scopeMenu));
+        FLEXExchangeInstanceMethods(cls, @selector(viewDidLoad),
+                                     @selector(af_image_viewDidLoad));
+        FLEXExchangeInstanceMethods(cls, @selector(reloadEntries),
+                                     @selector(af_image_reloadEntries));
+        FLEXExchangeInstanceMethods(cls, @selector(reloadScan),
+                                     @selector(af_image_reloadScan));
+        FLEXExchangeInstanceMethods(cls, @selector(scopeMenu),
+                                     @selector(af_image_scopeMenu));
         FLEXExchangeInstanceMethods(cls,
             @selector(tableView:cellForRowAtIndexPath:),
             @selector(af_image_tableView:cellForRowAtIndexPath:));
@@ -428,13 +381,13 @@ static void FLEXRemoveManualSymbolButton(FLEXRuntimeBrowserController *controlle
 }
 
 - (void)af_image_viewDidLoad {
-    (void)FLEXSelectedImage(self);
+    (void)FLEXRuntimeImageForController(self);
     [self af_image_viewDidLoad];
-    FLEXRemoveManualSymbolButton(self);
+    FLEXRemoveManualTargetButton(self);
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 78.0;
 
-    FLEXRuntimeImageDescriptor *image = FLEXSelectedImage(self);
+    FLEXRuntimeImageDescriptor *image = FLEXRuntimeImageForController(self);
     @try {
         UIBarButtonItem *scopeItem = [self valueForKey:@"scopeItem"];
         scopeItem.title = image.displayName ?: @"Select image";
@@ -444,26 +397,22 @@ static void FLEXRemoveManualSymbolButton(FLEXRuntimeBrowserController *controlle
 }
 
 - (void)af_image_reloadScan {
-    FLEXRuntimeImageSession *oldSession = objc_getAssociatedObject(
+    FLEXRuntimeImageSession *previousSession = objc_getAssociatedObject(
         self,
-        kFLEXRuntimeImageSessionKey
+        kFLEXImageSessionKey
     );
-    [oldSession cancel];
-    FLEXRuntimeSearchRequest *oldSearch = objc_getAssociatedObject(
+    [previousSession cancel];
+    FLEXRuntimeSearchRequest *previousSearch = objc_getAssociatedObject(
         self,
-        kFLEXRuntimeSearchRequestKey
+        kFLEXSearchRequestKey
     );
-    oldSearch.cancelled = YES;
-    objc_setAssociatedObject(
-        self,
-        kFLEXRuntimeSearchIndexKey,
-        nil,
-        OBJC_ASSOCIATION_RETAIN_NONATOMIC
-    );
+    previousSearch.cancelled = YES;
+    objc_setAssociatedObject(self, kFLEXSearchIndexKey, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    FLEXRuntimeImageDescriptor *image = FLEXSelectedImage(self);
+    FLEXRuntimeImageDescriptor *image = FLEXRuntimeImageForController(self);
     if (!image) {
-        FLEXSetRuntimeFailure(self, @"No app Mach-O image is currently loaded.");
+        FLEXSetFailure(self, @"No app Mach-O image is currently loaded.");
         return;
     }
 
@@ -485,149 +434,94 @@ static void FLEXRemoveManualSymbolButton(FLEXRuntimeBrowserController *controlle
 
     FLEXRuntimeImageSession *session = [[FLEXRuntimeImageSession alloc]
         initWithImage:image];
-    objc_setAssociatedObject(
-        self,
-        kFLEXRuntimeImageSessionKey,
-        session,
-        OBJC_ASSOCIATION_RETAIN_NONATOMIC
-    );
-
+    objc_setAssociatedObject(self, kFLEXImageSessionKey, session,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     reloadItem.enabled = NO;
     scopeItem.enabled = NO;
     [self.tableView reloadData];
-    FLEXSetRuntimeLoading(
-        self,
-        search,
-        YES,
+    FLEXSetLoading(self, search, YES,
         @"Scanning selected Mach-O image",
-        [NSString stringWithFormat:@"%@ · full scan before search",
-            image.displayName]
-    );
+        [NSString stringWithFormat:@"%@ · complete scan before search",
+            image.displayName]);
 
     __weak typeof(self) weakSelf = self;
     [session scanKind:kind
              progress:^(NSString *phase, NSUInteger completed, NSUInteger total) {
         __strong typeof(weakSelf) self = weakSelf;
         if (!self || session.cancelled ||
-            objc_getAssociatedObject(self, kFLEXRuntimeImageSessionKey) != session) {
-            return;
-        }
+            objc_getAssociatedObject(self, kFLEXImageSessionKey) != session) return;
         NSString *detail = total
             ? [NSString stringWithFormat:@"%@ · %lu/%lu",
                 image.displayName,
                 (unsigned long)completed,
                 (unsigned long)total]
             : image.displayName;
-        FLEXSetRuntimeLoading(self, search, YES, phase, detail);
+        FLEXSetLoading(self, search, YES, phase, detail);
         if (@available(iOS 26.0, *)) {
             self.navigationItem.subtitle = [NSString stringWithFormat:@"%@ · %@",
-                image.displayName,
-                phase];
+                image.displayName, phase];
         }
     }
            completion:^(FLEXRuntimeImageSnapshot *snapshot, NSError *error) {
         __strong typeof(weakSelf) self = weakSelf;
         if (!self || session.cancelled ||
-            objc_getAssociatedObject(self, kFLEXRuntimeImageSessionKey) != session) {
-            return;
-        }
+            objc_getAssociatedObject(self, kFLEXImageSessionKey) != session) return;
+
         if (!snapshot) {
-            @try {
-                [self setValue:@NO forKey:@"scanning"];
-            } @catch (__unused NSException *exception) {
-            }
+            @try { [self setValue:@NO forKey:@"scanning"]; }
+            @catch (__unused NSException *exception) {}
             reloadItem.enabled = YES;
             scopeItem.enabled = YES;
             search.searchBar.userInteractionEnabled = NO;
-            FLEXSetRuntimeFailure(self, error.localizedDescription);
+            FLEXSetFailure(self, error.localizedDescription);
             return;
         }
 
-        NSArray<FLEXHookEntry *> *verified = FLEXVerifiedEntries(snapshot);
+        NSArray<FLEXHookEntry *> *verified = FLEXVerifiedSnapshotEntries(snapshot);
         FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
-        NSMutableArray<FLEXHookEntry *> *resolved = [NSMutableArray array];
-        if (kind == FLEXRuntimeBrowserKindObjectiveC) {
-            [resolved addObjectsFromArray:[registry
-                mergeDiscoveredEntries:verified
-                               surface:FLEXHookSurfaceObjectiveC
-                            imagePaths:@[image.path]]];
-        } else {
-            NSPredicate *imports = [NSPredicate predicateWithBlock:^BOOL(
-                FLEXHookEntry *entry,
-                NSDictionary *bindings
-            ) {
-                (void)bindings;
-                return entry.surface == FLEXHookSurfaceCImport;
-            }];
-            NSPredicate *inlineTargets = [NSPredicate predicateWithBlock:^BOOL(
-                FLEXHookEntry *entry,
-                NSDictionary *bindings
-            ) {
-                (void)bindings;
-                return entry.surface == FLEXHookSurfaceCInline;
-            }];
-            [resolved addObjectsFromArray:[registry
-                mergeDiscoveredEntries:[verified filteredArrayUsingPredicate:imports]
-                               surface:FLEXHookSurfaceCImport
-                            imagePaths:@[image.path]]];
-            [resolved addObjectsFromArray:[registry
-                mergeDiscoveredEntries:[verified filteredArrayUsingPredicate:inlineTargets]
-                               surface:FLEXHookSurfaceCInline
-                            imagePaths:@[image.path]]];
+        NSMutableArray<FLEXHookEntry *> *transientEntries =
+            [NSMutableArray arrayWithCapacity:verified.count];
+        for (FLEXHookEntry *entry in verified) {
+            FLEXHookEntry *resolved = [registry upsertDiscoveredEntry:entry];
+            if (resolved) [transientEntries addObject:resolved];
         }
 
         FLEXRuntimeSearchRequest *indexRequest = [FLEXRuntimeSearchRequest new];
-        objc_setAssociatedObject(
-            self,
-            kFLEXRuntimeSearchRequestKey,
-            indexRequest,
-            OBJC_ASSOCIATION_RETAIN_NONATOMIC
-        );
-        FLEXSetRuntimeLoading(
-            self,
-            search,
-            YES,
+        objc_setAssociatedObject(self, kFLEXSearchRequestKey, indexRequest,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        FLEXSetLoading(self, search, YES,
             @"Indexing verified runtime targets",
             [NSString stringWithFormat:@"%lu target(s) in %@",
-                (unsigned long)resolved.count,
-                image.displayName]
-        );
+                (unsigned long)transientEntries.count,
+                image.displayName]);
 
         dispatch_async(FLEXRuntimeSearchQueue(), ^{
-            FLEXRuntimeSearchIndex *index = FLEXBuildSearchIndex(
-                resolved.copy,
+            FLEXRuntimeSearchIndex *index = FLEXBuildRuntimeIndex(
+                transientEntries.copy,
                 kind,
                 image.uuid,
                 indexRequest
             );
-            if (!index || indexRequest.cancelled) {
-                return;
-            }
+            if (!index || indexRequest.cancelled) return;
+
             dispatch_async(dispatch_get_main_queue(), ^{
                 __strong typeof(weakSelf) self = weakSelf;
                 if (!self || session.cancelled || indexRequest.cancelled ||
-                    objc_getAssociatedObject(self, kFLEXRuntimeImageSessionKey) != session) {
-                    return;
-                }
-                objc_setAssociatedObject(
-                    self,
-                    kFLEXRuntimeSearchIndexKey,
-                    index,
-                    OBJC_ASSOCIATION_RETAIN_NONATOMIC
-                );
+                    objc_getAssociatedObject(self, kFLEXImageSessionKey) != session) return;
+                objc_setAssociatedObject(self, kFLEXSearchIndexKey, index,
+                                         OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 @try {
                     [self setValue:@NO forKey:@"scanning"];
-                    [self setValue:index.allEntries forKey:@"filteredEntries"];
-                } @catch (__unused NSException *exception) {
-                }
+                    [self setValue:index.entries forKey:@"filteredEntries"];
+                } @catch (__unused NSException *exception) {}
                 reloadItem.enabled = YES;
                 scopeItem.enabled = YES;
                 search.searchBar.userInteractionEnabled = YES;
                 search.searchBar.placeholder = [NSString stringWithFormat:
                     @"Search %lu verified target(s) in %@",
-                    (unsigned long)index.allEntries.count,
+                    (unsigned long)index.entries.count,
                     image.displayName];
-                FLEXSetRuntimeLoading(self, search, NO, nil, nil);
+                FLEXSetLoading(self, search, NO, nil, nil);
                 [self.tableView reloadData];
                 [self updateNavigationStatus];
                 [self updateUnavailableConfiguration];
@@ -647,32 +541,25 @@ static void FLEXRemoveManualSymbolButton(FLEXRuntimeBrowserController *controlle
 
     FLEXRuntimeSearchIndex *index = objc_getAssociatedObject(
         self,
-        kFLEXRuntimeSearchIndexKey
+        kFLEXSearchIndexKey
     );
-    if (!index) {
-        return;
-    }
+    if (!index) return;
 
     UISearchController *search = nil;
-    @try {
-        search = [self valueForKey:@"searchController"];
-    } @catch (__unused NSException *exception) {
+    @try { search = [self valueForKey:@"searchController"]; }
+    @catch (__unused NSException *exception) {
         [self af_image_reloadEntries];
         return;
     }
 
     FLEXRuntimeSearchRequest *previous = objc_getAssociatedObject(
         self,
-        kFLEXRuntimeSearchRequestKey
+        kFLEXSearchRequestKey
     );
     previous.cancelled = YES;
     FLEXRuntimeSearchRequest *request = [FLEXRuntimeSearchRequest new];
-    objc_setAssociatedObject(
-        self,
-        kFLEXRuntimeSearchRequestKey,
-        request,
-        OBJC_ASSOCIATION_RETAIN_NONATOMIC
-    );
+    objc_setAssociatedObject(self, kFLEXSearchRequestKey, request,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     NSString *query = search.searchBar.text ?: @"";
     NSTimeInterval debounce = query.length ? 0.10 : 0.0;
@@ -681,25 +568,15 @@ static void FLEXRemoveManualSymbolButton(FLEXRuntimeBrowserController *controlle
         dispatch_time(DISPATCH_TIME_NOW, (int64_t)(debounce * NSEC_PER_SEC)),
         FLEXRuntimeSearchQueue(),
         ^{
-            NSArray<FLEXHookEntry *> *results = FLEXSearchIndex(
-                index,
-                query,
-                request
-            );
-            if (!results || request.cancelled) {
-                return;
-            }
+            NSArray<FLEXHookEntry *> *results = FLEXQueryRuntimeIndex(
+                index, query, request);
+            if (!results || request.cancelled) return;
             dispatch_async(dispatch_get_main_queue(), ^{
                 __strong typeof(weakSelf) self = weakSelf;
                 if (!self || request.cancelled ||
-                    objc_getAssociatedObject(self, kFLEXRuntimeSearchRequestKey) != request) {
-                    return;
-                }
-                @try {
-                    [self setValue:results forKey:@"filteredEntries"];
-                } @catch (__unused NSException *exception) {
-                    return;
-                }
+                    objc_getAssociatedObject(self, kFLEXSearchRequestKey) != request) return;
+                @try { [self setValue:results forKey:@"filteredEntries"]; }
+                @catch (__unused NSException *exception) { return; }
                 [self.tableView reloadData];
                 [self updateNavigationStatus];
                 [self updateUnavailableConfiguration];
@@ -710,8 +587,8 @@ static void FLEXRemoveManualSymbolButton(FLEXRuntimeBrowserController *controlle
 
 - (UIMenu *)af_image_scopeMenu {
     __weak typeof(self) weakSelf = self;
-    FLEXRuntimeImageDescriptor *selected = FLEXSelectedImage(self);
-    NSMutableArray<UIMenuElement *> *images = [NSMutableArray array];
+    FLEXRuntimeImageDescriptor *selected = FLEXRuntimeImageForController(self);
+    NSMutableArray<UIMenuElement *> *actions = [NSMutableArray array];
 
     for (FLEXRuntimeImageDescriptor *image in FLEXRuntimeImageSession.loadedAppImages) {
         UIAction *action = [UIAction
@@ -721,34 +598,26 @@ static void FLEXRemoveManualSymbolButton(FLEXRuntimeBrowserController *controlle
                  identifier:nil
                     handler:^(__unused UIAction *menuAction) {
             __strong typeof(weakSelf) self = weakSelf;
-            if (!self) {
-                return;
-            }
-            objc_setAssociatedObject(
-                self,
-                kFLEXRuntimeSelectedImageKey,
-                image,
-                OBJC_ASSOCIATION_RETAIN_NONATOMIC
-            );
+            if (!self) return;
+            objc_setAssociatedObject(self, kFLEXSelectedImageKey, image,
+                                     OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             @try {
                 UIBarButtonItem *scopeItem = [self valueForKey:@"scopeItem"];
                 scopeItem.title = image.displayName;
                 scopeItem.menu = [self af_image_scopeMenu];
-            } @catch (__unused NSException *exception) {
-            }
+            } @catch (__unused NSException *exception) {}
             [self reloadScan];
         }];
         action.state = [selected.path isEqualToString:image.path]
             ? UIMenuElementStateOn : UIMenuElementStateOff;
-        [images addObject:action];
+        [actions addObject:action];
     }
 
-    return [UIMenu
-        menuWithTitle:@"Loaded app image"
-                image:nil
-           identifier:nil
-              options:UIMenuOptionsDisplayInline
-             children:images];
+    return [UIMenu menuWithTitle:@"Loaded app image"
+                           image:nil
+                      identifier:nil
+                         options:UIMenuOptionsDisplayInline
+                        children:actions];
 }
 
 - (UITableViewCell *)af_image_tableView:(UITableView *)tableView
