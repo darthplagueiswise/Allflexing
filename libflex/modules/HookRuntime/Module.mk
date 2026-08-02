@@ -3,14 +3,12 @@ ALLFLEXING_HOOK_RUNTIME_SOURCES := \
 	$(ALLFLEXING_ROOT)/FLEXABIResolverIntegration.m \
 	$(ALLFLEXING_ROOT)/FLEXRuntimeImageSession.mm \
 	$(ALLFLEXING_ROOT)/FLEXRuntimeSnapshotRegistryBridge.m \
-	$(ALLFLEXING_ROOT)/FLEXRuntimeCrashGuards.m \
+	$(ALLFLEXING_ROOT)/FLEXStableRuntimeController.m \
 	$(ALLFLEXING_ROOT)/FLEXDeferredApplyPolicy.m \
 	$(ALLFLEXING_ROOT)/FLEXAddressCHookEngine.m \
 	$(ALLFLEXING_ROOT)/FLEXAddressCHookResolverAPI.m \
 	$(ALLFLEXING_ROOT)/FLEXASLRAddressRebase.m \
-	$(ALLFLEXING_ROOT)/FLEXRuntimeSearchCompleteness.m \
 	$(ALLFLEXING_ROOT)/FLEXStrictObjectiveCRuntimeScanner.m \
-	$(ALLFLEXING_ROOT)/FLEXOperationalRuntimeProjection.m \
 	$(ALLFLEXING_ROOT)/FLEXMutableIndexSetIntersection.m \
 	$(ALLFLEXING_ROOT)/FLEXUIActionCompatibility.m \
 	$(ALLFLEXING_ROOT)/FLEXPersistenceStore.m \
