@@ -20,12 +20,15 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSUInteger)overrideHitCountForEntry:(FLEXHookEntry *)entry;
 + (void)refreshAvailabilityForEntry:(FLEXHookEntry *)entry;
 + (nullable void *)resolveSymbol:(NSString *)symbol;
+
+@end
+
+@interface FLEXCHookEngine (AllFLEXingAddressResolverAPI)
 /// Resolves an inline C target from its selected-image locator. Unlike dlsym,
 /// this supports private/local symbols and LC_FUNCTION_STARTS entries by
 /// validating the recorded live address against the loaded image UUID and its
 /// executable segments.
 + (nullable void *)resolveAddressForEntry:(FLEXHookEntry *)entry;
-
 @end
 
 NS_ASSUME_NONNULL_END
