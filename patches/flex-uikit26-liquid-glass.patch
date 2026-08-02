@@ -1,0 +1,625 @@
+diff --git a/Classes/Core/Controllers/FLEXNavigationController.m b/Classes/Core/Controllers/FLEXNavigationController.m
+index ec695e8..a29909e 100644
+--- a/Classes/Core/Controllers/FLEXNavigationController.m
++++ b/Classes/Core/Controllers/FLEXNavigationController.m
+@@ -10,6 +10,7 @@
+ #import "FLEXExplorerViewController.h"
+ #import "FLEXObjectExplorerFactory.h"
+ #import "FLEXTabList.h"
++#import "FLEXLiquidGlass.h"
+ 
+ @interface UINavigationController (Private) <UIGestureRecognizerDelegate>
+ - (void)_gestureRecognizedInteractiveHide:(UIGestureRecognizer *)sender;
+@@ -35,6 +36,7 @@
+ 
+ - (void)viewDidLoad {
+     [super viewDidLoad];
++    [FLEXLiquidGlass styleNavigationController:self];
+     
+     self.waitingToAddTab = YES;
+     
+@@ -66,6 +68,7 @@
+ 
+ - (void)viewWillAppear:(BOOL)animated {
+     [super viewWillAppear:animated];
++    [FLEXLiquidGlass styleNavigationController:self];
+     
+     if (@available(iOS 15.0, *)) {
+         UISheetPresentationController *presenter = self.sheetPresentationController;
+@@ -75,7 +78,9 @@
+         ];
+         presenter.prefersScrollingExpandsWhenScrolledToEdge = NO;
+         presenter.selectedDetentIdentifier = UISheetPresentationControllerDetentIdentifierLarge;
+-        presenter.largestUndimmedDetentIdentifier = UISheetPresentationControllerDetentIdentifierLarge;
++        // FLEX tools are modal while open. An undimmed large detent makes the
++        // host app visible and interactive through transparent table content.
++        presenter.largestUndimmedDetentIdentifier = nil;
+     }
+     
+     if (self.beingPresented && !self.didSetupPendingDismissButtons) {
+@@ -134,17 +139,30 @@
+     
+     // Check if a done item already exists
+     for (UIBarButtonItem *item in navigationItem.rightBarButtonItems) {
+-        if (item.style == UIBarButtonItemStyleDone) {
++        BOOL isDismissItem = item.style == UIBarButtonItemStyleDone;
++        if (@available(iOS 26.0, *)) {
++            isDismissItem = isDismissItem || item.style == UIBarButtonItemStyleProminent;
++        }
++        if (isDismissItem) {
+             return;
+         }
+     }
+     
+     // Give root view controllers a Done button if it does not already have one
+-    UIBarButtonItem *done = [[UIBarButtonItem alloc]
+-        initWithBarButtonSystemItem:UIBarButtonSystemItemDone
+-        target:self
+-        action:@selector(dismissAnimated)
+-    ];
++    UIBarButtonItem *done = nil;
++    if (@available(iOS 26.0, *)) {
++        done = [[UIBarButtonItem alloc]
++            initWithImage:[UIImage systemImageNamed:@"checkmark"]
++                    style:UIBarButtonItemStyleProminent
++                   target:self
++                   action:@selector(dismissAnimated)];
++        done.accessibilityLabel = @"Done";
++    } else {
++        done = [[UIBarButtonItem alloc]
++            initWithBarButtonSystemItem:UIBarButtonSystemItemDone
++                                 target:self
++                                 action:@selector(dismissAnimated)];
++    }
+     
+     // Prepend the button if other buttons exist already
+     NSArray *existingItems = navigationItem.rightBarButtonItems;
+diff --git a/Classes/Core/Controllers/FLEXTableViewController.m b/Classes/Core/Controllers/FLEXTableViewController.m
+index 79ef6f4..684f857 100644
+--- a/Classes/Core/Controllers/FLEXTableViewController.m
++++ b/Classes/Core/Controllers/FLEXTableViewController.m
+@@ -14,6 +14,7 @@
+ #import "FLEXTableView.h"
+ #import "FLEXUtility.h"
+ #import "FLEXResources.h"
++#import "FLEXLiquidGlass.h"
+ #import "UIBarButtonItem+FLEX.h"
+ #import <objc/runtime.h>
+ 
+@@ -104,6 +105,7 @@ CGFloat const kFLEXDebounceForExpensiveIO = 0.5;
+         self.searchController.hidesNavigationBarDuringPresentation = NO;
+         /// Not necessary in iOS 13; remove this when iOS 13 is the minimum deployment target
+         self.searchController.searchBar.delegate = self;
++        [FLEXLiquidGlass styleSearchBar:self.searchController.searchBar];
+ 
+         self.automaticallyShowsSearchBarCancelButton = YES;
+ 
+@@ -233,6 +235,7 @@ CGFloat const kFLEXDebounceForExpensiveIO = 0.5;
+     [super viewDidLoad];
+     
+     self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
++    [FLEXLiquidGlass styleTableView:self.tableView];
+     
+     // Toolbar
+     self.navigationController.toolbarHidden = self.toolbarItems.count > 0;
+@@ -252,6 +255,9 @@ CGFloat const kFLEXDebounceForExpensiveIO = 0.5;
+ 
+ - (void)viewWillAppear:(BOOL)animated {
+     [super viewWillAppear:animated];
++    [FLEXLiquidGlass styleNavigationController:self.navigationController];
++    [FLEXLiquidGlass styleTableView:self.tableView];
++    [FLEXLiquidGlass styleSearchBar:self.searchController.searchBar];
+     
+     if (@available(iOS 11.0, *)) {
+         // When going back, make the search bar reappear instead of hiding
+@@ -336,10 +342,17 @@ CGFloat const kFLEXDebounceForExpensiveIO = 0.5;
+         self.openTabsToolbarItem,
+     ];
+     
+-    for (UIBarButtonItem *item in self.toolbarItems) {
+-        [item _setWidth:60];
+-        // This does not work for anything but fixed spaces for some reason
+-        // item.width = 60;
++    if (@available(iOS 26.0, *)) {
++        // Flexible spaces participate in one native, evenly distributed
++        // Liquid Glass toolbar group. Fixed legacy widths fight the new
++        // control metrics and caused clipping on compact screens.
++        for (NSNumber *index in @[@1, @3, @5, @7]) {
++            self.toolbarItems[index.unsignedIntegerValue].hidesSharedBackground = NO;
++        }
++    } else {
++        for (UIBarButtonItem *item in self.toolbarItems) {
++            [item _setWidth:60];
++        }
+     }
+     
+     // Disable tabs entirely when not presented by FLEXExplorerViewController
+@@ -610,6 +623,18 @@ static UITextField *kDummyTextField = nil;
+ 
+ #pragma mark Table View
+ 
++- (void)tableView:(UITableView *)tableView
++  willDisplayCell:(UITableViewCell *)cell
++forRowAtIndexPath:(NSIndexPath *)indexPath {
++    (void)tableView;
++    (void)indexPath;
++    // Treat navigable rows as controls. Passive code/log/value rows remain in
++    // the content plane unless their owning AllFLEXing screen opts in itself.
++    if (cell.selectionStyle != UITableViewCellSelectionStyleNone) {
++        [FLEXLiquidGlass styleTableCell:cell];
++    }
++}
++
+ /// Not having a title in the first section looks weird with a rounded-corner table view style
+ - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+     if (@available(iOS 13, *)) {
+diff --git a/Classes/Core/Views/Carousel/FLEXCarouselCell.m b/Classes/Core/Views/Carousel/FLEXCarouselCell.m
+index aabfbec..cca1652 100644
+--- a/Classes/Core/Views/Carousel/FLEXCarouselCell.m
++++ b/Classes/Core/Views/Carousel/FLEXCarouselCell.m
+@@ -25,6 +25,7 @@
+         _selectionIndicatorStripe = [UIView new];
+ 
+         self.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
++        self.titleLabel.textAlignment = NSTextAlignmentCenter;
+         self.selectionIndicatorStripe.backgroundColor = self.tintColor;
+         if (@available(iOS 10, *)) {
+             self.titleLabel.adjustsFontForContentSizeCategory = YES;
+@@ -42,12 +43,16 @@
+ }
+ 
+ - (void)updateAppearance {
+-    self.selectionIndicatorStripe.hidden = !self.selected;
++    BOOL modernGlass = NO;
++    if (@available(iOS 26.0, *)) {
++        modernGlass = NSClassFromString(@"UIGlassEffect") != nil;
++    }
++    self.selectionIndicatorStripe.hidden = modernGlass || !self.selected;
+ 
+     if (self.selected) {
+-        self.titleLabel.textColor = self.tintColor;
++        self.titleLabel.textColor = modernGlass ? UIColor.labelColor : self.tintColor;
+     } else {
+-        self.titleLabel.textColor = FLEXColor.deemphasizedTextColor;
++        self.titleLabel.textColor = UIColor.secondaryLabelColor;
+     }
+ }
+ 
+diff --git a/Classes/Core/Views/Carousel/FLEXScopeCarousel.m b/Classes/Core/Views/Carousel/FLEXScopeCarousel.m
+index daf967d..77d41ce 100644
+--- a/Classes/Core/Views/Carousel/FLEXScopeCarousel.m
++++ b/Classes/Core/Views/Carousel/FLEXScopeCarousel.m
+@@ -10,14 +10,17 @@
+ #import "FLEXCarouselCell.h"
+ #import "FLEXColor.h"
+ #import "FLEXMacros.h"
++#import "FLEXLiquidGlass.h"
+ #import "UIView+FLEX_Layout.h"
+ 
+-const CGFloat kCarouselItemSpacing = 0;
++const CGFloat kCarouselItemSpacing = 8;
+ NSString * const kCarouselCellReuseIdentifier = @"kCarouselCellReuseIdentifier";
+ 
+ @interface FLEXScopeCarousel () <UICollectionViewDelegate, UICollectionViewDataSource, UICollectionViewDelegateFlowLayout>
+ @property (nonatomic, readonly) UICollectionView *collectionView;
+ @property (nonatomic, readonly) FLEXCarouselCell *sizingCell;
++@property (nonatomic) UIVisualEffectView *glassContainerView;
++@property (nonatomic) UIVisualEffectView *selectionGlassView;
+ 
+ @property (nonatomic, readonly) id dynamicTypeObserver;
+ @property (nonatomic, readonly) NSMutableArray *dynamicTypeHandlers;
+@@ -30,7 +33,7 @@ NSString * const kCarouselCellReuseIdentifier = @"kCarouselCellReuseIdentifier";
+ - (id)initWithFrame:(CGRect)frame {
+     self = [super initWithFrame:frame];
+     if (self) {
+-        self.backgroundColor = FLEXColor.primaryBackgroundColor;
++        self.backgroundColor = UIColor.clearColor;
+         self.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+         self.translatesAutoresizingMaskIntoConstraints = YES;
+         _dynamicTypeHandlers = [NSMutableArray new];
+@@ -44,13 +47,36 @@ NSString * const kCarouselCellReuseIdentifier = @"kCarouselCellReuseIdentifier";
+         UICollectionViewFlowLayout *layout = ({
+             UICollectionViewFlowLayout *layout = [UICollectionViewFlowLayout new];
+             layout.scrollDirection = UICollectionViewScrollDirectionHorizontal;
+-            layout.sectionInset = UIEdgeInsetsZero;
++            layout.sectionInset = UIEdgeInsetsMake(6, 12, 6, 12);
+             layout.minimumLineSpacing = kCarouselItemSpacing;
+             layout.itemSize = itemSize;
+             layout.estimatedItemSize = itemSize;
+             layout;
+         });
+ 
++        // One selection surface lives in one glass container. Moving this
++        // surface between layout attributes gives the hierarchy selector a
++        // native shape morph without placing glass behind every label.
++        _glassContainerView = [FLEXLiquidGlass glassContainerViewWithSpacing:12.0];
++        if (_glassContainerView && FLEXLiquidGlass.isEnabled) {
++            _glassContainerView.userInteractionEnabled = NO;
++            [self addSubview:_glassContainerView];
++            _selectionGlassView = [[UIVisualEffectView alloc] initWithEffect:nil];
++            _selectionGlassView.userInteractionEnabled = NO;
++            _selectionGlassView.accessibilityElementsHidden = YES;
++            [_glassContainerView.contentView addSubview:_selectionGlassView];
++            [FLEXLiquidGlass materializeGlassView:_selectionGlassView
++                                      interactive:YES
++                                             tint:nil
++                                         animated:NO];
++        } else {
++            _glassContainerView = nil;
++            _selectionGlassView = [FLEXLiquidGlass glassViewInteractive:YES tint:nil];
++            _selectionGlassView.userInteractionEnabled = NO;
++            _selectionGlassView.accessibilityElementsHidden = YES;
++            [self addSubview:_selectionGlassView];
++        }
++
+         // Collection view
+         _collectionView = ({
+             UICollectionView *cv = [[UICollectionView alloc]
+@@ -100,6 +126,10 @@ NSString * const kCarouselCellReuseIdentifier = @"kCarouselCellReuseIdentifier";
+ - (void)drawRect:(CGRect)rect {
+     [super drawRect:rect];
+ 
++    if (FLEXLiquidGlass.isGlassAvailable && FLEXLiquidGlass.isEnabled) {
++        return;
++    }
++
+     CGFloat width = 1.f / UIScreen.mainScreen.scale;
+ 
+     // Draw hairline
+@@ -117,6 +147,8 @@ NSString * const kCarouselCellReuseIdentifier = @"kCarouselCellReuseIdentifier";
+ 
+ - (void)updateConstraints {
+     if (!self.constraintsInstalled) {
++        self.glassContainerView.translatesAutoresizingMaskIntoConstraints = NO;
++        [self.glassContainerView flex_pinEdgesToSuperview];
+         self.collectionView.translatesAutoresizingMaskIntoConstraints = NO;
+         [self.collectionView flex_pinEdgesToSuperview];
+         
+@@ -126,10 +158,18 @@ NSString * const kCarouselCellReuseIdentifier = @"kCarouselCellReuseIdentifier";
+     [super updateConstraints];
+ }
+ 
++- (void)layoutSubviews {
++    [super layoutSubviews];
++    if (!self.glassContainerView) {
++        self.selectionGlassView.frame = self.bounds;
++    }
++    [self updateSelectionGlassAnimated:NO];
++}
++
+ - (CGSize)intrinsicContentSize {
+     return CGSizeMake(
+         UIViewNoIntrinsicMetric,
+-        [self.sizingCell systemLayoutSizeFittingSize:UILayoutFittingCompressedSize].height
++        [self.sizingCell systemLayoutSizeFittingSize:UILayoutFittingCompressedSize].height + 12.0
+     );
+ }
+ 
+@@ -186,6 +226,8 @@ NSString * const kCarouselCellReuseIdentifier = @"kCarouselCellReuseIdentifier";
+ - (void)collectionView:(UICollectionView *)collectionView didSelectItemAtIndexPath:(NSIndexPath *)indexPath {
+     _selectedIndex = indexPath.item; // In case self.selectedIndex didn't trigger this call
+ 
++    [self updateSelectionGlassAnimated:YES];
++
+     if (self.selectedIndexChangedAction) {
+         self.selectedIndexChangedAction(indexPath.row);
+     }
+@@ -201,4 +243,40 @@ NSString * const kCarouselCellReuseIdentifier = @"kCarouselCellReuseIdentifier";
+     [self sendActionsForControlEvents:UIControlEventValueChanged];
+ }
+ 
++- (void)updateSelectionGlassAnimated:(BOOL)animated {
++    if (!self.selectionGlassView || self.items.count == 0 ||
++        self.selectedIndex >= self.items.count) {
++        return;
++    }
++    NSIndexPath *path = [NSIndexPath indexPathForItem:self.selectedIndex inSection:0];
++    UICollectionViewLayoutAttributes *attributes =
++        [self.collectionView.collectionViewLayout layoutAttributesForItemAtIndexPath:path];
++    if (!attributes) {
++        return;
++    }
++    CGRect frame = attributes.frame;
++    frame = CGRectInset(frame, 1.0, 1.0);
++    UIView *coordinateView = self.glassContainerView.contentView ?: self;
++    frame = [self.collectionView convertRect:frame toView:coordinateView];
++
++    void (^changes)(void) = ^{
++        self.selectionGlassView.frame = frame;
++        [FLEXLiquidGlass configureCornersForView:self.selectionGlassView
++                                          radius:CGRectGetHeight(frame) / 2.0
++                                         capsule:YES];
++    };
++    if (animated && !UIAccessibilityIsReduceMotionEnabled()) {
++        [UIView animateWithDuration:0.32
++                              delay:0.0
++             usingSpringWithDamping:0.82
++              initialSpringVelocity:0.15
++                            options:UIViewAnimationOptionBeginFromCurrentState |
++                                    UIViewAnimationOptionAllowUserInteraction
++                         animations:changes
++                         completion:nil];
++    } else {
++        changes();
++    }
++}
++
+ @end
+diff --git a/Classes/ExplorerInterface/FLEXWindow.m b/Classes/ExplorerInterface/FLEXWindow.m
+index 41cd5d0..f3da2c3 100644
+--- a/Classes/ExplorerInterface/FLEXWindow.m
++++ b/Classes/ExplorerInterface/FLEXWindow.m
+@@ -10,6 +10,52 @@
+ #import "FLEXUtility.h"
+ #import <objc/runtime.h>
+ 
++static UIViewController *FLEXVisibleChildController(UIViewController *controller) {
++    if ([controller isKindOfClass:UINavigationController.class]) {
++        return ((UINavigationController *)controller).visibleViewController;
++    }
++    if ([controller isKindOfClass:UITabBarController.class]) {
++        return ((UITabBarController *)controller).selectedViewController;
++    }
++    if ([controller isKindOfClass:UISplitViewController.class]) {
++        return ((UISplitViewController *)controller).viewControllers.lastObject;
++    }
++    for (UIViewController *child in controller.childViewControllers.reverseObjectEnumerator) {
++        if (child.isViewLoaded && child.view.window && !child.view.hidden) {
++            return child;
++        }
++    }
++    return nil;
++}
++
++/// Finds the root of the deepest presentation, including a presentation made
++/// by a visible child of another presented controller. The stock FLEX delegate
++/// only knows about the first tool sheet, while AllFLEXing can present its
++/// workspace from the globals table inside that sheet.
++static UIViewController *FLEXTopmostPresentedController(UIViewController *root) {
++    UIViewController *cursor = root;
++    UIViewController *topmostPresented = nil;
++    for (NSUInteger depth = 0; cursor && depth < 32; depth++) {
++        UIViewController *presented = cursor.presentedViewController;
++        if (presented && !presented.isBeingDismissed) {
++            topmostPresented = presented;
++            cursor = presented;
++            continue;
++        }
++        UIViewController *child = FLEXVisibleChildController(cursor);
++        if (!child || child == cursor) {
++            break;
++        }
++        cursor = child;
++    }
++    return topmostPresented;
++}
++
++@interface FLEXWindow ()
++- (BOOL)flex_pointIsInsidePresentedHierarchy:(CGPoint)point
++                                    withEvent:(UIEvent *)event;
++@end
++
+ @implementation FLEXWindow
+ 
+ - (id)initWithFrame:(CGRect)frame {
+@@ -24,9 +70,53 @@
+ }
+ 
+ - (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent *)event {
++    // Capture the complete visible frame of the deepest modal before falling
++    // back to FLEX's pass-through toolbar policy. This includes the floating
++    // UITabBar of a nested page sheet, which otherwise forwards touches to the
++    // host application's window even though it is visibly above that window.
++    if ([self flex_pointIsInsidePresentedHierarchy:point withEvent:event]) {
++        return YES;
++    }
+     return [self.eventDelegate shouldHandleTouchAtPoint:point];
+ }
+ 
++- (BOOL)flex_pointIsInsidePresentedHierarchy:(CGPoint)point
++                                    withEvent:(UIEvent *)event {
++    UIViewController *presented = FLEXTopmostPresentedController(self.rootViewController);
++    UIPresentationController *presentation = presented.presentationController;
++    UIView *presentedView = presentation.presentedView ?: presented.viewIfLoaded;
++    if (!presentedView || presentedView.hidden || presentedView.alpha < 0.01) {
++        return NO;
++    }
++
++    // Modal presentations own their backdrop as well as the presented frame.
++    // A sheet becomes intentionally nonmodal only when it explicitly declares
++    // an undimmed detent. Keep every other presentation container in FLEX's
++    // window so UIKit's dimming/dismissal view receives the event rather than
++    // the host app below it.
++    BOOL ownsModalBackdrop = YES;
++    if ([presentation isKindOfClass:UISheetPresentationController.class]) {
++        ownsModalBackdrop =
++            ((UISheetPresentationController *)presentation)
++                .largestUndimmedDetentIdentifier == nil;
++    }
++    if (ownsModalBackdrop) {
++        UIView *container = presentation.containerView;
++        if (container) {
++            CGPoint containerPoint = [container convertPoint:point fromView:self];
++            if ([container pointInside:containerPoint withEvent:event]) {
++                return YES;
++            }
++        }
++    }
++
++    CGPoint localPoint = [presentedView convertPoint:point fromView:self];
++    if (![presentedView pointInside:localPoint withEvent:event]) {
++        return NO;
++    }
++    return [presentedView hitTest:localPoint withEvent:event] != nil;
++}
++
+ - (BOOL)shouldAffectStatusBarAppearance {
+     return [self isKeyWindow];
+ }
+diff --git a/Classes/GlobalStateExplorers/Globals/FLEXGlobalsViewController.m b/Classes/GlobalStateExplorers/Globals/FLEXGlobalsViewController.m
+index 569b563..380ef10 100644
+--- a/Classes/GlobalStateExplorers/Globals/FLEXGlobalsViewController.m
++++ b/Classes/GlobalStateExplorers/Globals/FLEXGlobalsViewController.m
+@@ -169,6 +169,14 @@
+ 
+     self.title = @"💪  FLEX";
+     self.showsSearchBar = YES;
++    if (@available(iOS 26.0, *)) {
++        // UIKit can move integrated search into the iPhone toolbar where it
++        // becomes a native floating Liquid Glass control and morphs between
++        // compact and editing states.
++        self.navigationItem.preferredSearchBarPlacement =
++            UINavigationItemSearchBarPlacementIntegrated;
++        self.navigationItem.searchBarPlacementAllowsToolbarIntegration = YES;
++    }
+     self.searchBarDebounceInterval = kFLEXDebounceInstant;
+     self.navigationItem.backBarButtonItem = [UIBarButtonItem flex_backItemWithTitle:@"Back"];
+     
+@@ -178,7 +186,13 @@
+ - (void)viewWillAppear:(BOOL)animated {
+     [super viewWillAppear:animated];
+     
+-    [self disableToolbar];
++    if (@available(iOS 26.0, *)) {
++        self.toolbarItems = @[self.navigationItem.searchBarPlacementBarButtonItem];
++        self.navigationController.toolbarHidden = NO;
++        self.navigationController.hidesBarsOnSwipe = NO;
++    } else {
++        [self disableToolbar];
++    }
+     
+     if (self.manuallyDeselectOnAppear) {
+         [self.tableView deselectRowAtIndexPath:self.tableView.indexPathForSelectedRow animated:YES];
+diff --git a/Classes/Toolbar/FLEXExplorerToolbar.m b/Classes/Toolbar/FLEXExplorerToolbar.m
+index 022999e..c2f2cee 100644
+--- a/Classes/Toolbar/FLEXExplorerToolbar.m
++++ b/Classes/Toolbar/FLEXExplorerToolbar.m
+@@ -10,6 +10,7 @@
+ #import "FLEXExplorerToolbar.h"
+ #import "FLEXExplorerToolbarItem.h"
+ #import "FLEXResources.h"
++#import "FLEXLiquidGlass.h"
+ #import "FLEXUtility.h"
+ 
+ @interface FLEXExplorerToolbar ()
+@@ -23,13 +24,14 @@
+ @property (nonatomic, readwrite) UIView *dragHandle;
+ 
+ @property (nonatomic) UIImageView *dragHandleImageView;
++@property (nonatomic) UIVisualEffectView *descriptionGlassView;
+ 
+ @property (nonatomic) UIView *selectedViewDescriptionContainer;
+ @property (nonatomic) UIView *selectedViewDescriptionSafeAreaContainer;
+ @property (nonatomic) UIView *selectedViewColorIndicator;
+ @property (nonatomic) UILabel *selectedViewDescriptionLabel;
+ 
+-@property (nonatomic,readwrite) UIView *backgroundView;
++@property (nonatomic,readwrite) UIVisualEffectView *backgroundView;
+ 
+ @end
+ 
+@@ -39,8 +41,9 @@
+     self = [super initWithFrame:frame];
+     if (self) {
+         // Background
+-        self.backgroundView = [UIView new];
+-        self.backgroundView.backgroundColor = [FLEXColor secondaryBackgroundColorWithAlpha:0.95];
++        self.backgroundColor = UIColor.clearColor;
++        self.backgroundView = [FLEXLiquidGlass glassViewInteractive:NO tint:nil];
++        self.backgroundView.userInteractionEnabled = NO;
+         [self addSubview:self.backgroundView];
+ 
+         // Drag handle
+@@ -61,14 +64,15 @@
+ 
+         // Selected view box //
+         
+-        self.selectedViewDescriptionContainer = [UIView new];
+-        self.selectedViewDescriptionContainer.backgroundColor = [FLEXColor tertiaryBackgroundColorWithAlpha:0.95];
++        self.descriptionGlassView = [[UIVisualEffectView alloc] initWithEffect:nil];
++        self.descriptionGlassView.backgroundColor = UIColor.clearColor;
++        self.selectedViewDescriptionContainer = self.descriptionGlassView;
+         self.selectedViewDescriptionContainer.hidden = YES;
+         [self addSubview:self.selectedViewDescriptionContainer];
+ 
+         self.selectedViewDescriptionSafeAreaContainer = [UIView new];
+         self.selectedViewDescriptionSafeAreaContainer.backgroundColor = UIColor.clearColor;
+-        [self.selectedViewDescriptionContainer addSubview:self.selectedViewDescriptionSafeAreaContainer];
++        [self.descriptionGlassView.contentView addSubview:self.selectedViewDescriptionSafeAreaContainer];
+         
+         self.selectedViewColorIndicator = [UIView new];
+         self.selectedViewColorIndicator.backgroundColor = UIColor.redColor;
+@@ -116,7 +120,14 @@
+     lastToolbarItemFrame.size.width = CGRectGetMaxX(safeArea) - lastToolbarItemFrame.origin.x;
+     lastToolbarItem.frame = lastToolbarItemFrame;
+ 
+-    self.backgroundView.frame = CGRectMake(0, 0, CGRectGetWidth(self.bounds), kToolbarItemHeight);
++    self.backgroundView.frame = CGRectInset(
++        CGRectMake(0, 0, CGRectGetWidth(self.bounds), kToolbarItemHeight),
++        6.0,
++        3.0
++    );
++    [FLEXLiquidGlass configureCornersForView:self.backgroundView
++                                      radius:CGRectGetHeight(self.backgroundView.frame) / 2.0
++                                     capsule:YES];
+     
+     const CGFloat kSelectedViewColorDiameter = [[self class] selectedViewColorIndicatorDiameter];
+     const CGFloat kDescriptionLabelHeight = [[self class] descriptionLabelHeight];
+@@ -130,6 +141,9 @@
+     descriptionContainerFrame.origin.x = CGRectGetMinX(self.bounds);
+     descriptionContainerFrame.origin.y = CGRectGetMaxY(self.bounds) - kDescriptionContainerHeight;
+     self.selectedViewDescriptionContainer.frame = descriptionContainerFrame;
++    [FLEXLiquidGlass configureCornersForView:self.selectedViewDescriptionContainer
++                                      radius:12.0
++                                     capsule:NO];
+ 
+     CGRect descriptionSafeAreaContainerFrame = CGRectZero;
+     descriptionSafeAreaContainerFrame.size.width = CGRectGetWidth(safeArea);
+@@ -198,7 +212,22 @@
+         _selectedViewDescription = selectedViewDescription;
+         self.selectedViewDescriptionLabel.text = selectedViewDescription;
+         BOOL showDescription = selectedViewDescription.length > 0;
+-        self.selectedViewDescriptionContainer.hidden = !showDescription;
++        if (showDescription) {
++            self.selectedViewDescriptionContainer.hidden = NO;
++            [FLEXLiquidGlass materializeGlassView:self.descriptionGlassView
++                                      interactive:YES
++                                             tint:nil
++                                         animated:YES];
++        } else if (!self.selectedViewDescriptionContainer.hidden) {
++            __weak typeof(self) weakSelf = self;
++            [FLEXLiquidGlass dematerializeGlassView:self.descriptionGlassView
++                                          animated:YES
++                                        completion:^{
++                if (!weakSelf.selectedViewDescription.length) {
++                    weakSelf.selectedViewDescriptionContainer.hidden = YES;
++                }
++            }];
++        }
+     }
+ }
+ 
+diff --git a/Classes/Toolbar/FLEXExplorerToolbarItem.m b/Classes/Toolbar/FLEXExplorerToolbarItem.m
+index f0fefc7..7e113f1 100644
+--- a/Classes/Toolbar/FLEXExplorerToolbarItem.m
++++ b/Classes/Toolbar/FLEXExplorerToolbarItem.m
+@@ -114,6 +114,19 @@
+ + (id)_selectedIndicatorImage { return nil; }
+ 
+ - (void)updateColors {
++    BOOL modernGlass = NO;
++    if (@available(iOS 26.0, *)) {
++        modernGlass = NSClassFromString(@"UIGlassEffect") != nil;
++    }
++    if (modernGlass) {
++        self.backgroundColor = UIColor.clearColor;
++        UIColor *foreground = self.enabled
++            ? (self.selected ? self.tintColor : UIColor.labelColor)
++            : UIColor.tertiaryLabelColor;
++        [self setTitleColor:foreground forState:UIControlStateNormal];
++        self.imageView.tintColor = foreground;
++        return;
++    }
+     // Background color
+     if (self.highlighted) {
+         self.backgroundColor = self.class.highlightedBackgroundColor;
