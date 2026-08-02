@@ -85,7 +85,12 @@ require_text "contextual runtime actions" '_OBJC_CLASS_$_FLEXRuntimeHookActions'
 
 string_dump="$(strings -a "$dylib")"
 require_text "durable persistence" "AllFLEXing persistence app-group defaults atomic-mirror ABI 2" "$string_dump"
-require_text "functional Apply/Reapply" "manual-apply-all" "$string_dump"
+require_text "staged-only toggle policy" \
+    "AllFLEXing staged toggles explicit-Apply-only ABI 1" "$string_dump"
+require_text "staged-only user guidance" \
+    "No patch, swizzle or hook is installed until Apply is pressed" "$string_dump"
+require_text "runtime browser crash guards" \
+    "AllFLEXing runtime browser crash guards ABI 1" "$string_dump"
 require_text "selected-image runtime session" \
     "AllFLEXing complete selected-image runtime session ABI 1" "$string_dump"
 require_text "transient runtime snapshot bridge" \
@@ -123,10 +128,11 @@ for forbidden in \
     "AllFLEXing tokenized AND search ABI 2" \
     "AllFLEXing full-snapshot async indexed cancellable search ABI 4" \
     "AllFLEXing selected-image transient-snapshot prefix-index search ABI 7" \
+    "manual-apply-all" \
     "the symbol name indicates a Boolean result" \
     "The name suggests a Boolean result"; do
     if grep -Fq "$forbidden" <<<"$string_dump"; then
-        echo "error: obsolete or name-heuristic runtime layer is still linked: $forbidden" >&2
+        echo "error: obsolete runtime behavior is still linked: $forbidden" >&2
         exit 1
     fi
 done
