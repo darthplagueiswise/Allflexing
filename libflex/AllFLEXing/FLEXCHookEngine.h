@@ -19,6 +19,11 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSUInteger)overrideHitCountForEntry:(FLEXHookEntry *)entry;
 + (void)refreshAvailabilityForEntry:(FLEXHookEntry *)entry;
 + (nullable void *)resolveSymbol:(NSString *)symbol;
+/// Resolves an inline C target from its selected-image locator. Unlike dlsym,
+/// this supports private/local symbols and LC_FUNCTION_STARTS entries by
+/// rebuilding the live address from the loaded Mach-O header plus the persisted
+/// image-relative offset, then validating that it lies in an executable segment.
++ (nullable void *)resolveAddressForEntry:(FLEXHookEntry *)entry;
 
 @end
 
