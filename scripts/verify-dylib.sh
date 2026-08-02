@@ -105,6 +105,15 @@ require_text "contextual runtime hook actions" \
 
 string_dump="$(strings -a "$dylib")"
 require_text "hook persistence class" "FLEXHookPersistence" "$string_dump"
+require_text "durable persistence store" "FLEXPersistenceStore" "$string_dump"
+require_text "App Group/defaults/atomic persistence ABI" \
+    "AllFLEXing persistence app-group defaults atomic-mirror ABI 2" "$string_dump"
+require_text "jailed fallback persistence" \
+    "Host NSUserDefaults + atomic sandbox mirror" "$string_dump"
+require_text "tokenized Runtime Workspace search" \
+    "AllFLEXing tokenized AND search ABI 2" "$string_dump"
+require_text "functional Apply/Reapply path" "manual-apply-all" "$string_dump"
+require_text "visible Reapply action" "Reapply" "$string_dump"
 require_text "symbol rebind class" "FLEXSymbolRebind" "$string_dump"
 require_text "Liquid Glass class" "FLEXLiquidGlass" "$string_dump"
 require_text "adaptive runtime workspace" "FLEXHookWorkspaceController" "$string_dump"
