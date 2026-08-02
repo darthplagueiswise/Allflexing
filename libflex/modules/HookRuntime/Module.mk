@@ -3,6 +3,7 @@ ALLFLEXING_HOOK_RUNTIME_SOURCES := \
 	$(ALLFLEXING_ROOT)/FLEXABIResolverIntegration.m \
 	$(ALLFLEXING_ROOT)/FLEXRuntimeImageSession.mm \
 	$(ALLFLEXING_ROOT)/FLEXRuntimeSnapshotRegistryBridge.m \
+	$(ALLFLEXING_ROOT)/FLEXRuntimeSearchSemantics.m \
 	$(ALLFLEXING_ROOT)/FLEXStableRuntimeController.m \
 	$(ALLFLEXING_ROOT)/FLEXDeferredApplyPolicy.m \
 	$(ALLFLEXING_ROOT)/FLEXAddressCHookEngine.m \
