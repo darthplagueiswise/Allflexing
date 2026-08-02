@@ -4,22 +4,25 @@
 #import "FLEXRuntimeBrowserController.h"
 #import "FLEXRuntimeHookActions.h"
 
+#import <objc/message.h>
 #import <objc/runtime.h>
 
 const char *FLEXDeferredApplyPolicyABIVersion =
     "AllFLEXing staged toggles explicit-Apply-only ABI 1";
 
-typedef void (*FLEXSwitchActionIMP)(id object, SEL selector, UISwitch *toggle);
-typedef BOOL (*FLEXSetOverrideIMP)(id object,
-                                   SEL selector,
-                                   NSNumber *state,
-                                   FLEXHookEntry *entry);
 typedef NSString *(*FLEXFooterIMP)(id object,
                                    SEL selector,
                                    UITableView *tableView,
                                    NSInteger section);
 
 static FLEXFooterIMP FLEXOriginalHookCenterFooter = NULL;
+
+static void FLEXSendVoidNoArguments(id object, NSString *selectorName) {
+    SEL selector = NSSelectorFromString(selectorName);
+    if (object && [object respondsToSelector:selector]) {
+        ((void (*)(id, SEL))objc_msgSend)(object, selector);
+    }
+}
 
 static UITableViewCell *FLEXCellContainingControl(UIControl *control) {
     UIView *view = control;
@@ -70,9 +73,6 @@ static FLEXHookEntry *FLEXStageRuntimeState(FLEXHookEntry *entry,
     if (forceValue) {
         [registry stageForceValue:forceValue.boolValue
                forEntryIdentifier:current.identifier];
-    } else if (enabled && !current.userConfigured) {
-        [registry stageForceValue:YES
-               forEntryIdentifier:current.identifier];
     }
     [registry stageEnabled:enabled forEntryIdentifier:current.identifier];
     return [registry entryForIdentifier:current.identifier] ?: current;
@@ -122,10 +122,7 @@ static void FLEXHookCenterToggleChanged(id object,
     BOOL accepted = staged && staged.pendingEnabled == requested;
     [toggle setOn:staged ? staged.pendingEnabled : !requested animated:YES];
     FLEXProvideStagedFeedback(accepted);
-    @try {
-        [controller performSelector:NSSelectorFromString(@"reloadState")];
-    } @catch (__unused NSException *exception) {
-    }
+    FLEXSendVoidNoArguments(controller, @"reloadState");
 }
 
 static void FLEXRuntimeBrowserToggleChanged(id object,
@@ -177,9 +174,9 @@ static void FLEXDetailEnabledChanged(id object,
     if (staged) {
         @try {
             [controller setValue:staged forKey:@"entry"];
-            [controller performSelector:NSSelectorFromString(@"updateNavigationState")];
         } @catch (__unused NSException *exception) {
         }
+        FLEXSendVoidNoArguments(controller, @"updateNavigationState");
     }
     [controller.tableView reloadData];
 }
@@ -203,9 +200,9 @@ static void FLEXDetailForceChanged(id object,
             entryForIdentifier:current.identifier] ?: current;
         @try {
             [controller setValue:current forKey:@"entry"];
-            [controller performSelector:NSSelectorFromString(@"updateNavigationState")];
         } @catch (__unused NSException *exception) {
         }
+        FLEXSendVoidNoArguments(controller, @"updateNavigationState");
     }
     FLEXProvideStagedFeedback(current != nil);
     [controller.tableView reloadData];
@@ -238,10 +235,11 @@ static void FLEXMetadataRuntimeToggleChanged(id object,
         ? ((staged.available && staged.hookable) || staged.pendingEnabled)
         : NO;
     FLEXProvideStagedFeedback(accepted);
-    if ([section respondsToSelector:NSSelectorFromString(@"reloadData:")]) {
+    SEL reloadSelector = NSSelectorFromString(@"reloadData:");
+    if ([section respondsToSelector:reloadSelector]) {
         ((void (*)(id, SEL, BOOL))objc_msgSend)(
             section,
-            NSSelectorFromString(@"reloadData:"),
+            reloadSelector,
             YES
         );
     }
