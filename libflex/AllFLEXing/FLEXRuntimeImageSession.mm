@@ -12,6 +12,8 @@
 
 const char *FLEXRuntimeImageSessionABIVersion =
     "AllFLEXing complete selected-image runtime session ABI 1";
+const char *FLEXRuntimeObjectiveCEnumerationABIVersion =
+    "AllFLEXing image-scoped nonretaining Objective-C class enumeration ABI 1";
 
 static NSString *const FLEXRuntimeImageSessionErrorDomain =
     @"FLEXRuntimeImageSession";
@@ -252,87 +254,134 @@ static BOOL FLEXPathBelongsToHost(NSString *path) {
                                         progress:(FLEXRuntimeImageProgress)progress
                                            count:(NSUInteger *)count
                                            error:(NSError **)error {
-    FLEXReportProgress(progress, @"Reading Objective-C metadata", 0, 0);
-    unsigned int classCount = 0;
-    Class *classes = objc_copyClassList(&classCount);
-    NSMutableArray<Class> *imageClasses = [NSMutableArray array];
-    for (unsigned int index = 0; index < classCount; index++) {
-        const char *rawImage = class_getImageName(classes[index]);
-        if (!rawImage) continue;
-        NSString *classImage = [NSString stringWithUTF8String:rawImage];
-        if ([classImage isEqualToString:image.path]) {
-            [imageClasses addObject:classes[index]];
+    const struct mach_header_64 *header =
+        (const struct mach_header_64 *)image.headerAddress;
+    if (!header || header->magic != MH_MAGIC_64) {
+        if (error) {
+            *error = [NSError errorWithDomain:FLEXRuntimeImageSessionErrorDomain
+                                          code:3
+                                      userInfo:@{NSLocalizedDescriptionKey:
+                                          @"Selected Objective-C image is no longer loaded"}];
         }
+        return nil;
     }
-    if (classes) free(classes);
 
+    FLEXReportProgress(progress, @"Reading Objective-C metadata", 0, 0);
+    BOOL provider = FLEXMSHookMessageProviderAvailable();
     NSMutableArray<FLEXHookEntry *> *result = [NSMutableArray array];
-    NSUInteger completed = 0;
-    for (Class targetClass in imageClasses) {
-        if (self.cancelled) return nil;
-        @autoreleasepool {
-            NSString *className = NSStringFromClass(targetClass);
-            for (NSUInteger pass = 0; pass < 2; pass++) {
-                BOOL classMethod = pass == 1;
-                Class owner = classMethod ? object_getClass(targetClass) : targetClass;
-                unsigned int methodCount = 0;
-                Method *methods = class_copyMethodList(owner, &methodCount);
-                for (unsigned int methodIndex = 0; methodIndex < methodCount; methodIndex++) {
-                    Method method = methods[methodIndex];
-                    SEL selector = method_getName(method);
-                    NSString *selectorName = NSStringFromSelector(selector);
-                    NSString *encoding = [NSString stringWithUTF8String:
-                        method_getTypeEncoding(method) ?: ""];
-                    FLEXHookABI abi = FLEXExactObjectiveCABI(method);
-                    BOOL provider = FLEXMSHookMessageProviderAvailable();
+    __block NSUInteger completedClasses = 0;
+    __block BOOL cancelled = NO;
 
-                    FLEXHookEntry *entry = [FLEXHookEntry new];
-                    entry.identifier = FLEXObjectiveCIdentifier(
-                        image.path, className, selectorName, classMethod);
-                    entry.title = [NSString stringWithFormat:@"%@[%@ %@]",
-                        classMethod ? @"+" : @"-", className, selectorName];
-                    entry.imageName = image.displayName;
-                    entry.surface = FLEXHookSurfaceObjectiveC;
-                    entry.backend = FLEXHookBackendObjectiveCElleKit;
-                    entry.abi = abi;
-                    entry.available = method != NULL && provider;
-                    entry.hookable = entry.available && abi != FLEXHookABIUnknown;
-                    entry.stale = NO;
-                    entry.detail = abi == FLEXHookABIUnknown
-                        ? [NSString stringWithFormat:@"ABI unresolved · %@", encoding]
-                        : [NSString stringWithFormat:@"%@ · %@",
-                            FLEXHookABIName(abi), encoding];
-                    entry.locator = @{
-                        @"source": @"objc-runtime-metadata",
-                        @"class": className ?: @"",
-                        @"selector": selectorName ?: @"",
-                        @"classMethod": @(classMethod),
-                        @"encoding": encoding ?: @"",
-                        @"image": image.path,
-                        @"imageUUID": image.uuid ?: @"",
-                        @"methodAddress": @((uintptr_t)method_getImplementation(method)),
-                        @"backendEvidence": @"MSHookMessageEx",
-                        @"abiEvidence": abi == FLEXHookABIUnknown
-                            ? @"unresolved" : @"objc-type-encoding",
-                    };
-                    if (!provider) {
-                        entry.lastError = @"MSHookMessageEx provider unavailable";
-                    } else if (abi == FLEXHookABIUnknown) {
-                        entry.lastError = nil;
-                    }
-                    [result addObject:entry];
+    // Enumerate only classes belonging to the selected Mach-O image. A Class
+    // pointer is runtime metadata, not necessarily an NSObject-compatible
+    // object. Process it immediately with C runtime APIs and never place the
+    // raw Class value in NSArray/NSMutableArray, which would send it retain.
+    objc_enumerateClasses(
+        (const void *)header,
+        NULL,
+        NULL,
+        Nil,
+        ^(Class targetClass, BOOL *stop) {
+            if (self.cancelled) {
+                cancelled = YES;
+                *stop = YES;
+                return;
+            }
+
+            @autoreleasepool {
+                const char *rawClassName = class_getName(targetClass);
+                if (!rawClassName || rawClassName[0] == '\0') {
+                    completedClasses++;
+                    return;
                 }
-                if (methods) free(methods);
+                NSString *className = [NSString stringWithUTF8String:rawClassName];
+                if (!className.length) {
+                    completedClasses++;
+                    return;
+                }
+
+                for (NSUInteger pass = 0; pass < 2; pass++) {
+                    BOOL classMethod = pass == 1;
+                    Class owner = classMethod ? object_getClass(targetClass) : targetClass;
+                    if (!owner) continue;
+
+                    unsigned int methodCount = 0;
+                    Method *methods = class_copyMethodList(owner, &methodCount);
+                    for (unsigned int methodIndex = 0;
+                         methodIndex < methodCount;
+                         methodIndex++) {
+                        if (self.cancelled) {
+                            cancelled = YES;
+                            *stop = YES;
+                            break;
+                        }
+
+                        Method method = methods[methodIndex];
+                        SEL selector = method_getName(method);
+                        const char *rawSelectorName = sel_getName(selector);
+                        if (!rawSelectorName || rawSelectorName[0] == '\0') continue;
+                        NSString *selectorName =
+                            [NSString stringWithUTF8String:rawSelectorName];
+                        const char *rawEncoding = method_getTypeEncoding(method);
+                        NSString *encoding = rawEncoding
+                            ? [NSString stringWithUTF8String:rawEncoding] : @"";
+                        FLEXHookABI abi = FLEXExactObjectiveCABI(method);
+
+                        FLEXHookEntry *entry = [FLEXHookEntry new];
+                        entry.identifier = FLEXObjectiveCIdentifier(
+                            image.path, className, selectorName, classMethod);
+                        entry.title = [NSString stringWithFormat:@"%@[%@ %@]",
+                            classMethod ? @"+" : @"-", className, selectorName];
+                        entry.imageName = image.displayName;
+                        entry.surface = FLEXHookSurfaceObjectiveC;
+                        entry.backend = FLEXHookBackendObjectiveCElleKit;
+                        entry.abi = abi;
+                        entry.available = method != NULL && provider;
+                        entry.hookable = entry.available && abi != FLEXHookABIUnknown;
+                        entry.stale = NO;
+                        entry.detail = abi == FLEXHookABIUnknown
+                            ? [NSString stringWithFormat:@"ABI unresolved · %@", encoding]
+                            : [NSString stringWithFormat:@"%@ · %@",
+                                FLEXHookABIName(abi), encoding];
+                        entry.locator = @{
+                            @"source": @"objc-runtime-metadata",
+                            @"class": className,
+                            @"selector": selectorName,
+                            @"classMethod": @(classMethod),
+                            @"encoding": encoding ?: @"",
+                            @"image": image.path,
+                            @"imageUUID": image.uuid ?: @"",
+                            @"methodAddress":
+                                @((uintptr_t)method_getImplementation(method)),
+                            @"backendEvidence": @"MSHookMessageEx",
+                            @"abiEvidence": abi == FLEXHookABIUnknown
+                                ? @"unresolved" : @"objc-type-encoding",
+                        };
+                        if (!provider) {
+                            entry.lastError = @"MSHookMessageEx provider unavailable";
+                        }
+                        [result addObject:entry];
+                    }
+                    if (methods) free(methods);
+                    if (cancelled) break;
+                }
+            }
+
+            completedClasses++;
+            if ((completedClasses & 31) == 0) {
+                FLEXReportProgress(progress,
+                                   @"Resolving Objective-C methods",
+                                   completedClasses,
+                                   0);
             }
         }
-        completed++;
-        if ((completed & 31) == 0 || completed == imageClasses.count) {
-            FLEXReportProgress(progress,
-                               @"Resolving Objective-C methods",
-                               completed,
-                               imageClasses.count);
-        }
-    }
+    );
+
+    if (cancelled || self.cancelled) return nil;
+    FLEXReportProgress(progress,
+                       @"Resolving Objective-C methods",
+                       completedClasses,
+                       completedClasses);
     if (count) *count = result.count;
     [result sortUsingComparator:^NSComparisonResult(
         FLEXHookEntry *left, FLEXHookEntry *right
