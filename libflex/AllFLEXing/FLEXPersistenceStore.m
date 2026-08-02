@@ -15,6 +15,8 @@ extern CFTypeRef _Nullable SecTaskCopyValueForEntitlement(
 
 const char *FLEXPersistenceStoreABIVersion =
     "AllFLEXing persistence app-group defaults atomic-mirror ABI 2";
+const char *FLEXPersistenceSafeLaunchABIVersion =
+    "AllFLEXing post-scene lazy persistence ABI 1";
 
 static NSString *const kFLEXPersistencePrefix = @"com.allflexing.";
 static NSString *const kFLEXPersistenceLastWriteKey =
@@ -39,19 +41,12 @@ static const void *kFLEXPersistenceQueueSpecific = &kFLEXPersistenceQueueSpecifi
 
 @implementation FLEXPersistenceStore
 
-+ (void)load {
-    @autoreleasepool {
-        // +load runs before the loader/registry constructors. This lets a newer
-        // App Group or file snapshot repopulate standardUserDefaults before the
-        // runtime registry reads its desired state.
-        (void)self.sharedStore;
-    }
-}
-
 + (instancetype)sharedStore {
     static FLEXPersistenceStore *store;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        // Deliberately lazy. The loader creates this store only after the host
+        // app has entered an active scene, never from +load or a constructor.
         store = [FLEXPersistenceStore new];
     });
     return store;
@@ -82,8 +77,9 @@ static const void *kFLEXPersistenceQueueSpecific = &kFLEXPersistenceQueueSpecifi
     [self configureApplicationGroup];
     [self restoreNewestSnapshot];
 
-    // Consolidate/migrate the selected state into every writable backend.
-    [self synchronizeNow];
+    // Mirror migration is coalesced on the persistence queue. Initializing the
+    // store never blocks the caller on a second synchronous write pass.
+    [self synchronizeSoon];
     return self;
 }
 
@@ -318,14 +314,12 @@ static const void *kFLEXPersistenceQueueSpecific = &kFLEXPersistenceQueueSpecifi
     }];
     [self.standardDefaults setDouble:[newest[@"timestamp"] doubleValue]
                               forKey:kFLEXPersistenceLastWriteKey];
-    [self.standardDefaults synchronize];
     self.restoring = NO;
 }
 
 - (NSDictionary *)freshSnapshot {
     NSTimeInterval timestamp = NSDate.date.timeIntervalSince1970;
     [self.standardDefaults setDouble:timestamp forKey:kFLEXPersistenceLastWriteKey];
-    [self.standardDefaults synchronize];
     return @{
         @"schema": @(kFLEXPersistenceSchema),
         @"timestamp": @(timestamp),
@@ -356,9 +350,6 @@ static const void *kFLEXPersistenceQueueSpecific = &kFLEXPersistenceQueueSpecifi
 
     if (self.groupDefaults) {
         [self.groupDefaults setObject:snapshot forKey:self.snapshotDefaultsKey];
-        if (![self.groupDefaults synchronize]) {
-            success = NO;
-        }
     }
 
     NSError *sandboxError = nil;
