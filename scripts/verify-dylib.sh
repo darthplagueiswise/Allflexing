@@ -86,6 +86,14 @@ require_text "contextual runtime actions" '_OBJC_CLASS_$_FLEXRuntimeHookActions'
 
 string_dump="$(strings -a "$dylib")"
 require_text "durable persistence" "AllFLEXing persistence app-group defaults atomic-mirror ABI 2" "$string_dump"
+require_text "post-scene lazy persistence" \
+    "AllFLEXing post-scene lazy persistence ABI 1" "$string_dump"
+require_text "coalesced persistence integration" \
+    "AllFLEXing deferred coalesced persistence integration ABI 1" "$string_dump"
+require_text "post-restore flag reload" \
+    "AllFLEXing post-mirror flag cache reload ABI 1" "$string_dump"
+require_text "safe post-scene runtime bootstrap" \
+    "AllFLEXing post-scene deferred runtime bootstrap ABI 1" "$string_dump"
 require_text "staged-only toggle policy" \
     "AllFLEXing staged toggles explicit-Apply-only ABI 1" "$string_dump"
 require_text "staged-only user guidance" \
