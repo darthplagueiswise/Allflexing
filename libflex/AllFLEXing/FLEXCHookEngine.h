@@ -4,6 +4,13 @@ NS_ASSUME_NONNULL_BEGIN
 
 @class FLEXHookEntry;
 
+/// Foundation has removal/union APIs but no public mutable intersection
+/// selector. The runtime search index uses this small compatibility category
+/// to intersect precomputed posting lists without rescanning symbol strings.
+@interface NSMutableIndexSet (AllFLEXingIntersection)
+- (void)intersectIndexes:(NSIndexSet *)indexes;
+@end
+
 @interface FLEXCHookEngine : NSObject
 
 + (BOOL)installEntry:(FLEXHookEntry *)entry error:(NSError **)error;
