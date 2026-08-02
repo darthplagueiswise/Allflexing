@@ -3,6 +3,7 @@
 NS_ASSUME_NONNULL_BEGIN
 
 FOUNDATION_EXPORT const char *FLEXPersistenceStoreABIVersion;
+FOUNDATION_EXPORT const char *FLEXPersistenceSafeLaunchABIVersion;
 
 @interface FLEXPersistenceStore : NSObject
 
@@ -15,6 +16,7 @@ FOUNDATION_EXPORT const char *FLEXPersistenceStoreABIVersion;
 
 /// Flushes every `com.allflexing.*` preference to standard defaults, an
 /// entitlement-backed App Group when available, and atomic plist mirrors.
+/// This must not be called from pre-main/+load code.
 - (BOOL)synchronizeNow;
 /// Coalesces frequent writes while still persisting them during the same run.
 - (void)synchronizeSoon;
