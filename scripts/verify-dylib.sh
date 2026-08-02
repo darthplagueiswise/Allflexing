@@ -88,6 +88,8 @@ require_text "durable persistence" "AllFLEXing persistence app-group defaults at
 require_text "functional Apply/Reapply" "manual-apply-all" "$string_dump"
 require_text "selected-image runtime session" \
     "AllFLEXing complete selected-image runtime session ABI 1" "$string_dump"
+require_text "verified-backend snapshot" \
+    "AllFLEXing selected-image verified-backend snapshot ABI 1" "$string_dump"
 require_text "transient runtime snapshot bridge" \
     "AllFLEXing transient runtime snapshot bridge ABI 2" "$string_dump"
 require_text "inverted prefix search" \
