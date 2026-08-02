@@ -88,10 +88,15 @@ require_text "durable persistence" "AllFLEXing persistence app-group defaults at
 require_text "functional Apply/Reapply" "manual-apply-all" "$string_dump"
 require_text "selected-image runtime session" \
     "AllFLEXing complete selected-image runtime session ABI 1" "$string_dump"
+require_text "transient runtime snapshot bridge" \
+    "AllFLEXing transient runtime snapshot bridge ABI 2" "$string_dump"
+require_text "selected-image prefix index" \
+    "AllFLEXing selected-image transient-snapshot prefix-index search ABI 7" "$string_dump"
 require_text "ARM64 evidence resolver" \
     "AllFLEXing image-scoped ARM64 evidence ABI resolver ABI 2" "$string_dump"
-require_text "complete search index phase" "Building complete search index" "$string_dump"
-require_text "image selection menu" "Runtime image" "$string_dump"
+require_text "complete scan before search" "complete scan before search" "$string_dump"
+require_text "verified-target indexing" "Indexing verified runtime targets" "$string_dump"
+require_text "image selection menu" "Loaded app image" "$string_dump"
 require_text "Mach-O import parsing" "mach-o-indirect-symbols" "$string_dump"
 require_text "Mach-O executable symbols" "mach-o-symbol-table" "$string_dump"
 require_text "function-start parsing" "LC_FUNCTION_STARTS" "$string_dump"
@@ -115,9 +120,12 @@ for forbidden in \
     FLEXCompactGroupBackgroundView \
     AllFLEXingCompactRuntimeCell \
     AllFLEXingCompactHookCenterCell \
-    "AllFLEXing full-snapshot async indexed cancellable search ABI 4"; do
+    "AllFLEXing tokenized AND search ABI 2" \
+    "AllFLEXing full-snapshot async indexed cancellable search ABI 4" \
+    "the symbol name indicates a Boolean result" \
+    "The name suggests a Boolean result"; do
     if grep -Fq "$forbidden" <<<"$string_dump"; then
-        echo "error: obsolete runtime/UI layer is still linked: $forbidden" >&2
+        echo "error: obsolete or name-heuristic runtime layer is still linked: $forbidden" >&2
         exit 1
     fi
 done
