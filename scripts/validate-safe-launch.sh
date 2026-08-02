@@ -10,6 +10,11 @@ loader = (root / "AllFLEXingLoader.m").read_text()
 store = (root / "FLEXPersistenceStore.m").read_text()
 integration = (root / "FLEXPersistenceIntegration.m").read_text()
 flags = (root / "FLEXHookPersistence.m").read_text()
+source_files = sorted(
+    path for path in root.rglob("*")
+    if path.suffix in {".m", ".mm", ".xm", ".x"}
+)
+all_sources = "\n".join(path.read_text(errors="replace") for path in source_files)
 
 errors = []
 
@@ -29,12 +34,37 @@ require("AllFLEXing post-mirror flag cache reload ABI 1" in flags,
         "missing post-restore flag reload marker")
 require("synchronizeNow" not in integration,
         "high-frequency persistence integration must coalesce writes")
-require("[FLEXHookRegistry.sharedRegistry bootstrap]" not in loader,
-        "loader must not call synchronous registry bootstrap")
+require("[FLEXHookRegistry.sharedRegistry bootstrap]" not in all_sources,
+        "no source may invoke the synchronous registry bootstrap")
 require("launch-reapply" not in loader,
         "loader must not request launch replay")
 require(loader.count("reapplyPersistedEntries") == 1,
         "loader must request exactly one post-scene persisted-state replay")
+
+for path in source_files:
+    text = path.read_text(errors="replace")
+    for match in re.finditer(r"\+ \(void\)load\s*\{(?P<body>.*?)\n\}", text, re.S):
+        body = match.group("body")
+        require("FLEXPersistenceStore.sharedStore" not in body,
+                f"{path} instantiates persistence from +load")
+        require("reapplyPersistedEntries" not in body,
+                f"{path} replays hooks from +load")
+        require("FLEXHookRegistry.sharedRegistry bootstrap" not in body,
+                f"{path} bootstraps the registry from +load")
+
+    for match in re.finditer(
+        r"__attribute__\(\(constructor\)\).*?\([^;{}]*\)\s*\{(?P<body>.*?)\n\}",
+        text,
+        re.S,
+    ):
+        body = match.group("body")
+        for token in (
+            "FLEXPersistenceStore.sharedStore",
+            "reapplyPersistedEntries",
+            "FLEXHookRegistry.sharedRegistry bootstrap",
+        ):
+            require(token not in body,
+                    f"{path} constructor performs forbidden pre-scene work: {token}")
 
 load_match = re.search(
     r"\+ \(void\)load\s*\{(?P<body>.*?)\n\}",
