@@ -3,7 +3,7 @@
 #import "FLEXHookRegistry.h"
 
 __attribute__((used)) static const char kFLEXNativeGroupedTableMarker[] =
-    "AllFLEXing native grouped UIKit table ABI 1";
+    "AllFLEXing native grouped UIKit table ABI 2 full-symbol-names";
 
 @implementation FLEXRuntimeEntryGroup
 @end
@@ -14,9 +14,10 @@ __attribute__((used)) static const char kFLEXNativeGroupedTableMarker[] =
     UIListContentConfiguration *content = [self defaultContentConfiguration];
     content.text = title;
     content.secondaryText = detail;
-    content.textProperties.numberOfLines = 1;
-    content.textProperties.lineBreakMode = NSLineBreakByTruncatingMiddle;
-    content.secondaryTextProperties.numberOfLines = 1;
+    content.textProperties.numberOfLines = 0;
+    content.textProperties.lineBreakMode = NSLineBreakByCharWrapping;
+    content.secondaryTextProperties.numberOfLines = 0;
+    content.secondaryTextProperties.lineBreakMode = NSLineBreakByWordWrapping;
     self.contentConfiguration = content;
 }
 
@@ -137,8 +138,8 @@ void FLEXConfigureCompactRuntimeTable(UITableView *tableView) {
     tableView.opaque = YES;
     tableView.separatorStyle = UITableViewCellSeparatorStyleSingleLine;
     tableView.separatorColor = UIColor.separatorColor;
-    tableView.cellLayoutMarginsFollowReadableWidth = YES;
-    tableView.estimatedRowHeight = 54.0;
+    tableView.cellLayoutMarginsFollowReadableWidth = NO;
+    tableView.estimatedRowHeight = 72.0;
     tableView.rowHeight = UITableViewAutomaticDimension;
     tableView.sectionHeaderTopPadding = 8.0;
     tableView.contentInset = UIEdgeInsetsZero;
@@ -164,11 +165,14 @@ void FLEXConfigureCompactRuntimeContent(UITableViewCell *cell,
     UIListContentConfiguration *content = [UIListContentConfiguration subtitleCellConfiguration];
     content.text = title;
     content.secondaryText = secondary;
-    content.textProperties.numberOfLines = 1;
-    content.textProperties.lineBreakMode = NSLineBreakByTruncatingMiddle;
-    content.secondaryTextProperties.numberOfLines = 1;
-    content.secondaryTextProperties.lineBreakMode = NSLineBreakByTruncatingTail;
+    // Runtime symbols, Swift names and Objective-C selectors are identifiers,
+    // not prose. Never replace their meaningful suffix with an ellipsis.
+    content.textProperties.numberOfLines = 0;
+    content.textProperties.lineBreakMode = NSLineBreakByCharWrapping;
+    content.secondaryTextProperties.numberOfLines = 2;
+    content.secondaryTextProperties.lineBreakMode = NSLineBreakByWordWrapping;
     content.secondaryTextProperties.color = UIColor.secondaryLabelColor;
+    content.directionalLayoutMargins = NSDirectionalEdgeInsetsMake(8.0, 4.0, 8.0, 4.0);
 
     if (symbolName.length) {
         content.image = [UIImage systemImageNamed:symbolName];
