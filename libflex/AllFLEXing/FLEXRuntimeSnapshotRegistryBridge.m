@@ -3,7 +3,7 @@
 #import <objc/runtime.h>
 
 const char *FLEXRuntimeSnapshotRegistryBridgeABIVersion =
-    "AllFLEXing transient runtime snapshot bridge ABI 3 registry-only";
+    "AllFLEXing transient runtime snapshot bridge ABI 2 registry-only";
 
 static NSMapTable<NSString *, FLEXHookEntry *> *FLEXTransientRuntimeEntries(void) {
     static NSMapTable<NSString *, FLEXHookEntry *> *entries;
