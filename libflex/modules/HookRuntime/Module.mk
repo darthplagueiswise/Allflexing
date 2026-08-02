@@ -1,4 +1,6 @@
 ALLFLEXING_HOOK_RUNTIME_SOURCES := \
+	$(ALLFLEXING_ROOT)/FLEXABIResolver.mm \
+	$(ALLFLEXING_ROOT)/FLEXABIResolverIntegration.m \
 	$(ALLFLEXING_ROOT)/FLEXPersistenceStore.m \
 	$(ALLFLEXING_ROOT)/FLEXPersistenceIntegration.m \
 	$(ALLFLEXING_ROOT)/FLEXHookRegistry.m \
