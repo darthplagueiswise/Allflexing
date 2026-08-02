@@ -6,6 +6,14 @@
 const char *FLEXRuntimeSnapshotRegistryBridgeABIVersion =
     "AllFLEXing transient runtime snapshot bridge ABI 1";
 
+@interface FLEXHookRegistry (AllFLEXingRuntimeSnapshotBridgePrivate)
+- (FLEXHookEntry *)af_runtimeSnapshot_upsertDiscoveredEntry:(FLEXHookEntry *)entry;
+@end
+
+@interface FLEXHookEntryDetailController (AllFLEXingRuntimeSnapshotBridgePrivate)
+- (instancetype)af_runtimeSnapshot_initWithEntry:(FLEXHookEntry *)entry;
+@end
+
 static BOOL FLEXEntryComesFromRuntimeImageSession(FLEXHookEntry *entry) {
     NSString *source = [entry.locator[@"source"] isKindOfClass:NSString.class]
         ? entry.locator[@"source"] : @"";
