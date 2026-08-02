@@ -99,6 +99,8 @@ require_text "complete-image substring search" \
     "AllFLEXing complete-image substring-index search ABI 1" "$string_dump"
 require_text "image-address C hook engine" \
     "AllFLEXing image-UUID executable-address C hook engine ABI 1" "$string_dump"
+require_text "ASLR-safe image offset rebase" \
+    "AllFLEXing image-UUID header-plus-offset ASLR rebase ABI 1" "$string_dump"
 require_text "strict Objective-C BOOL classification" \
     "AllFLEXing exact-B Objective-C runtime classification ABI 1" "$string_dump"
 require_text "ARM64 evidence resolver" \
