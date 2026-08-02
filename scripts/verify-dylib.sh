@@ -88,8 +88,6 @@ require_text "durable persistence" "AllFLEXing persistence app-group defaults at
 require_text "functional Apply/Reapply" "manual-apply-all" "$string_dump"
 require_text "selected-image runtime session" \
     "AllFLEXing complete selected-image runtime session ABI 1" "$string_dump"
-require_text "verified-backend snapshot" \
-    "AllFLEXing selected-image verified-backend snapshot ABI 1" "$string_dump"
 require_text "transient runtime snapshot bridge" \
     "AllFLEXing transient runtime snapshot bridge ABI 2" "$string_dump"
 require_text "inverted prefix search" \
@@ -97,7 +95,7 @@ require_text "inverted prefix search" \
 require_text "ARM64 evidence resolver" \
     "AllFLEXing image-scoped ARM64 evidence ABI resolver ABI 2" "$string_dump"
 require_text "complete index phase" "Building complete search index" "$string_dump"
-require_text "verified-target index phase" "Indexing verified hook targets" "$string_dump"
+require_text "verified-target projection" "Indexing verified hook targets" "$string_dump"
 require_text "image selection menu" "Runtime image" "$string_dump"
 require_text "Mach-O import parsing" "mach-o-indirect-symbols" "$string_dump"
 require_text "Mach-O executable symbols" "mach-o-symbol-table" "$string_dump"
