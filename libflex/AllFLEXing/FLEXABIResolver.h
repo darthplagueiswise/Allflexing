@@ -24,19 +24,9 @@ typedef NS_ENUM(NSInteger, FLEXABIResolutionConfidence) {
 @end
 
 @interface FLEXABIResolver : NSObject
-
-/// Returns a profile only for symbols present in the explicit verified
-/// signature catalog. Symbol spelling, prefixes, English words and demangled
-/// names never infer an ABI.
-+ (FLEXHookABI)exactKnownABIForSymbol:(NSString *)symbol;
-
-/// Resolves backend and ABI evidence against the live selected image. Backend
-/// targetability may be proven while ABI remains unknown; in that case the
-/// entry stays inspection-only until an explicit manual profile is selected.
 + (void)resolveEntry:(FLEXHookEntry *)entry
           completion:(void (^)(FLEXABIResolution *resolution))completion;
 + (NSString *)confidenceName:(FLEXABIResolutionConfidence)confidence;
-
 @end
 
 NS_ASSUME_NONNULL_END
