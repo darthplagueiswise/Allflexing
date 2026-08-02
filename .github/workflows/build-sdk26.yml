@@ -73,6 +73,11 @@ jobs:
           chmod +x build.sh scripts/*.sh
           bash scripts/validate-sdk26-liquidglass.sh
 
+      - name: Validate Objective-C image enumeration
+        run: |
+          cd main
+          bash scripts/validate-runtime-class-enumeration.sh
+
       - name: Build standalone package
         id: build
         run: |
