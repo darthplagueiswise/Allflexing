@@ -96,8 +96,6 @@ static NSInteger FLEXTokenMatchQuality(NSString *query, NSString *candidate) {
         return 30;
     }
     if (query.length >= 3 && [candidate hasPrefix:query]) {
-        // `enable` matches `enabled`, while remaining strict enough to avoid
-        // one-character accidental matches.
         return 22;
     }
     if (candidate.length >= 3 && [query hasPrefix:candidate]) {
@@ -193,14 +191,14 @@ static UIFont *FLEXScaledRuntimeFont(CGFloat pointSize,
 
 - (void)af_search_viewDidLoad {
     [self af_search_viewDidLoad];
-    self.tableView.estimatedRowHeight = 62.0;
+    self.tableView.estimatedRowHeight = 56.0;
     @try {
         UISearchController *search = [self valueForKey:@"searchController"];
         search.searchBar.searchTextField.font = FLEXScaledRuntimeFont(
-            14.0,
+            13.5,
             UIFontWeightRegular,
             UIFontTextStyleBody,
-            18.0
+            16.0
         );
     } @catch (__unused NSException *exception) {
     }
@@ -273,18 +271,18 @@ static UIFont *FLEXScaledRuntimeFont(CGFloat pointSize,
     if ([configuration isKindOfClass:UIListContentConfiguration.class]) {
         UIListContentConfiguration *content = [configuration copy];
         content.textProperties.font = FLEXScaledRuntimeFont(
-            14.5,
-            UIFontWeightMedium,
+            13.5,
+            UIFontWeightSemibold,
             UIFontTextStyleBody,
-            18.0
+            17.0
         );
         content.secondaryTextProperties.font = FLEXScaledRuntimeFont(
-            11.5,
+            10.5,
             UIFontWeightRegular,
             UIFontTextStyleCaption1,
-            15.0
+            13.0
         );
-        content.secondaryTextProperties.numberOfLines = 3;
+        content.secondaryTextProperties.numberOfLines = 1;
         cell.contentConfiguration = content;
     }
     return cell;
