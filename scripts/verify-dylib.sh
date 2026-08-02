@@ -95,12 +95,16 @@ require_text "selected-image runtime session" \
     "AllFLEXing complete selected-image runtime session ABI 1" "$string_dump"
 require_text "transient runtime snapshot bridge" \
     "AllFLEXing transient runtime snapshot bridge ABI 2" "$string_dump"
-require_text "inverted prefix search" \
-    "AllFLEXing selected-image inverted-prefix-index search ABI 1" "$string_dump"
+require_text "complete-image substring search" \
+    "AllFLEXing complete-image substring-index search ABI 1" "$string_dump"
+require_text "image-address C hook engine" \
+    "AllFLEXing image-UUID executable-address C hook engine ABI 1" "$string_dump"
+require_text "strict Objective-C BOOL classification" \
+    "AllFLEXing exact-B Objective-C runtime classification ABI 1" "$string_dump"
 require_text "ARM64 evidence resolver" \
     "AllFLEXing image-scoped ARM64 evidence ABI resolver ABI 2" "$string_dump"
-require_text "complete index phase" "Building complete search index" "$string_dump"
-require_text "verified-target projection" "Indexing verified hook targets" "$string_dump"
+require_text "complete snapshot index phase" \
+    "Indexing complete image snapshot" "$string_dump"
 require_text "image selection menu" "Runtime image" "$string_dump"
 require_text "Mach-O import parsing" "mach-o-indirect-symbols" "$string_dump"
 require_text "Mach-O executable symbols" "mach-o-symbol-table" "$string_dump"
