@@ -97,6 +97,12 @@ require_text "transient runtime snapshot bridge" \
     "AllFLEXing transient runtime snapshot bridge ABI 2" "$string_dump"
 require_text "complete-image substring search" \
     "AllFLEXing complete-image substring-index search ABI 1" "$string_dump"
+require_text "operational Objective-C projection" \
+    "AllFLEXing operational Objective-C hook-target projection ABI 1" "$string_dump"
+require_text "operational Objective-C ABI evidence" \
+    "objc-type-encoding-operational-profile" "$string_dump"
+require_text "live Objective-C provider evidence" \
+    "MSHookMessageEx-live-provider" "$string_dump"
 require_text "image-address C hook engine" \
     "AllFLEXing image-UUID executable-address C hook engine ABI 1" "$string_dump"
 require_text "ASLR-safe image offset rebase" \
