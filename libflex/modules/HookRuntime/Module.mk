@@ -10,6 +10,7 @@ ALLFLEXING_HOOK_RUNTIME_SOURCES := \
 	$(ALLFLEXING_ROOT)/FLEXASLRAddressRebase.m \
 	$(ALLFLEXING_ROOT)/FLEXRuntimeSearchCompleteness.m \
 	$(ALLFLEXING_ROOT)/FLEXStrictObjectiveCRuntimeScanner.m \
+	$(ALLFLEXING_ROOT)/FLEXOperationalRuntimeProjection.m \
 	$(ALLFLEXING_ROOT)/FLEXMutableIndexSetIntersection.m \
 	$(ALLFLEXING_ROOT)/FLEXUIActionCompatibility.m \
 	$(ALLFLEXING_ROOT)/FLEXPersistenceStore.m \
