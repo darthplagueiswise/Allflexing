@@ -93,6 +93,12 @@ typedef void (^FLEXHookApplyCompletion)(NSArray<FLEXHookEntry *> *applied,
 - (NSArray<FLEXHookEntry *> *)entriesForSurface:(FLEXHookSurface)surface;
 - (void)mergeDiscoveredEntries:(NSArray<FLEXHookEntry *> *)entries
                        surface:(FLEXHookSurface)surface;
+/// Batch merge for a completed selected-image scan. Only non-configured rows
+/// from the scanned image paths are invalidated, so switching framework scope
+/// never marks hooks from unrelated images stale.
+- (NSArray<FLEXHookEntry *> *)mergeDiscoveredEntries:(NSArray<FLEXHookEntry *> *)entries
+                                              surface:(FLEXHookSurface)surface
+                                           imagePaths:(NSArray<NSString *> *)imagePaths;
 - (FLEXHookEntry *)upsertDiscoveredEntry:(FLEXHookEntry *)entry;
 - (void)addOrUpdateManualEntry:(FLEXHookEntry *)entry;
 
