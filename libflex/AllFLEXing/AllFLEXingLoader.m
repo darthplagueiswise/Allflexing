@@ -8,7 +8,12 @@
 #import "FLEXLiquidGlass.h"
 #import "FLEXManager.h"
 #import "FLEXManager+Extensibility.h"
+#import "FLEXPersistenceStore.h"
+#import "FLEXRuntimeScanner.h"
 #import "FLEXWindow.h"
+
+const char *AllFLEXingSafeLaunchABIVersion =
+    "AllFLEXing post-scene deferred runtime bootstrap ABI 1";
 
 static const void *kAllFLEXingRevealGestureKey = &kAllFLEXingRevealGestureKey;
 static id AllFLEXingDidBecomeActiveObserver;
@@ -155,35 +160,53 @@ static BOOL AllFLEXingIsUIApplicationProcess(void) {
     return NSClassFromString(@"UIApplication") != nil;
 }
 
-static void AllFLEXingRegisterRuntime(void) {
+static dispatch_queue_t AllFLEXingDeferredRuntimeQueue(void) {
+    static dispatch_queue_t queue;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        dispatch_queue_attr_t attributes = dispatch_queue_attr_make_with_qos_class(
+            DISPATCH_QUEUE_SERIAL,
+            QOS_CLASS_UTILITY,
+            0
+        );
+        queue = dispatch_queue_create(
+            "com.allflexing.post-scene-bootstrap",
+            attributes
+        );
+    });
+    return queue;
+}
+
+static FLEXHookPersistence *AllFLEXingRegisterRuntimeFlags(void) {
     FLEXHookPersistence *flags = FLEXHookPersistence.sharedManager;
-    [flags registerFlag:@"glass.enabled"
-                  title:@"Liquid Glass UI"
-                 detail:@"Use native UIKit 26 glass for FLEX navigation and controls."
-           defaultValue:YES];
-    [flags registerFlag:@"reveal.three_finger"
-                  title:@"Three-finger reveal"
-                 detail:@"Open FLEX with a 0.55 second three-finger long press."
-           defaultValue:YES];
-    [flags registerFlag:@"engine.objc_ellekit"
-                  title:@"Objective-C / ElleKit"
-                 detail:@"Allow ABI-validated runtime methods through MSHookMessageEx."
-           defaultValue:YES];
-    [flags registerFlag:@"engine.fishhook"
-                  title:@"C imports / fishhook"
-                 detail:@"Allow rebinding only when a Mach-O import slot is confirmed."
-           defaultValue:YES];
-    [flags registerFlag:@"engine.inline_ellekit"
-                  title:@"C inline / ElleKit"
-                 detail:@"Allow MSHookFunction only for an explicit C ABI and resolved address."
-           defaultValue:YES];
-    // Reapply only exact, versioned targets after engine defaults exist and
-    // before the first main-runloop turn. No broad scan or UIKit work occurs.
-    [FLEXHookRegistry.sharedRegistry bootstrap];
-    [flags activateRegisteredHooks];
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        [flags registerFlag:@"glass.enabled"
+                      title:@"Liquid Glass UI"
+                     detail:@"Use native UIKit 26 glass for FLEX navigation and controls."
+               defaultValue:YES];
+        [flags registerFlag:@"reveal.three_finger"
+                      title:@"Three-finger reveal"
+                     detail:@"Open FLEX with a 0.55 second three-finger long press."
+               defaultValue:YES];
+        [flags registerFlag:@"engine.objc_ellekit"
+                      title:@"Objective-C / ElleKit"
+                     detail:@"Allow ABI-validated runtime methods through MSHookMessageEx."
+               defaultValue:YES];
+        [flags registerFlag:@"engine.fishhook"
+                      title:@"C imports / fishhook"
+                     detail:@"Allow rebinding only when a Mach-O import slot is confirmed."
+               defaultValue:YES];
+        [flags registerFlag:@"engine.inline_ellekit"
+                      title:@"C inline / ElleKit"
+                     detail:@"Allow MSHookFunction only for an explicit C ABI and resolved address."
+               defaultValue:YES];
+    });
+    return flags;
 }
 
 static void AllFLEXingStartUI(void) {
+    NSCAssert(NSThread.isMainThread, @"FLEX UI bootstrap must run on the main thread");
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         [FLEXManager.sharedManager
@@ -202,16 +225,44 @@ static void AllFLEXingStartUI(void) {
     });
 }
 
-static void AllFLEXingRunActivationPhase(void) {
-    NSCAssert(NSThread.isMainThread, @"activation phase must run on the main thread");
+static void AllFLEXingStartDeferredRuntime(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        // The constructor already replays exact targets that exist at image
-        // load. Re-resolve once after UIApplication becomes active to cover
-        // Swift/late Objective-C realization without delaying early hooks.
-        [FLEXHookRegistry.sharedRegistry reapplyPersistedEntries];
-        AllFLEXingStartUI();
+        // Wait until the active scene has had a chance to complete its first
+        // presentation. Persistence restore, registry construction and hook
+        // replay are all moved off the scene-create watchdog path.
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.50 * NSEC_PER_SEC)),
+            AllFLEXingDeferredRuntimeQueue(),
+            ^{
+                @autoreleasepool {
+                    (void)FLEXPersistenceStore.sharedStore;
+
+                    FLEXHookPersistence *flags = AllFLEXingRegisterRuntimeFlags();
+                    [flags reloadPersistedValues];
+                    [flags activateRegisteredHooks];
+
+                    FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
+                    [FLEXRuntimeScanner startMonitoringImages];
+
+                    // Reconstruct only states previously confirmed by Apply,
+                    // exactly once, after activation. The registry bootstrap
+                    // path is intentionally not used because it performs a
+                    // synchronous pre-scene replay and installs on late images.
+                    [registry reapplyPersistedEntries];
+
+                    dispatch_async(dispatch_get_main_queue(), ^{
+                        AllFLEXingStartUI();
+                    });
+                }
+            }
+        );
     });
+}
+
+static void AllFLEXingRunActivationPhase(void) {
+    NSCAssert(NSThread.isMainThread, @"activation phase must run on the main thread");
+    AllFLEXingStartDeferredRuntime();
 }
 
 static void AllFLEXingScheduleActivationPhase(void) {
@@ -247,9 +298,9 @@ static void AllFLEXingBootstrap(void) {
             return;
         }
 
-        // Method and symbol hooks are registered synchronously at image load so
-        // early app calls cannot win a race with the first main-runloop turn.
-        AllFLEXingRegisterRuntime();
+        // Constructor work is intentionally limited to scheduling the active-
+        // scene phase. No persistence store, registry, scan or hook provider is
+        // touched before scene creation completes.
         AllFLEXingScheduleActivationPhase();
     }
 }
