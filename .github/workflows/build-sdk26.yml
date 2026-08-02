@@ -78,6 +78,15 @@ jobs:
           cd main
           bash scripts/validate-runtime-class-enumeration.sh
 
+      - name: Validate runtime search semantics
+        run: |
+          cd main
+          clang -fobjc-arc -framework Foundation \
+            tests/runtime_search_semantics_test.m \
+            libflex/AllFLEXing/FLEXRuntimeSearchSemantics.m \
+            -o /tmp/runtime-search-semantics-test
+          /tmp/runtime-search-semantics-test
+
       - name: Build standalone package
         id: build
         run: |
