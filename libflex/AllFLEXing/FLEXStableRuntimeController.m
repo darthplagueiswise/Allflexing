@@ -3,6 +3,7 @@
 #import "FLEXHookRegistry.h"
 #import "FLEXHooking.h"
 #import "FLEXRuntimeBrowserController.h"
+#import "FLEXRuntimeSearchSemantics.h"
 #import "FLEXSymbolRebind.h"
 
 #import <objc/runtime.h>
@@ -92,67 +93,18 @@ static void FLEXStableSetValue(id object, NSString *key, id value) {
 }
 
 static NSString *FLEXStableNormalizedText(NSString *source) {
-    if (!source.length) return @"";
-
-    NSMutableString *output = [NSMutableString stringWithCapacity:source.length + 8];
-    NSCharacterSet *letters = NSCharacterSet.letterCharacterSet;
-    NSCharacterSet *digits = NSCharacterSet.decimalDigitCharacterSet;
-    NSCharacterSet *upper = NSCharacterSet.uppercaseLetterCharacterSet;
-    NSCharacterSet *lower = NSCharacterSet.lowercaseLetterCharacterSet;
-
-    for (NSUInteger index = 0; index < source.length; index++) {
-        unichar current = [source characterAtIndex:index];
-        BOOL alphanumeric = [letters characterIsMember:current] ||
-                            [digits characterIsMember:current];
-        if (!alphanumeric) {
-            if (output.length && [output characterAtIndex:output.length - 1] != ' ') {
-                [output appendString:@" "];
-            }
-            continue;
-        }
-
-        if ([upper characterIsMember:current] && index > 0 && output.length &&
-            [output characterAtIndex:output.length - 1] != ' ') {
-            unichar previous = [source characterAtIndex:index - 1];
-            BOOL boundary = [lower characterIsMember:previous] ||
-                            [digits characterIsMember:previous];
-            if (!boundary && index + 1 < source.length) {
-                unichar next = [source characterAtIndex:index + 1];
-                boundary = [upper characterIsMember:previous] &&
-                           [lower characterIsMember:next];
-            }
-            if (boundary) [output appendString:@" "];
-        }
-        [output appendFormat:@"%C", current];
-    }
-
-    NSString *folded = [output stringByFoldingWithOptions:
-        (NSCaseInsensitiveSearch | NSDiacriticInsensitiveSearch |
-         NSWidthInsensitiveSearch)
-        locale:NSLocale.currentLocale];
-    NSArray<NSString *> *parts = [folded.lowercaseString
-        componentsSeparatedByCharactersInSet:
-            NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    NSMutableArray<NSString *> *tokens = [NSMutableArray arrayWithCapacity:parts.count];
-    for (NSString *part in parts) {
-        if (part.length) [tokens addObject:part];
-    }
-    return [tokens componentsJoinedByString:@" "];
+    return FLEXRuntimeSearchNormalizedText(source);
 }
 
 static NSArray<NSString *> *FLEXStableTokens(NSString *source) {
-    NSString *normalized = FLEXStableNormalizedText(source);
-    return normalized.length
-        ? [normalized componentsSeparatedByString:@" "] : @[];
+    return FLEXRuntimeSearchQueryTokens(source);
 }
 
-static void FLEXStableAppend(NSMutableString *raw, id value) {
+static void FLEXStableAddSearchValue(NSMutableArray *values, id value) {
     if ([value isKindOfClass:NSString.class] && [value length]) {
-        [raw appendString:value];
-        [raw appendString:@" "];
+        [values addObject:value];
     } else if ([value isKindOfClass:NSNumber.class]) {
-        [raw appendString:[value stringValue]];
-        [raw appendString:@" "];
+        [values addObject:[value stringValue]];
     }
 }
 
@@ -412,16 +364,18 @@ static FLEXStableSearchIndex *FLEXStableBuildIndex(
         if ((entryIndex & 127) == 0 && request.cancelled) return nil;
         FLEXHookEntry *entry = entries[entryIndex];
         @autoreleasepool {
-            NSMutableString *raw = [NSMutableString string];
-            FLEXStableAppend(raw, entry.title);
-            FLEXStableAppend(raw, entry.detail);
-            FLEXStableAppend(raw, entry.imageName);
-            FLEXStableAppend(raw, entry.identifier);
+            NSMutableArray *searchValues = [NSMutableArray array];
+            FLEXStableAddSearchValue(searchValues, entry.title);
+            FLEXStableAddSearchValue(searchValues, entry.detail);
+            FLEXStableAddSearchValue(searchValues, entry.imageName);
+            FLEXStableAddSearchValue(searchValues, entry.identifier);
             for (NSString *key in locatorKeys) {
-                FLEXStableAppend(raw, entry.locator[key]);
+                FLEXStableAddSearchValue(searchValues, entry.locator[key]);
             }
-            NSString *normalized = FLEXStableNormalizedText(raw);
-            NSArray<NSString *> *tokens = FLEXStableTokens(normalized);
+
+            NSArray<NSString *> *tokens =
+                FLEXRuntimeSearchSemanticTokensForValues(searchValues);
+            NSString *normalized = [tokens componentsJoinedByString:@" "];
             [tokensByEntry addObject:tokens];
             id compatibilityRecord = FLEXStableCompatibilityRecord(
                 entry,
