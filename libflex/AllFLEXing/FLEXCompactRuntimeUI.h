@@ -17,7 +17,7 @@ typedef NS_ENUM(NSInteger, FLEXCompactCellPosition) {
 @end
 
 @interface FLEXRuntimeGroupHeaderView : UITableViewHeaderFooterView
-- (void)configureWithTitle:(NSString *)title count:(NSUInteger)count;
+- (void)configureWithTitle:(NSString *)title detail:(nullable NSString *)detail;
 @end
 
 FOUNDATION_EXPORT NSArray<FLEXRuntimeEntryGroup *> *FLEXRuntimeGroupEntries(
