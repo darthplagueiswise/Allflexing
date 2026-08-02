@@ -7,6 +7,7 @@ ALLFLEXING_HOOK_RUNTIME_SOURCES := \
 	$(ALLFLEXING_ROOT)/FLEXDeferredApplyPolicy.m \
 	$(ALLFLEXING_ROOT)/FLEXAddressCHookEngine.m \
 	$(ALLFLEXING_ROOT)/FLEXAddressCHookResolverAPI.m \
+	$(ALLFLEXING_ROOT)/FLEXASLRAddressRebase.m \
 	$(ALLFLEXING_ROOT)/FLEXRuntimeSearchCompleteness.m \
 	$(ALLFLEXING_ROOT)/FLEXStrictObjectiveCRuntimeScanner.m \
 	$(ALLFLEXING_ROOT)/FLEXMutableIndexSetIntersection.m \
