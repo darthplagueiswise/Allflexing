@@ -221,7 +221,7 @@ static void *FLEXResolveSymbolAddress(NSString *symbol, NSString *imagePath) {
             NSString *normalized = FLEXNormalizedSymbol(symbol);
             NSNumber *known = FLEXKnownCSignatures()[normalized];
             if (known) {
-                resolution.abi = known.integerValue;
+                resolution.abi = (FLEXHookABI)known.integerValue;
                 resolution.confidence = FLEXABIResolutionConfidenceExact;
                 [evidence addObject:@"Matched the built-in verified public-signature database."];
             } else {
