@@ -90,12 +90,9 @@ require_text "selected-image runtime session" \
     "AllFLEXing complete selected-image runtime session ABI 1" "$string_dump"
 require_text "transient runtime snapshot bridge" \
     "AllFLEXing transient runtime snapshot bridge ABI 2" "$string_dump"
-require_text "inverted prefix search" \
-    "AllFLEXing selected-image inverted-prefix-index search ABI 1" "$string_dump"
 require_text "ARM64 evidence resolver" \
     "AllFLEXing image-scoped ARM64 evidence ABI resolver ABI 2" "$string_dump"
 require_text "complete index phase" "Building complete search index" "$string_dump"
-require_text "verified-target projection" "Indexing verified hook targets" "$string_dump"
 require_text "image selection menu" "Runtime image" "$string_dump"
 require_text "Mach-O import parsing" "mach-o-indirect-symbols" "$string_dump"
 require_text "Mach-O executable symbols" "mach-o-symbol-table" "$string_dump"
@@ -123,10 +120,13 @@ for forbidden in \
     "AllFLEXing tokenized AND search ABI 2" \
     "AllFLEXing full-snapshot async indexed cancellable search ABI 4" \
     "AllFLEXing selected-image transient-snapshot prefix-index search ABI 7" \
+    "AllFLEXing selected-image verified-backend snapshot ABI 1" \
+    "AllFLEXing selected-image inverted-prefix-index search ABI 1" \
+    "Indexing verified hook targets" \
     "the symbol name indicates a Boolean result" \
     "The name suggests a Boolean result"; do
     if grep -Fq "$forbidden" <<<"$string_dump"; then
-        echo "error: obsolete or name-heuristic runtime layer is still linked: $forbidden" >&2
+        echo "error: obsolete, verified-only, or name-heuristic runtime layer is still linked: $forbidden" >&2
         exit 1
     fi
 done
