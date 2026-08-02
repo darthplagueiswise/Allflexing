@@ -19,6 +19,10 @@ static void FLEXABIExchangeInstanceMethods(Class cls, SEL original, SEL replacem
 @interface FLEXHookEntryDetailController (AllFLEXingABIPrivate)
 - (void)af_abi_viewDidLoad;
 - (void)af_resolveABI:(UIBarButtonItem *)sender;
+- (FLEXHookEntry *)af_abi_entry;
+- (void)af_applyABI:(FLEXHookABI)abi backend:(FLEXHookBackend)backend;
+- (void)af_presentABIResolution:(FLEXABIResolution *)resolution
+                       fromItem:(UIBarButtonItem *)item;
 @end
 
 @implementation FLEXHookEntryDetailController (AllFLEXingABIResolver)
@@ -142,30 +146,15 @@ static void FLEXABIExchangeInstanceMethods(Class cls, SEL original, SEL replacem
         @(FLEXHookABICInt64NoArguments),
         @(FLEXHookABICPointerNoArguments),
     ];
-    NSMutableArray<UIMenuElement *> *manualActions = [NSMutableArray array];
     for (NSNumber *number in profiles) {
         FLEXHookABI abi = number.integerValue;
-        [manualActions addObject:[UIAction
-            actionWithTitle:FLEXHookABIName(abi)
-                      image:nil
-                 identifier:nil
-                    handler:^(__unused UIAction *action) {
+        [sheet addAction:[UIAlertAction
+            actionWithTitle:[@"Manual: " stringByAppendingString:FLEXHookABIName(abi)]
+                      style:UIAlertActionStyleDefault
+                    handler:^(__unused UIAlertAction *action) {
             [self af_applyABI:abi backend:suggestedBackend];
         }]];
     }
-    UIMenu *manual = [UIMenu menuWithTitle:@"Manual profile"
-                                     image:[UIImage systemImageNamed:@"slider.horizontal.3"]
-                                identifier:nil
-                                   options:0
-                                  children:manualActions];
-    [sheet addAction:[UIAlertAction
-        actionWithTitle:@"Choose manually"
-                  style:UIAlertActionStyleDefault
-                handler:^(__unused UIAlertAction *action) {
-        UIBarButtonItem *menuItem = [[UIBarButtonItem alloc] initWithTitle:@"ABI" menu:manual];
-        self.navigationItem.rightBarButtonItem = menuItem;
-        [menuItem.primaryAction performWithSender:menuItem target:self];
-    }]];
 
     [sheet addAction:[UIAlertAction
         actionWithTitle:@"Keep inspection-only"
