@@ -4,15 +4,26 @@
 #import <objc/runtime.h>
 
 const char *FLEXRuntimeSnapshotRegistryBridgeABIVersion =
-    "AllFLEXing transient runtime snapshot bridge ABI 1";
+    "AllFLEXing transient runtime snapshot bridge ABI 2";
 
 @interface FLEXHookRegistry (AllFLEXingRuntimeSnapshotBridgePrivate)
 - (FLEXHookEntry *)af_runtimeSnapshot_upsertDiscoveredEntry:(FLEXHookEntry *)entry;
+- (void)af_runtimeSnapshot_stageEnabled:(BOOL)enabled
+                     forEntryIdentifier:(NSString *)identifier;
 @end
 
 @interface FLEXHookEntryDetailController (AllFLEXingRuntimeSnapshotBridgePrivate)
 - (instancetype)af_runtimeSnapshot_initWithEntry:(FLEXHookEntry *)entry;
 @end
+
+static NSMapTable<NSString *, FLEXHookEntry *> *FLEXTransientRuntimeEntries(void) {
+    static NSMapTable<NSString *, FLEXHookEntry *> *entries;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        entries = [NSMapTable strongToWeakObjectsMapTable];
+    });
+    return entries;
+}
 
 static BOOL FLEXEntryComesFromRuntimeImageSession(FLEXHookEntry *entry) {
     NSString *source = [entry.locator[@"source"] isKindOfClass:NSString.class]
@@ -50,6 +61,11 @@ static void FLEXBridgeExchangeInstanceMethods(Class cls, SEL original, SEL repla
             @selector(af_runtimeSnapshot_upsertDiscoveredEntry:)
         );
         FLEXBridgeExchangeInstanceMethods(
+            FLEXHookRegistry.class,
+            @selector(stageEnabled:forEntryIdentifier:),
+            @selector(af_runtimeSnapshot_stageEnabled:forEntryIdentifier:)
+        );
+        FLEXBridgeExchangeInstanceMethods(
             FLEXHookEntryDetailController.class,
             @selector(initWithEntry:),
             @selector(af_runtimeSnapshot_initWithEntry:)
@@ -67,13 +83,32 @@ static void FLEXBridgeExchangeInstanceMethods(Class cls, SEL original, SEL repla
         return [self af_runtimeSnapshot_upsertDiscoveredEntry:entry];
     }
 
-    // Keep unresolved/inspection entries out of the persistent registry while
-    // scanning a complete image. A verified hookable target may enter directly;
-    // every other entry is promoted only when the user opens it.
-    if (!entry.hookable && !entry.userConfigured) {
+    // A complete image may contain tens of thousands of entries. Keep every
+    // unconfigured row transient so scanning emits no registry notifications.
+    // NSMapTable holds weak values; the active browser snapshot owns the rows.
+    @synchronized (FLEXTransientRuntimeEntries()) {
+        [FLEXTransientRuntimeEntries() setObject:entry forKey:entry.identifier];
+    }
+    if (!entry.userConfigured) {
         return entry;
     }
     return [self af_runtimeSnapshot_upsertDiscoveredEntry:entry];
+}
+
+- (void)af_runtimeSnapshot_stageEnabled:(BOOL)enabled
+                     forEntryIdentifier:(NSString *)identifier {
+    if (enabled && ![self entryForIdentifier:identifier]) {
+        FLEXHookEntry *transient = nil;
+        @synchronized (FLEXTransientRuntimeEntries()) {
+            transient = [FLEXTransientRuntimeEntries() objectForKey:identifier];
+        }
+        if (transient) {
+            FLEXHookEntry *promoted = FLEXPromotableEntryCopy(transient);
+            promoted.userConfigured = YES;
+            [self af_runtimeSnapshot_upsertDiscoveredEntry:promoted];
+        }
+    }
+    [self af_runtimeSnapshot_stageEnabled:enabled forEntryIdentifier:identifier];
 }
 
 @end
