@@ -78,6 +78,7 @@ require_text "UIKit 26 glass class" '_OBJC_CLASS_$_UIGlassEffect' "$symbols"
 require_text "UIKit 26 glass container" '_OBJC_CLASS_$_UIGlassContainerEffect' "$symbols"
 require_text "Objective-C provider import" "_MSHookMessageEx" "$symbols"
 require_text "inline provider import" "_MSHookFunction" "$symbols"
+require_text "image-scoped Objective-C enumeration import" "_objc_enumerateClasses" "$symbols"
 require_text "Objective-C provider capability" "_FLEXMSHookMessageProviderAvailable" "$defined_symbols"
 require_text "inline provider capability" "_FLEXMSHookFunctionProviderAvailable" "$defined_symbols"
 require_text "embedded fishhook" "_FLEXEmbeddedFishhookAvailable" "$defined_symbols"
@@ -93,6 +94,8 @@ require_text "runtime browser crash guards" \
     "AllFLEXing runtime browser crash guards ABI 1" "$string_dump"
 require_text "selected-image runtime session" \
     "AllFLEXing complete selected-image runtime session ABI 1" "$string_dump"
+require_text "nonretaining Objective-C class enumeration" \
+    "AllFLEXing image-scoped nonretaining Objective-C class enumeration ABI 1" "$string_dump"
 require_text "transient runtime snapshot bridge" \
     "AllFLEXing transient runtime snapshot bridge ABI 2" "$string_dump"
 require_text "complete-image substring search" \
