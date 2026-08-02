@@ -3,9 +3,29 @@
 #import "FLEXHookRegistry.h"
 
 #import <objc/runtime.h>
+#import <stdatomic.h>
 
 const char *FLEXRuntimeSearchABIVersion =
-    "AllFLEXing tokenized AND search ABI 2";
+    "AllFLEXing async indexed cancellable search ABI 3";
+
+static const void *kFLEXRuntimeSearchRequestKey = &kFLEXRuntimeSearchRequestKey;
+static const void *kFLEXRuntimeSearchIndexKey = &kFLEXRuntimeSearchIndexKey;
+static atomic_ullong gFLEXRuntimeSearchRevision = 1;
+static id gFLEXRuntimeSearchRevisionObserver;
+
+static dispatch_queue_t FLEXRuntimeSearchQueue(void) {
+    static dispatch_queue_t queue;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        dispatch_queue_attr_t attributes = dispatch_queue_attr_make_with_qos_class(
+            DISPATCH_QUEUE_SERIAL,
+            QOS_CLASS_USER_INITIATED,
+            0
+        );
+        queue = dispatch_queue_create("com.allflexing.runtime-search", attributes);
+    });
+    return queue;
+}
 
 static void FLEXExchangeInstanceMethods(Class cls, SEL original, SEL replacement) {
     Method originalMethod = class_getInstanceMethod(cls, original);
@@ -19,32 +39,36 @@ static NSString *FLEXSearchNormalizedText(NSString *source) {
     if (!source.length) {
         return @"";
     }
+
     NSMutableString *spaced = [NSMutableString stringWithCapacity:source.length + 8];
     NSCharacterSet *letters = NSCharacterSet.letterCharacterSet;
     NSCharacterSet *digits = NSCharacterSet.decimalDigitCharacterSet;
+    NSCharacterSet *uppercaseLetters = NSCharacterSet.uppercaseLetterCharacterSet;
+    NSCharacterSet *lowercaseLetters = NSCharacterSet.lowercaseLetterCharacterSet;
+
     for (NSUInteger index = 0; index < source.length; index++) {
         unichar current = [source characterAtIndex:index];
         BOOL alphanumeric = [letters characterIsMember:current] ||
                             [digits characterIsMember:current];
         if (!alphanumeric) {
-            [spaced appendString:@" "];
+            if (spaced.length && [spaced characterAtIndex:spaced.length - 1] != ' ') {
+                [spaced appendString:@" "];
+            }
             continue;
         }
 
-        BOOL uppercase = [[NSCharacterSet uppercaseLetterCharacterSet]
-            characterIsMember:current];
-        if (uppercase && index > 0) {
+        BOOL uppercase = [uppercaseLetters characterIsMember:current];
+        if (uppercase && index > 0 && spaced.length &&
+            [spaced characterAtIndex:spaced.length - 1] != ' ') {
             unichar previous = [source characterAtIndex:index - 1];
             BOOL previousLowerOrDigit =
-                [[NSCharacterSet lowercaseLetterCharacterSet] characterIsMember:previous] ||
+                [lowercaseLetters characterIsMember:previous] ||
                 [digits characterIsMember:previous];
             BOOL acronymBoundary = NO;
             if (index + 1 < source.length) {
                 unichar next = [source characterAtIndex:index + 1];
-                acronymBoundary = [[NSCharacterSet uppercaseLetterCharacterSet]
-                    characterIsMember:previous] &&
-                    [[NSCharacterSet lowercaseLetterCharacterSet]
-                        characterIsMember:next];
+                acronymBoundary = [uppercaseLetters characterIsMember:previous] &&
+                    [lowercaseLetters characterIsMember:next];
             }
             if (previousLowerOrDigit || acronymBoundary) {
                 [spaced appendString:@" "];
@@ -60,7 +84,7 @@ static NSString *FLEXSearchNormalizedText(NSString *source) {
     NSArray<NSString *> *parts = [folded.lowercaseString
         componentsSeparatedByCharactersInSet:
             NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    NSMutableArray<NSString *> *tokens = [NSMutableArray array];
+    NSMutableArray<NSString *> *tokens = [NSMutableArray arrayWithCapacity:parts.count];
     for (NSString *part in parts) {
         if (part.length) {
             [tokens addObject:part];
@@ -69,92 +93,251 @@ static NSString *FLEXSearchNormalizedText(NSString *source) {
     return [tokens componentsJoinedByString:@" "];
 }
 
-static NSArray<NSString *> *FLEXSearchTokens(NSString *source) {
-    NSString *normalized = FLEXSearchNormalizedText(source);
-    return normalized.length ? [normalized componentsSeparatedByString:@" "] : @[];
+static NSArray<NSString *> *FLEXSearchTokensFromNormalized(NSString *normalized) {
+    return normalized.length
+        ? [normalized componentsSeparatedByString:@" "]
+        : @[];
 }
 
-static void FLEXAppendSearchObject(NSMutableString *target, id object) {
-    if ([object isKindOfClass:NSString.class] ||
-        [object isKindOfClass:NSNumber.class]) {
-        [target appendFormat:@" %@", object];
-    } else if ([object isKindOfClass:NSArray.class]) {
-        for (id value in object) {
-            FLEXAppendSearchObject(target, value);
+static BOOL FLEXRuntimeSurfaceMatches(FLEXHookEntry *entry,
+                                      FLEXRuntimeBrowserKind kind) {
+    return kind == FLEXRuntimeBrowserKindObjectiveC
+        ? entry.surface == FLEXHookSurfaceObjectiveC
+        : (entry.surface == FLEXHookSurfaceCImport ||
+           entry.surface == FLEXHookSurfaceCInline);
+}
+
+static void FLEXAppendSearchField(NSMutableString *raw, id value) {
+    if ([value isKindOfClass:NSString.class]) {
+        NSString *string = value;
+        if (string.length) {
+            [raw appendString:string];
+            [raw appendString:@" "];
         }
-    } else if ([object isKindOfClass:NSDictionary.class]) {
-        [(NSDictionary *)object enumerateKeysAndObjectsUsingBlock:^(id key, id value, BOOL *stop) {
-            (void)stop;
-            FLEXAppendSearchObject(target, key);
-            FLEXAppendSearchObject(target, value);
-        }];
+    } else if ([value isKindOfClass:NSNumber.class]) {
+        [raw appendString:[value stringValue]];
+        [raw appendString:@" "];
     }
 }
 
-static NSInteger FLEXTokenMatchQuality(NSString *query, NSString *candidate) {
-    if ([query isEqualToString:candidate]) {
-        return 30;
-    }
-    if (query.length >= 3 && [candidate hasPrefix:query]) {
-        return 22;
-    }
-    if (candidate.length >= 3 && [query hasPrefix:candidate]) {
-        return 16;
-    }
-    if (query.length >= 4 && [candidate containsString:query]) {
-        return 10;
-    }
-    return 0;
-}
+@interface FLEXRuntimeSearchRequest : NSObject
+@property (atomic) BOOL cancelled;
+@end
+@implementation FLEXRuntimeSearchRequest
+@end
 
-static NSInteger FLEXSearchScore(FLEXHookEntry *entry,
-                                 NSArray<NSString *> *queryTokens,
-                                 NSString *normalizedQuery) {
-    if (!queryTokens.count) {
-        return 1;
-    }
+@interface FLEXRuntimeSearchRecord : NSObject
+@property (nonatomic) FLEXHookEntry *entry;
+@property (nonatomic, copy) NSString *title;
+@property (nonatomic, copy) NSString *identifier;
+@property (nonatomic, copy) NSString *image;
+@property (nonatomic, copy) NSString *searchText;
+@end
+@implementation FLEXRuntimeSearchRecord
+@end
 
-    NSMutableString *raw = [NSMutableString string];
-    FLEXAppendSearchObject(raw, entry.title);
-    FLEXAppendSearchObject(raw, entry.identifier);
-    FLEXAppendSearchObject(raw, entry.detail);
-    FLEXAppendSearchObject(raw, entry.imageName);
-    FLEXAppendSearchObject(raw, entry.locator);
-    NSString *normalized = FLEXSearchNormalizedText(raw);
-    NSArray<NSString *> *candidateTokens = normalized.length
-        ? [normalized componentsSeparatedByString:@" "] : @[];
+@interface FLEXRuntimeSearchIndex : NSObject
+@property (nonatomic) unsigned long long revision;
+@property (nonatomic) FLEXRuntimeBrowserKind kind;
+@property (nonatomic, copy) NSArray<FLEXRuntimeSearchRecord *> *records;
+@end
+@implementation FLEXRuntimeSearchIndex
+@end
 
-    NSInteger score = 0;
-    for (NSString *queryToken in queryTokens) {
-        NSInteger best = 0;
-        for (NSString *candidate in candidateTokens) {
-            best = MAX(best, FLEXTokenMatchQuality(queryToken, candidate));
+@interface FLEXRuntimeSearchMatch : NSObject
+@property (nonatomic) FLEXRuntimeSearchRecord *record;
+@property (nonatomic) NSInteger score;
+@end
+@implementation FLEXRuntimeSearchMatch
+@end
+
+static FLEXRuntimeSearchIndex *FLEXBuildRuntimeSearchIndex(
+    NSArray<FLEXHookEntry *> *entries,
+    FLEXRuntimeBrowserKind kind,
+    unsigned long long revision,
+    FLEXRuntimeSearchRequest *request
+) {
+    NSMutableArray<FLEXRuntimeSearchRecord *> *records =
+        [NSMutableArray arrayWithCapacity:entries.count];
+    NSArray<NSString *> *locatorKeys = @[
+        @"symbol", @"class", @"selector", @"encoding", @"image", @"imageUUID"
+    ];
+
+    NSUInteger visited = 0;
+    for (FLEXHookEntry *entry in entries) {
+        if ((visited++ & 127) == 0 && request.cancelled) {
+            return nil;
         }
-        if (best == 0) {
+        if (!FLEXRuntimeSurfaceMatches(entry, kind)) {
+            continue;
+        }
+
+        @autoreleasepool {
+            NSMutableString *raw = [NSMutableString stringWithCapacity:
+                entry.title.length + entry.identifier.length +
+                entry.detail.length + entry.imageName.length + 64];
+            FLEXAppendSearchField(raw, entry.title);
+            FLEXAppendSearchField(raw, entry.identifier);
+            FLEXAppendSearchField(raw, entry.detail);
+            FLEXAppendSearchField(raw, entry.imageName);
+
+            NSDictionary *locator = entry.locator;
+            if ([locator isKindOfClass:NSDictionary.class]) {
+                for (NSString *key in locatorKeys) {
+                    FLEXAppendSearchField(raw, locator[key]);
+                }
+            }
+
+            FLEXRuntimeSearchRecord *record = [FLEXRuntimeSearchRecord new];
+            record.entry = entry;
+            record.title = FLEXSearchNormalizedText(entry.title);
+            record.identifier = FLEXSearchNormalizedText(entry.identifier);
+            record.image = FLEXSearchNormalizedText(entry.imageName);
+            record.searchText = FLEXSearchNormalizedText(raw);
+            [records addObject:record];
+        }
+    }
+
+    if (request.cancelled) {
+        return nil;
+    }
+    FLEXRuntimeSearchIndex *index = [FLEXRuntimeSearchIndex new];
+    index.revision = revision;
+    index.kind = kind;
+    index.records = records.copy;
+    return index;
+}
+
+static BOOL FLEXTextContainsSearchToken(NSString *text, NSString *token) {
+    if (!text.length || !token.length) {
+        return NO;
+    }
+    if (token.length > 1) {
+        return [text rangeOfString:token].location != NSNotFound;
+    }
+
+    NSRange remaining = NSMakeRange(0, text.length);
+    while (remaining.length) {
+        NSRange match = [text rangeOfString:token
+                                   options:0
+                                     range:remaining];
+        if (match.location == NSNotFound) {
+            return NO;
+        }
+        if (match.location == 0 || [text characterAtIndex:match.location - 1] == ' ') {
+            return YES;
+        }
+        NSUInteger next = NSMaxRange(match);
+        if (next >= text.length) {
+            return NO;
+        }
+        remaining = NSMakeRange(next, text.length - next);
+    }
+    return NO;
+}
+
+static NSInteger FLEXRuntimeSearchScore(FLEXRuntimeSearchRecord *record,
+                                        NSArray<NSString *> *queryTokens,
+                                        NSString *normalizedQuery) {
+    for (NSString *token in queryTokens) {
+        if (!FLEXTextContainsSearchToken(record.searchText, token)) {
             return -1;
         }
-        score += best;
     }
 
-    NSString *title = FLEXSearchNormalizedText(entry.title);
-    NSString *identifier = FLEXSearchNormalizedText(entry.identifier);
-    NSString *queryCompact = [normalizedQuery stringByReplacingOccurrencesOfString:@" "
-                                                                         withString:@""];
-    NSString *titleCompact = [title stringByReplacingOccurrencesOfString:@" "
-                                                               withString:@""];
-    NSString *identifierCompact = [identifier stringByReplacingOccurrencesOfString:@" "
-                                                                         withString:@""];
-    if ([title isEqualToString:normalizedQuery]) {
-        score += 240;
-    } else if ([title rangeOfString:normalizedQuery].location != NSNotFound) {
-        score += 120;
-    } else if (queryCompact.length && [titleCompact containsString:queryCompact]) {
-        score += 90;
+    NSInteger score = 0;
+    if ([record.title isEqualToString:normalizedQuery]) {
+        score += 500;
+    } else if ([record.title hasPrefix:normalizedQuery]) {
+        score += 320;
+    } else if ([record.title containsString:normalizedQuery]) {
+        score += 180;
     }
-    if (queryCompact.length && [identifierCompact containsString:queryCompact]) {
-        score += 70;
+    if ([record.identifier containsString:normalizedQuery]) {
+        score += 110;
+    }
+    if ([record.image containsString:normalizedQuery]) {
+        score += 60;
+    }
+
+    for (NSString *token in queryTokens) {
+        if ([record.title hasPrefix:token]) {
+            score += 45;
+        } else if ([record.title containsString:token]) {
+            score += 20;
+        }
     }
     return score;
+}
+
+static NSUInteger FLEXRuntimeSearchResultLimit(NSString *normalizedQuery) {
+    NSString *compact = [normalizedQuery stringByReplacingOccurrencesOfString:@" "
+                                                                    withString:@""];
+    if (compact.length <= 1) {
+        return 256;
+    }
+    if (compact.length == 2) {
+        return 1024;
+    }
+    return 4096;
+}
+
+static NSArray<FLEXHookEntry *> *FLEXSearchRuntimeIndex(
+    FLEXRuntimeSearchIndex *index,
+    NSString *normalizedQuery,
+    FLEXRuntimeSearchRequest *request,
+    BOOL *truncated
+) {
+    NSArray<NSString *> *queryTokens =
+        FLEXSearchTokensFromNormalized(normalizedQuery);
+    NSUInteger limit = FLEXRuntimeSearchResultLimit(normalizedQuery);
+    NSMutableArray<FLEXRuntimeSearchMatch *> *matches =
+        [NSMutableArray arrayWithCapacity:MIN(limit, index.records.count)];
+
+    NSUInteger visited = 0;
+    BOOL didTruncate = NO;
+    for (FLEXRuntimeSearchRecord *record in index.records) {
+        if ((visited++ & 127) == 0 && request.cancelled) {
+            return nil;
+        }
+        NSInteger score = FLEXRuntimeSearchScore(record, queryTokens, normalizedQuery);
+        if (score < 0) {
+            continue;
+        }
+        if (matches.count >= limit) {
+            didTruncate = YES;
+            break;
+        }
+        FLEXRuntimeSearchMatch *match = [FLEXRuntimeSearchMatch new];
+        match.record = record;
+        match.score = score;
+        [matches addObject:match];
+    }
+
+    if (request.cancelled) {
+        return nil;
+    }
+    [matches sortUsingComparator:^NSComparisonResult(
+        FLEXRuntimeSearchMatch *left,
+        FLEXRuntimeSearchMatch *right
+    ) {
+        if (left.score != right.score) {
+            return left.score > right.score
+                ? NSOrderedAscending : NSOrderedDescending;
+        }
+        return [left.record.entry.title
+            localizedCaseInsensitiveCompare:right.record.entry.title];
+    }];
+
+    NSMutableArray<FLEXHookEntry *> *entries =
+        [NSMutableArray arrayWithCapacity:matches.count];
+    for (FLEXRuntimeSearchMatch *match in matches) {
+        [entries addObject:match.record.entry];
+    }
+    if (truncated) {
+        *truncated = didTruncate;
+    }
+    return entries.copy;
 }
 
 static UIFont *FLEXScaledRuntimeFont(CGFloat pointSize,
@@ -186,6 +369,16 @@ static UIFont *FLEXScaledRuntimeFont(CGFloat pointSize,
             @selector(tableView:cellForRowAtIndexPath:),
             @selector(af_search_tableView:cellForRowAtIndexPath:)
         );
+
+        gFLEXRuntimeSearchRevisionObserver = [NSNotificationCenter.defaultCenter
+            addObserverForName:FLEXHookRegistryDidChangeNotification
+                        object:nil
+                         queue:nil
+                    usingBlock:^(__unused NSNotification *notification) {
+            atomic_fetch_add_explicit(&gFLEXRuntimeSearchRevision,
+                                      1,
+                                      memory_order_relaxed);
+        }];
     });
 }
 
@@ -205,6 +398,14 @@ static UIFont *FLEXScaledRuntimeFont(CGFloat pointSize,
 }
 
 - (void)af_tokenizedReloadEntries {
+    if (!NSThread.isMainThread) {
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf af_tokenizedReloadEntries];
+        });
+        return;
+    }
+
     FLEXRuntimeBrowserKind kind = FLEXRuntimeBrowserKindObjectiveC;
     UISearchController *search = nil;
     @try {
@@ -217,50 +418,125 @@ static UIFont *FLEXScaledRuntimeFont(CGFloat pointSize,
 
     NSString *query = search.searchBar.text ?: @"";
     NSString *normalizedQuery = FLEXSearchNormalizedText(query);
-    NSArray<NSString *> *queryTokens = FLEXSearchTokens(query);
-    NSMutableArray<NSDictionary *> *ranked = [NSMutableArray array];
+    unsigned long long revision = atomic_load_explicit(
+        &gFLEXRuntimeSearchRevision,
+        memory_order_relaxed
+    );
 
-    for (FLEXHookEntry *entry in FLEXHookRegistry.sharedRegistry.entries) {
-        BOOL surfaceMatches = kind == FLEXRuntimeBrowserKindObjectiveC
-            ? entry.surface == FLEXHookSurfaceObjectiveC
-            : (entry.surface == FLEXHookSurfaceCImport ||
-               entry.surface == FLEXHookSurfaceCInline);
-        if (!surfaceMatches) {
-            continue;
-        }
-        NSInteger score = FLEXSearchScore(entry, queryTokens, normalizedQuery);
-        if (score < 0) {
-            continue;
-        }
-        [ranked addObject:@{ @"entry": entry, @"score": @(score) }];
+    FLEXRuntimeSearchRequest *previous = objc_getAssociatedObject(
+        self, kFLEXRuntimeSearchRequestKey);
+    previous.cancelled = YES;
+
+    FLEXRuntimeSearchRequest *request = [FLEXRuntimeSearchRequest new];
+    objc_setAssociatedObject(self,
+                             kFLEXRuntimeSearchRequestKey,
+                             request,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    FLEXRuntimeSearchIndex *cachedIndex = objc_getAssociatedObject(
+        self, kFLEXRuntimeSearchIndexKey);
+    BOOL cacheValid = cachedIndex &&
+        cachedIndex.revision == revision &&
+        cachedIndex.kind == kind;
+
+    if (normalizedQuery.length && @available(iOS 26.0, *)) {
+        self.navigationItem.subtitle = cacheValid
+            ? @"Searching…"
+            : @"Indexing runtime symbols…";
     }
 
-    [ranked sortUsingComparator:^NSComparisonResult(NSDictionary *left,
-                                                     NSDictionary *right) {
-        NSInteger leftScore = [left[@"score"] integerValue];
-        NSInteger rightScore = [right[@"score"] integerValue];
-        if (leftScore != rightScore) {
-            return leftScore > rightScore ? NSOrderedAscending : NSOrderedDescending;
+    NSTimeInterval debounce = normalizedQuery.length ? 0.22 : 0.0;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(debounce * NSEC_PER_SEC)),
+                   FLEXRuntimeSearchQueue(), ^{
+        if (request.cancelled) {
+            return;
         }
-        FLEXHookEntry *leftEntry = left[@"entry"];
-        FLEXHookEntry *rightEntry = right[@"entry"];
-        return [leftEntry.title localizedCaseInsensitiveCompare:rightEntry.title];
-    }];
 
-    NSMutableArray<FLEXHookEntry *> *entries =
-        [NSMutableArray arrayWithCapacity:ranked.count];
-    for (NSDictionary *record in ranked) {
-        [entries addObject:record[@"entry"]];
-    }
-    @try {
-        [self setValue:entries.copy forKey:@"filteredEntries"];
-    } @catch (__unused NSException *exception) {
-        [self af_tokenizedReloadEntries];
-        return;
-    }
-    [self.tableView reloadData];
-    [self updateNavigationStatus];
-    [self updateUnavailableConfiguration];
+        FLEXRuntimeSearchIndex *index = cacheValid ? cachedIndex : nil;
+        NSArray<FLEXHookEntry *> *results = nil;
+        BOOL truncated = NO;
+
+        if (!normalizedQuery.length) {
+            NSArray<FLEXHookEntry *> *snapshot =
+                FLEXHookRegistry.sharedRegistry.entries;
+            NSMutableArray<FLEXHookEntry *> *visible =
+                [NSMutableArray arrayWithCapacity:snapshot.count];
+            NSUInteger visited = 0;
+            for (FLEXHookEntry *entry in snapshot) {
+                if ((visited++ & 255) == 0 && request.cancelled) {
+                    return;
+                }
+                if (FLEXRuntimeSurfaceMatches(entry, kind)) {
+                    [visible addObject:entry];
+                }
+            }
+            results = visible.copy;
+        } else {
+            if (!index) {
+                NSArray<FLEXHookEntry *> *snapshot =
+                    FLEXHookRegistry.sharedRegistry.entries;
+                index = FLEXBuildRuntimeSearchIndex(
+                    snapshot,
+                    kind,
+                    revision,
+                    request
+                );
+                if (!index || request.cancelled) {
+                    return;
+                }
+            }
+            results = FLEXSearchRuntimeIndex(
+                index,
+                normalizedQuery,
+                request,
+                &truncated
+            );
+            if (!results || request.cancelled) {
+                return;
+            }
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self || request.cancelled ||
+                objc_getAssociatedObject(self, kFLEXRuntimeSearchRequestKey) != request) {
+                return;
+            }
+
+            unsigned long long currentRevision = atomic_load_explicit(
+                &gFLEXRuntimeSearchRevision,
+                memory_order_relaxed
+            );
+            if (currentRevision != revision) {
+                [self af_tokenizedReloadEntries];
+                return;
+            }
+
+            if (index) {
+                objc_setAssociatedObject(self,
+                                         kFLEXRuntimeSearchIndexKey,
+                                         index,
+                                         OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }
+            @try {
+                [self setValue:results forKey:@"filteredEntries"];
+            } @catch (__unused NSException *exception) {
+                [self af_tokenizedReloadEntries];
+                return;
+            }
+
+            [self.tableView reloadData];
+            [self updateNavigationStatus];
+            [self updateUnavailableConfiguration];
+            if (truncated && @available(iOS 26.0, *)) {
+                self.navigationItem.subtitle = [NSString stringWithFormat:
+                    @"Showing first %lu matches · type more",
+                    (unsigned long)results.count];
+            }
+        });
+    });
 }
 
 - (UITableViewCell *)af_search_tableView:(UITableView *)tableView
