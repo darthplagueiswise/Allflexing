@@ -77,6 +77,7 @@ ALLFLEXING_SDK_SEARCH_PATHS := \
 $(TWEAK_NAME)_CFLAGS += -fobjc-arc $(IMPORTS) $(ALLFLEXING_TARGET_FLAGS)
 $(TWEAK_NAME)_CFLAGS += $(ALLFLEXING_SDK_SEARCH_PATHS)
 $(TWEAK_NAME)_CFLAGS += -Wno-unsupported-availability-guard -Wno-deprecated-declarations
+$(TWEAK_NAME)_CFLAGS += -Wno-unguarded-availability-new
 $(TWEAK_NAME)_CFLAGS += -Wno-nullability-completeness -Wno-unused-function
 $(TWEAK_NAME)_CFLAGS += -Wno-unused-but-set-variable -Wno-gnu-folding-constant
 $(TWEAK_NAME)_CCFLAGS += -std=gnu++11
