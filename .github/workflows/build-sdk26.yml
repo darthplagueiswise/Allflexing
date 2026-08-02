@@ -78,6 +78,11 @@ jobs:
           cd main
           bash scripts/validate-runtime-class-enumeration.sh
 
+      - name: Validate safe launch and persistence
+        run: |
+          cd main
+          bash scripts/validate-safe-launch.sh
+
       - name: Validate runtime search semantics
         run: |
           cd main
