@@ -1,6 +1,8 @@
 #import "FLEXHookPersistence.h"
 
 NSNotificationName const FLEXHookFlagsDidChangeNotification = @"FLEXHookFlagsDidChangeNotification";
+const char *FLEXHookPersistenceReloadABIVersion =
+    "AllFLEXing post-mirror flag cache reload ABI 1";
 
 @interface FLEXHookFlag ()
 @property (nonatomic, copy, readwrite) NSString *identifier;
@@ -165,6 +167,34 @@ NSNotificationName const FLEXHookFlagsDidChangeNotification = @"FLEXHookFlagsDid
     } else {
         dispatch_async(dispatch_get_main_queue(), notification);
     }
+}
+
+- (void)reloadPersistedValues {
+    NSMutableArray<NSString *> *changedIdentifiers = [NSMutableArray array];
+    @synchronized (self) {
+        for (FLEXHookFlag *flag in self.mutableFlags) {
+            NSString *storageKey = [self storageKeyForIdentifier:flag.identifier];
+            id persisted = [self.defaults objectForKey:storageKey];
+            BOOL value = persisted ? [persisted boolValue] : flag.defaultValue;
+            NSNumber *previous = self.cachedValues[flag.identifier];
+            if (!previous || previous.boolValue != value) {
+                self.cachedValues[flag.identifier] = @(value);
+                [changedIdentifiers addObject:flag.identifier];
+            }
+        }
+    }
+
+    if (!changedIdentifiers.count) {
+        return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+        for (NSString *identifier in changedIdentifiers) {
+            [NSNotificationCenter.defaultCenter
+                postNotificationName:FLEXHookFlagsDidChangeNotification
+                              object:self
+                            userInfo:@{ @"identifier": identifier }];
+        }
+    });
 }
 
 - (NSArray<FLEXHookFlag *> *)registeredFlags {
