@@ -1,33 +1,18 @@
 #import "FLEXRuntimeBrowserController.h"
 
+#import "FLEXCHookEngine.h"
 #import "FLEXHookRegistry.h"
-#import "FLEXRuntimeScanner.h"
+#import "FLEXRuntimeImageSession.h"
 
 #import <objc/runtime.h>
 
 const char *FLEXRuntimeSearchABIVersion =
-    "AllFLEXing selected-image complete-snapshot prefix-index search ABI 5";
+    "AllFLEXing selected-image complete-snapshot prefix-index search ABI 6";
 
-static const void *kFLEXRuntimeSearchScopeKey = &kFLEXRuntimeSearchScopeKey;
+static const void *kFLEXRuntimeSelectedImageKey = &kFLEXRuntimeSelectedImageKey;
+static const void *kFLEXRuntimeImageSessionKey = &kFLEXRuntimeImageSessionKey;
 static const void *kFLEXRuntimeSearchIndexKey = &kFLEXRuntimeSearchIndexKey;
 static const void *kFLEXRuntimeSearchRequestKey = &kFLEXRuntimeSearchRequestKey;
-static const void *kFLEXRuntimeScanRequestKey = &kFLEXRuntimeScanRequestKey;
-
-typedef NS_ENUM(NSInteger, FLEXRuntimeSearchScopeKind) {
-    FLEXRuntimeSearchScopeMainExecutable = 0,
-    FLEXRuntimeSearchScopeExactImage,
-    FLEXRuntimeSearchScopeHostImages,
-    FLEXRuntimeSearchScopeAllLoadedImages,
-};
-
-@interface FLEXRuntimeSearchScope : NSObject
-@property (nonatomic) FLEXRuntimeSearchScopeKind kind;
-@property (nonatomic, copy) NSString *imagePath;
-@property (nonatomic, copy) NSString *title;
-@property (nonatomic, copy) NSString *cacheKey;
-@end
-@implementation FLEXRuntimeSearchScope
-@end
 
 @interface FLEXRuntimeSearchRequest : NSObject
 @property (atomic) BOOL cancelled;
@@ -37,13 +22,12 @@ typedef NS_ENUM(NSInteger, FLEXRuntimeSearchScopeKind) {
 
 @interface FLEXRuntimeSearchRecord : NSObject
 @property (nonatomic) FLEXHookEntry *entry;
-@property (nonatomic, copy) NSArray<NSString *> *tokens;
 @end
 @implementation FLEXRuntimeSearchRecord
 @end
 
 @interface FLEXRuntimeSearchIndex : NSObject
-@property (nonatomic, copy) NSString *scopeKey;
+@property (nonatomic, copy) NSString *imageUUID;
 @property (nonatomic) FLEXRuntimeBrowserKind kind;
 @property (nonatomic, copy) NSArray<FLEXRuntimeSearchRecord *> *records;
 @property (nonatomic, copy) NSArray<FLEXHookEntry *> *allEntries;
@@ -148,60 +132,92 @@ static void FLEXAppendSearchField(NSMutableString *raw, id value) {
     }
 }
 
-static FLEXRuntimeSearchScope *FLEXDefaultRuntimeScope(void) {
-    FLEXRuntimeSearchScope *scope = [FLEXRuntimeSearchScope new];
-    scope.kind = FLEXRuntimeSearchScopeMainExecutable;
-    scope.imagePath = NSBundle.mainBundle.executablePath ?: @"";
-    scope.title = @"Main executable";
-    scope.cacheKey = [@"main|" stringByAppendingString:scope.imagePath];
-    return scope;
+static FLEXRuntimeImageDescriptor *FLEXDefaultImage(void) {
+    NSArray<FLEXRuntimeImageDescriptor *> *images =
+        FLEXRuntimeImageSession.loadedAppImages;
+    for (FLEXRuntimeImageDescriptor *image in images) {
+        if (image.mainExecutable) {
+            return image;
+        }
+    }
+    return images.firstObject;
 }
 
-static FLEXRuntimeSearchScope *FLEXScopeForController(id controller) {
-    FLEXRuntimeSearchScope *scope = objc_getAssociatedObject(
+static FLEXRuntimeImageDescriptor *FLEXSelectedImage(id controller) {
+    FLEXRuntimeImageDescriptor *image = objc_getAssociatedObject(
         controller,
-        kFLEXRuntimeSearchScopeKey
+        kFLEXRuntimeSelectedImageKey
     );
-    if (!scope) {
-        scope = FLEXDefaultRuntimeScope();
-        objc_setAssociatedObject(
-            controller,
-            kFLEXRuntimeSearchScopeKey,
-            scope,
-            OBJC_ASSOCIATION_RETAIN_NONATOMIC
-        );
+    if (!image) {
+        image = FLEXDefaultImage();
+        if (image) {
+            objc_setAssociatedObject(
+                controller,
+                kFLEXRuntimeSelectedImageKey,
+                image,
+                OBJC_ASSOCIATION_RETAIN_NONATOMIC
+            );
+        }
     }
-    return scope;
+    return image;
 }
 
-static NSArray<NSString *> *FLEXPathsForScope(FLEXRuntimeSearchScope *scope) {
-    switch (scope.kind) {
-        case FLEXRuntimeSearchScopeMainExecutable:
-        case FLEXRuntimeSearchScopeExactImage:
-            return scope.imagePath.length ? @[scope.imagePath] : @[];
-        case FLEXRuntimeSearchScopeHostImages:
-            return [FLEXRuntimeScanner
-                loadedImagePathsIncludingSystemImages:NO];
-        case FLEXRuntimeSearchScopeAllLoadedImages:
-            return [FLEXRuntimeScanner
-                loadedImagePathsIncludingSystemImages:YES];
+static BOOL FLEXEntryIsVerifiedForBrowser(FLEXHookEntry *entry,
+                                          FLEXRuntimeBrowserKind kind) {
+    if (!entry.available || entry.stale) {
+        return NO;
     }
+    if (kind == FLEXRuntimeBrowserKindObjectiveC) {
+        return entry.surface == FLEXHookSurfaceObjectiveC &&
+               entry.backend == FLEXHookBackendObjectiveCElleKit &&
+               entry.abi != FLEXHookABIUnknown;
+    }
+
+    if (entry.surface == FLEXHookSurfaceCImport) {
+        return entry.backend == FLEXHookBackendFishhook &&
+               [entry.locator[@"bindSlots"] unsignedIntegerValue] > 0;
+    }
+    if (entry.surface == FLEXHookSurfaceCInline) {
+        if (entry.backend != FLEXHookBackendInlineElleKit ||
+            ![entry.locator[@"source"] isEqualToString:@"mach-o-symbol-table"]) {
+            return NO;
+        }
+        NSNumber *recordedAddress = [entry.locator[@"address"]
+            isKindOfClass:NSNumber.class] ? entry.locator[@"address"] : nil;
+        NSString *symbol = [entry.locator[@"symbol"]
+            isKindOfClass:NSString.class] ? entry.locator[@"symbol"] : nil;
+        void *resolved = [FLEXCHookEngine resolveSymbol:symbol];
+        return recordedAddress.unsignedLongLongValue != 0 &&
+            resolved == (void *)(uintptr_t)recordedAddress.unsignedLongLongValue;
+    }
+    return NO;
+}
+
+static NSArray<FLEXHookEntry *> *FLEXVerifiedEntries(
+    FLEXRuntimeImageSnapshot *snapshot
+) {
+    NSMutableArray<FLEXHookEntry *> *verified = [NSMutableArray array];
+    for (FLEXHookEntry *entry in snapshot.entries) {
+        if (FLEXEntryIsVerifiedForBrowser(entry, snapshot.kind)) {
+            [verified addObject:entry];
+        }
+    }
+    return verified.copy;
 }
 
 static FLEXRuntimeSearchIndex *FLEXBuildSearchIndex(
     NSArray<FLEXHookEntry *> *entries,
     FLEXRuntimeBrowserKind kind,
-    NSString *scopeKey,
+    NSString *imageUUID,
     FLEXRuntimeSearchRequest *request
 ) {
     NSArray<FLEXHookEntry *> *sorted = [entries sortedArrayUsingComparator:^NSComparisonResult(
         FLEXHookEntry *left,
         FLEXHookEntry *right
     ) {
-        NSComparisonResult imageResult =
-            [left.imageName localizedCaseInsensitiveCompare:right.imageName];
-        if (imageResult != NSOrderedSame) {
-            return imageResult;
+        if (left.surface != right.surface) {
+            return left.surface < right.surface
+                ? NSOrderedAscending : NSOrderedDescending;
         }
         return [left.title localizedCaseInsensitiveCompare:right.title];
     }];
@@ -212,7 +228,8 @@ static FLEXRuntimeSearchIndex *FLEXBuildSearchIndex(
         [NSMutableDictionary dictionary];
     NSArray<NSString *> *locatorKeys = @[
         @"symbol", @"class", @"selector", @"encoding",
-        @"image", @"imageUUID", @"backendEvidence", @"abiEvidence"
+        @"image", @"imageUUID", @"backendEvidence", @"abiEvidence",
+        @"source"
     ];
 
     NSUInteger recordIndex = 0;
@@ -235,7 +252,6 @@ static FLEXRuntimeSearchIndex *FLEXBuildSearchIndex(
             NSArray<NSString *> *tokens = FLEXSearchTokens(raw);
             FLEXRuntimeSearchRecord *record = [FLEXRuntimeSearchRecord new];
             record.entry = entry;
-            record.tokens = tokens;
             [records addObject:record];
 
             NSSet<NSString *> *uniqueTokens = [NSSet setWithArray:tokens];
@@ -278,7 +294,7 @@ static FLEXRuntimeSearchIndex *FLEXBuildSearchIndex(
     }];
 
     FLEXRuntimeSearchIndex *index = [FLEXRuntimeSearchIndex new];
-    index.scopeKey = scopeKey;
+    index.imageUUID = imageUUID ?: @"";
     index.kind = kind;
     index.records = records.copy;
     index.allEntries = sorted;
@@ -349,13 +365,22 @@ static void FLEXSetRuntimeLoading(UIViewController *controller,
     }
 }
 
+static void FLEXSetRuntimeFailure(UIViewController *controller,
+                                  NSString *message) {
+    if (@available(iOS 17.0, *)) {
+        UIContentUnavailableConfiguration *configuration =
+            [UIContentUnavailableConfiguration emptyConfiguration];
+        configuration.image = [UIImage systemImageNamed:@"exclamationmark.triangle"];
+        configuration.text = @"Runtime image scan failed";
+        configuration.secondaryText = message ?: @"The selected image could not be scanned.";
+        controller.contentUnavailableConfiguration = configuration;
+    }
+}
+
 static void FLEXRemoveManualSymbolButton(FLEXRuntimeBrowserController *controller) {
     NSMutableArray<UIBarButtonItem *> *items =
         [controller.navigationItem.rightBarButtonItems mutableCopy];
-    if (!items.count) {
-        return;
-    }
-    NSIndexSet *manualIndexes = [items indexesOfObjectsPassingTest:^BOOL(
+    NSIndexSet *indexes = [items indexesOfObjectsPassingTest:^BOOL(
         UIBarButtonItem *item,
         NSUInteger index,
         BOOL *stop
@@ -364,8 +389,8 @@ static void FLEXRemoveManualSymbolButton(FLEXRuntimeBrowserController *controlle
         (void)stop;
         return item.action == NSSelectorFromString(@"addManualSymbol:");
     }];
-    if (manualIndexes.count) {
-        [items removeObjectsAtIndexes:manualIndexes];
+    if (indexes.count) {
+        [items removeObjectsAtIndexes:indexes];
         controller.navigationItem.rightBarButtonItems = items;
     }
 }
@@ -403,45 +428,44 @@ static void FLEXRemoveManualSymbolButton(FLEXRuntimeBrowserController *controlle
 }
 
 - (void)af_image_viewDidLoad {
-    FLEXRuntimeSearchScope *scope = FLEXScopeForController(self);
+    (void)FLEXSelectedImage(self);
     [self af_image_viewDidLoad];
     FLEXRemoveManualSymbolButton(self);
     self.tableView.rowHeight = UITableViewAutomaticDimension;
-    self.tableView.estimatedRowHeight = 76.0;
+    self.tableView.estimatedRowHeight = 78.0;
 
+    FLEXRuntimeImageDescriptor *image = FLEXSelectedImage(self);
     @try {
         UIBarButtonItem *scopeItem = [self valueForKey:@"scopeItem"];
-        scopeItem.title = scope.title;
+        scopeItem.title = image.displayName ?: @"Select image";
         scopeItem.menu = [self af_image_scopeMenu];
     } @catch (__unused NSException *exception) {
     }
 }
 
 - (void)af_image_reloadScan {
+    FLEXRuntimeImageSession *oldSession = objc_getAssociatedObject(
+        self,
+        kFLEXRuntimeImageSessionKey
+    );
+    [oldSession cancel];
     FLEXRuntimeSearchRequest *oldSearch = objc_getAssociatedObject(
         self,
         kFLEXRuntimeSearchRequestKey
     );
     oldSearch.cancelled = YES;
-    FLEXRuntimeSearchRequest *oldScan = objc_getAssociatedObject(
-        self,
-        kFLEXRuntimeScanRequestKey
-    );
-    oldScan.cancelled = YES;
-
-    FLEXRuntimeSearchRequest *scanRequest = [FLEXRuntimeSearchRequest new];
-    objc_setAssociatedObject(
-        self,
-        kFLEXRuntimeScanRequestKey,
-        scanRequest,
-        OBJC_ASSOCIATION_RETAIN_NONATOMIC
-    );
     objc_setAssociatedObject(
         self,
         kFLEXRuntimeSearchIndexKey,
         nil,
         OBJC_ASSOCIATION_RETAIN_NONATOMIC
     );
+
+    FLEXRuntimeImageDescriptor *image = FLEXSelectedImage(self);
+    if (!image) {
+        FLEXSetRuntimeFailure(self, @"No app Mach-O image is currently loaded.");
+        return;
+    }
 
     FLEXRuntimeBrowserKind kind = FLEXRuntimeBrowserKindObjectiveC;
     UISearchController *search = nil;
@@ -459,71 +483,83 @@ static void FLEXRemoveManualSymbolButton(FLEXRuntimeBrowserController *controlle
         return;
     }
 
-    FLEXRuntimeSearchScope *scope = FLEXScopeForController(self);
-    NSArray<NSString *> *imagePaths = FLEXPathsForScope(scope);
+    FLEXRuntimeImageSession *session = [[FLEXRuntimeImageSession alloc]
+        initWithImage:image];
+    objc_setAssociatedObject(
+        self,
+        kFLEXRuntimeImageSessionKey,
+        session,
+        OBJC_ASSOCIATION_RETAIN_NONATOMIC
+    );
+
     reloadItem.enabled = NO;
     scopeItem.enabled = NO;
     [self.tableView reloadData];
-    [self updateNavigationStatus];
     FLEXSetRuntimeLoading(
         self,
         search,
         YES,
-        @"Scanning selected runtime image",
-        [NSString stringWithFormat:@"%@ · reading complete metadata before search",
-            scope.title]
+        @"Scanning selected Mach-O image",
+        [NSString stringWithFormat:@"%@ · full scan before search",
+            image.displayName]
     );
 
     __weak typeof(self) weakSelf = self;
-    FLEXRuntimeScanProgress progress = ^(
-        NSString *stage,
-        NSString *imagePath,
-        NSUInteger completed,
-        NSUInteger total
-    ) {
+    [session scanKind:kind
+             progress:^(NSString *phase, NSUInteger completed, NSUInteger total) {
         __strong typeof(weakSelf) self = weakSelf;
-        if (!self || scanRequest.cancelled ||
-            objc_getAssociatedObject(self, kFLEXRuntimeScanRequestKey) != scanRequest) {
+        if (!self || session.cancelled ||
+            objc_getAssociatedObject(self, kFLEXRuntimeImageSessionKey) != session) {
             return;
         }
-        NSString *image = imagePath.lastPathComponent ?: scope.title;
         NSString *detail = total
-            ? [NSString stringWithFormat:@"%@ · %lu/%lu images",
-                image,
-                (unsigned long)MIN(completed + 1, total),
+            ? [NSString stringWithFormat:@"%@ · %lu/%lu",
+                image.displayName,
+                (unsigned long)completed,
                 (unsigned long)total]
-            : image;
-        FLEXSetRuntimeLoading(self, search, YES, stage, detail);
+            : image.displayName;
+        FLEXSetRuntimeLoading(self, search, YES, phase, detail);
         if (@available(iOS 26.0, *)) {
             self.navigationItem.subtitle = [NSString stringWithFormat:@"%@ · %@",
-                stage,
-                image];
+                image.displayName,
+                phase];
         }
-    };
-
-    FLEXRuntimeScanCompletion completion = ^(NSArray<FLEXHookEntry *> *entries) {
+    }
+           completion:^(FLEXRuntimeImageSnapshot *snapshot, NSError *error) {
         __strong typeof(weakSelf) self = weakSelf;
-        if (!self || scanRequest.cancelled ||
-            objc_getAssociatedObject(self, kFLEXRuntimeScanRequestKey) != scanRequest) {
+        if (!self || session.cancelled ||
+            objc_getAssociatedObject(self, kFLEXRuntimeImageSessionKey) != session) {
+            return;
+        }
+        if (!snapshot) {
+            @try {
+                [self setValue:@NO forKey:@"scanning"];
+            } @catch (__unused NSException *exception) {
+            }
+            reloadItem.enabled = YES;
+            scopeItem.enabled = YES;
+            search.searchBar.userInteractionEnabled = NO;
+            FLEXSetRuntimeFailure(self, error.localizedDescription);
             return;
         }
 
+        NSArray<FLEXHookEntry *> *verified = FLEXVerifiedEntries(snapshot);
         FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
         NSMutableArray<FLEXHookEntry *> *resolved = [NSMutableArray array];
         if (kind == FLEXRuntimeBrowserKindObjectiveC) {
             [resolved addObjectsFromArray:[registry
-                mergeDiscoveredEntries:entries
+                mergeDiscoveredEntries:verified
                                surface:FLEXHookSurfaceObjectiveC
-                            imagePaths:imagePaths]];
+                            imagePaths:@[image.path]]];
         } else {
-            NSPredicate *importPredicate = [NSPredicate predicateWithBlock:^BOOL(
+            NSPredicate *imports = [NSPredicate predicateWithBlock:^BOOL(
                 FLEXHookEntry *entry,
                 NSDictionary *bindings
             ) {
                 (void)bindings;
                 return entry.surface == FLEXHookSurfaceCImport;
             }];
-            NSPredicate *inlinePredicate = [NSPredicate predicateWithBlock:^BOOL(
+            NSPredicate *inlineTargets = [NSPredicate predicateWithBlock:^BOOL(
                 FLEXHookEntry *entry,
                 NSDictionary *bindings
             ) {
@@ -531,13 +567,13 @@ static void FLEXRemoveManualSymbolButton(FLEXRuntimeBrowserController *controlle
                 return entry.surface == FLEXHookSurfaceCInline;
             }];
             [resolved addObjectsFromArray:[registry
-                mergeDiscoveredEntries:[entries filteredArrayUsingPredicate:importPredicate]
+                mergeDiscoveredEntries:[verified filteredArrayUsingPredicate:imports]
                                surface:FLEXHookSurfaceCImport
-                            imagePaths:imagePaths]];
+                            imagePaths:@[image.path]]];
             [resolved addObjectsFromArray:[registry
-                mergeDiscoveredEntries:[entries filteredArrayUsingPredicate:inlinePredicate]
+                mergeDiscoveredEntries:[verified filteredArrayUsingPredicate:inlineTargets]
                                surface:FLEXHookSurfaceCInline
-                            imagePaths:imagePaths]];
+                            imagePaths:@[image.path]]];
         }
 
         FLEXRuntimeSearchRequest *indexRequest = [FLEXRuntimeSearchRequest new];
@@ -551,17 +587,17 @@ static void FLEXRemoveManualSymbolButton(FLEXRuntimeBrowserController *controlle
             self,
             search,
             YES,
-            @"Indexing complete snapshot",
-            [NSString stringWithFormat:@"%lu verified target(s) · %@",
+            @"Indexing verified runtime targets",
+            [NSString stringWithFormat:@"%lu target(s) in %@",
                 (unsigned long)resolved.count,
-                scope.title]
+                image.displayName]
         );
 
         dispatch_async(FLEXRuntimeSearchQueue(), ^{
             FLEXRuntimeSearchIndex *index = FLEXBuildSearchIndex(
                 resolved.copy,
                 kind,
-                scope.cacheKey,
+                image.uuid,
                 indexRequest
             );
             if (!index || indexRequest.cancelled) {
@@ -569,8 +605,8 @@ static void FLEXRemoveManualSymbolButton(FLEXRuntimeBrowserController *controlle
             }
             dispatch_async(dispatch_get_main_queue(), ^{
                 __strong typeof(weakSelf) self = weakSelf;
-                if (!self || scanRequest.cancelled || indexRequest.cancelled ||
-                    objc_getAssociatedObject(self, kFLEXRuntimeScanRequestKey) != scanRequest) {
+                if (!self || session.cancelled || indexRequest.cancelled ||
+                    objc_getAssociatedObject(self, kFLEXRuntimeImageSessionKey) != session) {
                     return;
                 }
                 objc_setAssociatedObject(
@@ -588,31 +624,16 @@ static void FLEXRemoveManualSymbolButton(FLEXRuntimeBrowserController *controlle
                 scopeItem.enabled = YES;
                 search.searchBar.userInteractionEnabled = YES;
                 search.searchBar.placeholder = [NSString stringWithFormat:
-                    @"Search %lu verified %@ in %@",
+                    @"Search %lu verified target(s) in %@",
                     (unsigned long)index.allEntries.count,
-                    kind == FLEXRuntimeBrowserKindObjectiveC ? @"methods" : @"functions",
-                    scope.title];
+                    image.displayName];
                 FLEXSetRuntimeLoading(self, search, NO, nil, nil);
                 [self.tableView reloadData];
                 [self updateNavigationStatus];
                 [self updateUnavailableConfiguration];
             });
         });
-    };
-
-    if (!imagePaths.count) {
-        completion(@[]);
-    } else if (kind == FLEXRuntimeBrowserKindObjectiveC) {
-        [FLEXRuntimeScanner
-            scanObjectiveCRuntimeInImagePaths:imagePaths
-                                     progress:progress
-                                   completion:completion];
-    } else {
-        [FLEXRuntimeScanner
-            scanCFunctionsInImagePaths:imagePaths
-                               progress:progress
-                             completion:completion];
-    }
+    }];
 }
 
 - (void)af_image_reloadEntries {
@@ -654,7 +675,7 @@ static void FLEXRemoveManualSymbolButton(FLEXRuntimeBrowserController *controlle
     );
 
     NSString *query = search.searchBar.text ?: @"";
-    NSTimeInterval debounce = query.length ? 0.12 : 0.0;
+    NSTimeInterval debounce = query.length ? 0.10 : 0.0;
     __weak typeof(self) weakSelf = self;
     dispatch_after(
         dispatch_time(DISPATCH_TIME_NOW, (int64_t)(debounce * NSEC_PER_SEC)),
@@ -689,111 +710,45 @@ static void FLEXRemoveManualSymbolButton(FLEXRuntimeBrowserController *controlle
 
 - (UIMenu *)af_image_scopeMenu {
     __weak typeof(self) weakSelf = self;
-    FLEXRuntimeSearchScope *selected = FLEXScopeForController(self);
+    FLEXRuntimeImageDescriptor *selected = FLEXSelectedImage(self);
+    NSMutableArray<UIMenuElement *> *images = [NSMutableArray array];
 
-    void (^selectScope)(FLEXRuntimeSearchScope *) = ^(FLEXRuntimeSearchScope *scope) {
-        __strong typeof(weakSelf) self = weakSelf;
-        if (!self) {
-            return;
-        }
-        objc_setAssociatedObject(
-            self,
-            kFLEXRuntimeSearchScopeKey,
-            scope,
-            OBJC_ASSOCIATION_RETAIN_NONATOMIC
-        );
-        @try {
-            UIBarButtonItem *scopeItem = [self valueForKey:@"scopeItem"];
-            scopeItem.title = scope.title;
-            scopeItem.menu = [self af_image_scopeMenu];
-        } @catch (__unused NSException *exception) {
-        }
-        [self reloadScan];
-    };
-
-    NSMutableArray<UIMenuElement *> *children = [NSMutableArray array];
-    FLEXRuntimeSearchScope *main = FLEXDefaultRuntimeScope();
-    UIAction *mainAction = [UIAction
-        actionWithTitle:@"Main executable"
-                  image:[UIImage systemImageNamed:@"terminal"]
-             identifier:nil
-                handler:^(__unused UIAction *action) {
-        selectScope(main);
-    }];
-    mainAction.state = selected.kind == FLEXRuntimeSearchScopeMainExecutable
-        ? UIMenuElementStateOn : UIMenuElementStateOff;
-    [children addObject:mainAction];
-
-    FLEXRuntimeSearchScope *host = [FLEXRuntimeSearchScope new];
-    host.kind = FLEXRuntimeSearchScopeHostImages;
-    host.imagePath = @"";
-    host.title = @"All app images";
-    host.cacheKey = @"host-images";
-    UIAction *hostAction = [UIAction
-        actionWithTitle:@"All app images"
-                  image:[UIImage systemImageNamed:@"app"]
-             identifier:nil
-                handler:^(__unused UIAction *action) {
-        selectScope(host);
-    }];
-    hostAction.state = selected.kind == FLEXRuntimeSearchScopeHostImages
-        ? UIMenuElementStateOn : UIMenuElementStateOff;
-    [children addObject:hostAction];
-
-    NSMutableArray<UIMenuElement *> *frameworkActions = [NSMutableArray array];
-    for (NSString *path in [FLEXRuntimeScanner
-            loadedImagePathsIncludingSystemImages:NO]) {
-        if ([path isEqualToString:NSBundle.mainBundle.executablePath]) {
-            continue;
-        }
-        FLEXRuntimeSearchScope *framework = [FLEXRuntimeSearchScope new];
-        framework.kind = FLEXRuntimeSearchScopeExactImage;
-        framework.imagePath = path;
-        framework.title = path.lastPathComponent;
-        framework.cacheKey = [@"image|" stringByAppendingString:path];
+    for (FLEXRuntimeImageDescriptor *image in FLEXRuntimeImageSession.loadedAppImages) {
         UIAction *action = [UIAction
-            actionWithTitle:path.lastPathComponent
-                      image:[UIImage systemImageNamed:@"shippingbox"]
+            actionWithTitle:image.displayName
+                      image:[UIImage systemImageNamed:image.mainExecutable
+                          ? @"terminal" : @"shippingbox"]
                  identifier:nil
                     handler:^(__unused UIAction *menuAction) {
-            selectScope(framework);
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self) {
+                return;
+            }
+            objc_setAssociatedObject(
+                self,
+                kFLEXRuntimeSelectedImageKey,
+                image,
+                OBJC_ASSOCIATION_RETAIN_NONATOMIC
+            );
+            @try {
+                UIBarButtonItem *scopeItem = [self valueForKey:@"scopeItem"];
+                scopeItem.title = image.displayName;
+                scopeItem.menu = [self af_image_scopeMenu];
+            } @catch (__unused NSException *exception) {
+            }
+            [self reloadScan];
         }];
-        action.state = selected.kind == FLEXRuntimeSearchScopeExactImage &&
-            [selected.imagePath isEqualToString:path]
+        action.state = [selected.path isEqualToString:image.path]
             ? UIMenuElementStateOn : UIMenuElementStateOff;
-        [frameworkActions addObject:action];
+        [images addObject:action];
     }
-    if (frameworkActions.count) {
-        [children addObject:[UIMenu
-            menuWithTitle:@"App frameworks"
-                    image:nil
-               identifier:nil
-                  options:0
-                 children:frameworkActions]];
-    }
-
-    FLEXRuntimeSearchScope *all = [FLEXRuntimeSearchScope new];
-    all.kind = FLEXRuntimeSearchScopeAllLoadedImages;
-    all.imagePath = @"";
-    all.title = @"All loaded images";
-    all.cacheKey = @"all-loaded";
-    UIAction *allAction = [UIAction
-        actionWithTitle:@"All loaded images"
-                  image:[UIImage systemImageNamed:@"square.stack.3d.up"]
-             identifier:nil
-                handler:^(__unused UIAction *action) {
-        selectScope(all);
-    }];
-    allAction.state = selected.kind == FLEXRuntimeSearchScopeAllLoadedImages
-        ? UIMenuElementStateOn : UIMenuElementStateOff;
-    [children addObject:allAction];
 
     return [UIMenu
-        menuWithTitle:@"Scan scope"
+        menuWithTitle:@"Loaded app image"
                 image:nil
            identifier:nil
               options:UIMenuOptionsDisplayInline
-             children:children];
+             children:images];
 }
 
 - (UITableViewCell *)af_image_tableView:(UITableView *)tableView
