@@ -121,13 +121,18 @@ require_text "interactive workspace tab bar" "AllFLEXing.RuntimeWorkspace.TabBar
 require_text "nested modal hit testing" "flex_pointIsInsidePresentedHierarchy:withEvent:" "$string_dump"
 require_text "separate runtime settings" "FLEXHookSettingsController" "$string_dump"
 require_text "responsive Hook Center header" "FLEXHookCenterHeaderView" "$string_dump"
-require_text "explicit glass table surfaces" "FLEXGlassCellBackgroundView" "$string_dump"
 require_text "explicit glass materialization" "materializeGlassView:interactive:tint:animated:" "$string_dump"
 require_text "UIKit 26 floating search placement" "searchBarPlacementBarButtonItem" "$string_dump"
-require_text "compact class group header" "FLEXRuntimeGroupHeaderView" "$string_dump"
-require_text "continuous compact glass group" "FLEXCompactGroupBackgroundView" "$string_dump"
-require_text "compact Runtime Workspace cells" "AllFLEXingCompactRuntimeCell" "$string_dump"
-require_text "compact grouped Hook Center cells" "AllFLEXingCompactHookCenterCell" "$string_dump"
+require_text "class grouping model" "FLEXRuntimeEntryGroup" "$string_dump"
+require_text "native grouped table contract" \
+    "AllFLEXing native grouped UIKit table ABI 1" "$string_dump"
+require_text "native UIKit rendering bootstrap" \
+    "AllFLEXing native UIKit rendering bootstrap ABI 1" "$string_dump"
+require_text "native Runtime Workspace cells" "AllFLEXingNativeRuntimeCell" "$string_dump"
+require_text "native Hook Center cells" "AllFLEXingNativeHookCenterCell" "$string_dump"
+require_text "native table style override" "af_native_styleTableView:" "$string_dump"
+require_text "native cell style override" "af_native_styleTableCell:" "$string_dump"
+require_text "native search style override" "af_native_styleSearchBar:" "$string_dump"
 require_text "internal FLEX base-style bootstrap" "FLEXCompactFLEXBaseStyleBootstrap" "$string_dump"
 require_text "modern runtime control plane" "Runtime control plane" "$string_dump"
 require_text "hook registry" "FLEXHookRegistry" "$string_dump"
@@ -147,6 +152,15 @@ require_text "FLEX menu entry" "AllFLEXing Runtime Workspace" "$string_dump"
 
 if grep -Fq 'FLEXGlassAutostyle' <<<"$string_dump"; then
     echo "error: legacy global view-tree autostyle is still linked" >&2
+    exit 1
+fi
+if grep -Fq 'FLEXCompactGroupBackgroundView' <<<"$string_dump"; then
+    echo "error: per-row custom Liquid Glass background is still linked" >&2
+    exit 1
+fi
+if grep -Fq 'AllFLEXingCompactRuntimeCell' <<<"$string_dump" ||
+   grep -Fq 'AllFLEXingCompactHookCenterCell' <<<"$string_dump"; then
+    echo "error: legacy compact glass cell identifiers are still linked" >&2
     exit 1
 fi
 
