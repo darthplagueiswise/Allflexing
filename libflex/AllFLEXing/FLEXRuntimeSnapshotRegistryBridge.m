@@ -141,7 +141,8 @@ static BOOL FLEXBridgeEntryMatchesCurrentHost(FLEXHookEntry *entry) {
         ? locator[@"image"] : @"";
     NSString *imageUUID = [locator[@"imageUUID"] isKindOfClass:NSString.class]
         ? locator[@"imageUUID"] : @"";
-    NSDictionary *live = FLEXBridgeLiveImageIdentity(imagePath);
+    NSDictionary<NSString *, NSString *> *live =
+        FLEXBridgeLiveImageIdentity(imagePath);
 
     if (!hostUUID.length ||
         [hostUUID caseInsensitiveCompare:FLEXBridgeCurrentHostUUID()] !=
@@ -179,7 +180,8 @@ static BOOL FLEXBridgePrepareRuntimeEntry(FLEXHookEntry *entry) {
         ?: [NSMutableDictionary dictionary];
     NSString *imagePath = [locator[@"image"] isKindOfClass:NSString.class]
         ? locator[@"image"] : @"";
-    NSDictionary *live = FLEXBridgeLiveImageIdentity(imagePath);
+    NSDictionary<NSString *, NSString *> *live =
+        FLEXBridgeLiveImageIdentity(imagePath);
     if (!live) {
         entry.available = NO;
         entry.hookable = NO;
