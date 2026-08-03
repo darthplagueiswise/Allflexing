@@ -78,6 +78,11 @@ jobs:
           cd main
           bash scripts/validate-runtime-class-enumeration.sh
 
+      - name: Validate current-host runtime isolation
+        run: |
+          cd main
+          bash scripts/validate-runtime-host-isolation.sh
+
       - name: Validate safe launch and persistence
         run: |
           cd main
@@ -101,6 +106,8 @@ jobs:
       - name: Verify Mach-O contract
         run: |
           cd main
+          bash scripts/validate-runtime-host-isolation.sh \
+            .theos/obj/AllFLEXing.dylib
           bash scripts/verify-dylib.sh .theos/obj/AllFLEXing.dylib
 
       - name: Collect artifacts
