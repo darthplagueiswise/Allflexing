@@ -10,6 +10,9 @@ loader = (root / "AllFLEXingLoader.m").read_text()
 store = (root / "FLEXPersistenceStore.m").read_text()
 integration = (root / "FLEXPersistenceIntegration.m").read_text()
 flags = (root / "FLEXHookPersistence.m").read_text()
+host_isolation = (root / "FLEXRuntimeHostIsolation.m").read_text()
+bridge = (root / "FLEXRuntimeSnapshotRegistryBridge.m").read_text()
+session = (root / "FLEXRuntimeImageSession.mm").read_text()
 makefile = Path("libflex/Makefile").read_text()
 source_files = sorted(
     path for path in root.rglob("*")
@@ -65,6 +68,43 @@ require("launch-reapply" not in loader,
         "loader must not request legacy launch replay")
 require(loader.count("reapplyPersistedEntries") == 1,
         "persisted-state replay must exist only in the user-invoked activation path")
+
+# Runtime data must always be derived from the current process. No generated
+# database, serialized catalog or reference-binary index may enter the target.
+require("AllFLEXing current-process Mach-O host isolation ABI 1" in host_isolation,
+        "missing current-host runtime isolation marker")
+require("header->filetype == MH_EXECUTE" in host_isolation,
+        "main executable must be identified from the live Mach-O header")
+require("hostExecutableUUID" in host_isolation and
+        "runtimeSessionImageUUID" in host_isolation and
+        "runtimeSessionImagePath" in host_isolation,
+        "runtime entries are not stamped with host and image identity")
+require("class_getImageName" in host_isolation,
+        "Objective-C rows are not verified against their live defining image")
+require("AllFLEXing host/image-scoped transient runtime bridge ABI 3" in bridge,
+        "missing host/image-scoped registry bridge marker")
+require("AllFLEXing transient runtime snapshot bridge ABI 2 registry-only" not in bridge,
+        "obsolete process-global snapshot bridge is still present")
+for token in (
+    "af_host_entryForIdentifier:",
+    "af_host_entries",
+    "af_host_reapplyPersistedEntries",
+    "runtimeSnapshotPromoted",
+):
+    require(token in bridge, f"runtime registry isolation is missing: {token}")
+require("objc_enumerateClasses" in session and "_dyld_image_count" in session,
+        "runtime session must enumerate live process metadata")
+
+forbidden_catalog_suffixes = {
+    ".db", ".sqlite", ".sqlite3", ".idx", ".mctable", ".meta", ".json",
+}
+embedded_catalogs = [
+    path for path in root.rglob("*")
+    if path.is_file() and path.suffix.lower() in forbidden_catalog_suffixes
+]
+require(not embedded_catalogs,
+        "pre-rendered runtime catalog files are forbidden: " +
+        ", ".join(str(path) for path in embedded_catalogs))
 
 for path in source_files:
     text = path.read_text(errors="replace")
@@ -217,5 +257,5 @@ if errors:
         print(f"error: {error}")
     raise SystemExit(1)
 
-print("AllFLEXing inert-launch source validation: OK")
+print("AllFLEXing inert-launch and current-host runtime validation: OK")
 PY
