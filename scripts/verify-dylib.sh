@@ -85,15 +85,22 @@ require_text "embedded fishhook" "_FLEXEmbeddedFishhookAvailable" "$defined_symb
 require_text "contextual runtime actions" '_OBJC_CLASS_$_FLEXRuntimeHookActions' "$defined_symbols"
 
 string_dump="$(strings -a "$dylib")"
-require_text "durable persistence" "AllFLEXing persistence app-group defaults atomic-mirror ABI 2" "$string_dump"
-require_text "post-scene lazy persistence" \
-    "AllFLEXing post-scene lazy persistence ABI 1" "$string_dump"
+require_text "durable persistence" \
+    "AllFLEXing persistence app-group defaults atomic-mirror ABI 3" "$string_dump"
+require_text "read-only persistence discovery" \
+    "AllFLEXing read-only persistence discovery ABI 1" "$string_dump"
 require_text "coalesced persistence integration" \
     "AllFLEXing deferred coalesced persistence integration ABI 1" "$string_dump"
 require_text "post-restore flag reload" \
     "AllFLEXing post-mirror flag cache reload ABI 1" "$string_dump"
-require_text "safe post-scene runtime bootstrap" \
-    "AllFLEXing post-scene deferred runtime bootstrap ABI 1" "$string_dump"
+require_text "UI-only post-scene bootstrap" \
+    "AllFLEXing post-scene UI-only bootstrap ABI 2" "$string_dump"
+require_text "user-invoked runtime activation" \
+    "AllFLEXing user-invoked runtime activation ABI 1" "$string_dump"
+require_text "upstream FLEX constructor suppression" \
+    "AllFLEXing upstream FLEX automatic constructors disabled ABI 1" "$string_dump"
+require_text "workspace activation log" \
+    "runtime activation begins only after the workspace is opened" "$string_dump"
 require_text "staged-only toggle policy" \
     "AllFLEXing staged toggles explicit-Apply-only ABI 1" "$string_dump"
 require_text "staged-only user guidance" \
@@ -153,6 +160,7 @@ for forbidden in \
     "AllFLEXing tokenized AND search ABI 2" \
     "AllFLEXing full-snapshot async indexed cancellable search ABI 4" \
     "AllFLEXing selected-image transient-snapshot prefix-index search ABI 7" \
+    "AllFLEXing post-scene deferred runtime bootstrap ABI 1" \
     "manual-apply-all" \
     "the symbol name indicates a Boolean result" \
     "The name suggests a Boolean result"; do
