@@ -1,10 +1,10 @@
-Package: scilibflex
-Name: libFLEX (SCInsta)
-Pre-Depends: firmware (>= 9.0)
-Depends: 
-Version: 4.7.0~b4
+Package: com.darthplagueiswise.allflexing
+Name: AllFLEXing
+Version: 2.0.0
 Architecture: iphoneos-arm
-Description: A library for Flipboard Explorer (for SCInsta).
-Maintainer: SoCuul
-Author: Tanner Bennett <tannerbennett@me.com>
-Section: Tweaks
+Description: Standalone FLEX debugger, persistent hook runtime, and UIKit 26 Liquid Glass UI for sideloaded apps.
+Homepage: https://github.com/darthplagueiswise/Allflexing
+Maintainer: darthplagueiswise
+Author: darthplagueiswise, FLEX Team, Tanner Bennett
+Section: Development
+Depends: firmware (>= 15.0)
