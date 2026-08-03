@@ -109,10 +109,12 @@ require_text "runtime browser crash guards" \
     "AllFLEXing runtime browser crash guards ABI 1" "$string_dump"
 require_text "selected-image runtime session" \
     "AllFLEXing complete selected-image runtime session ABI 1" "$string_dump"
+require_text "current-process host isolation" \
+    "AllFLEXing current-process Mach-O host isolation ABI 1" "$string_dump"
 require_text "nonretaining Objective-C class enumeration" \
     "AllFLEXing image-scoped nonretaining Objective-C class enumeration ABI 1" "$string_dump"
-require_text "transient runtime snapshot bridge" \
-    "AllFLEXing transient runtime snapshot bridge ABI 2" "$string_dump"
+require_text "host/image-scoped transient bridge" \
+    "AllFLEXing host/image-scoped transient runtime bridge ABI 3" "$string_dump"
 require_text "complete-image substring search" \
     "AllFLEXing complete-image substring-index search ABI 1" "$string_dump"
 require_text "field-scoped compact-token search" \
@@ -140,6 +142,9 @@ require_text "function-start parsing" "LC_FUNCTION_STARTS" "$string_dump"
 require_text "Objective-C metadata source" "objc-runtime-metadata" "$string_dump"
 require_text "fishhook backend evidence" "fishhook-bind-slot" "$string_dump"
 require_text "inline backend evidence" "MSHookFunction-executable-address" "$string_dump"
+require_text "host executable UUID stamp" "hostExecutableUUID" "$string_dump"
+require_text "runtime session image UUID stamp" "runtimeSessionImageUUID" "$string_dump"
+require_text "runtime session image path stamp" "runtimeSessionImagePath" "$string_dump"
 require_text "full symbol-name layout" \
     "AllFLEXing native grouped UIKit table ABI 2 full-symbol-names" "$string_dump"
 require_text "native grouped rendering" \
@@ -161,11 +166,15 @@ for forbidden in \
     "AllFLEXing full-snapshot async indexed cancellable search ABI 4" \
     "AllFLEXing selected-image transient-snapshot prefix-index search ABI 7" \
     "AllFLEXing post-scene deferred runtime bootstrap ABI 1" \
+    "AllFLEXing transient runtime snapshot bridge ABI 2 registry-only" \
     "manual-apply-all" \
     "the symbol name indicates a Boolean result" \
-    "The name suggests a Boolean result"; do
+    "The name suggests a Boolean result" \
+    "FBConfigManager" \
+    "RyukGram" \
+    "com.burbn.instagram"; do
     if grep -Fq "$forbidden" <<<"$string_dump"; then
-        echo "error: obsolete runtime behavior is still linked: $forbidden" >&2
+        echo "error: obsolete or foreign runtime data is still linked: $forbidden" >&2
         exit 1
     fi
 done
