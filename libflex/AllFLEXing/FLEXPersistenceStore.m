@@ -14,9 +14,9 @@ extern CFTypeRef _Nullable SecTaskCopyValueForEntitlement(
 #endif
 
 const char *FLEXPersistenceStoreABIVersion =
-    "AllFLEXing persistence app-group defaults atomic-mirror ABI 2";
+    "AllFLEXing persistence app-group defaults atomic-mirror ABI 3";
 const char *FLEXPersistenceSafeLaunchABIVersion =
-    "AllFLEXing post-scene lazy persistence ABI 1";
+    "AllFLEXing read-only persistence discovery ABI 1";
 
 static NSString *const kFLEXPersistencePrefix = @"com.allflexing.";
 static NSString *const kFLEXPersistenceLastWriteKey =
@@ -45,8 +45,8 @@ static const void *kFLEXPersistenceQueueSpecific = &kFLEXPersistenceQueueSpecifi
     static FLEXPersistenceStore *store;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        // Deliberately lazy. The loader creates this store only after the host
-        // app has entered an active scene, never from +load or a constructor.
+        // Deliberately lazy. The loader creates this store only after the user
+        // opens Runtime Workspace, never from +load or launch activation.
         store = [FLEXPersistenceStore new];
     });
     return store;
@@ -73,13 +73,13 @@ static const void *kFLEXPersistenceQueueSpecific = &kFLEXPersistenceQueueSpecifi
         NSBundle.mainBundle.bundleIdentifier.length
             ? NSBundle.mainBundle.bundleIdentifier
             : NSProcessInfo.processInfo.processName];
+
+    // Discovery and restore are read-only unless a pre-existing mirror is
+    // newer than the host defaults. No directory, probe, timestamp or mirror
+    // is created merely because the store was instantiated.
     _sandboxMirrorURL = [self createSandboxMirrorURL];
     [self configureApplicationGroup];
     [self restoreNewestSnapshot];
-
-    // Mirror migration is coalesced on the persistence queue. Initializing the
-    // store never blocks the caller on a second synchronous write pass.
-    [self synchronizeSoon];
     return self;
 }
 
@@ -143,36 +143,22 @@ static const void *kFLEXPersistenceQueueSpecific = &kFLEXPersistenceQueueSpecifi
         if (!container) {
             continue;
         }
-        NSURL *directory = [[[container URLByAppendingPathComponent:@"Library"
-                                                         isDirectory:YES]
-            URLByAppendingPathComponent:@"Application Support"
-                            isDirectory:YES]
-            URLByAppendingPathComponent:@"AllFLEXing"
-                            isDirectory:YES];
-        NSError *directoryError = nil;
-        if (![fileManager createDirectoryAtURL:directory
-                   withIntermediateDirectories:YES
-                                    attributes:nil
-                                         error:&directoryError]) {
-            continue;
-        }
-
-        NSURL *probe = [directory URLByAppendingPathComponent:@".write-probe"];
-        NSData *probeData = [@"ok" dataUsingEncoding:NSUTF8StringEncoding];
-        NSError *probeError = nil;
-        BOOL writable = [probeData writeToURL:probe
-                                      options:NSDataWritingAtomic
-                                        error:&probeError];
-        if (!writable) {
-            continue;
-        }
-        [fileManager removeItemAtURL:probe error:nil];
 
         NSUserDefaults *suite = [[NSUserDefaults alloc]
             initWithSuiteName:identifier];
         if (!suite) {
             continue;
         }
+
+        // Keep only candidate URLs during discovery. Directory creation and
+        // writability validation happen inside the explicit synchronization
+        // path after an Apply/settings mutation.
+        NSURL *directory = [[[container URLByAppendingPathComponent:@"Library"
+                                                         isDirectory:YES]
+            URLByAppendingPathComponent:@"Application Support"
+                            isDirectory:YES]
+            URLByAppendingPathComponent:@"AllFLEXing"
+                            isDirectory:YES];
         self.applicationGroupIdentifier = identifier;
         self.groupDefaults = suite;
         self.groupMirrorURL = [directory URLByAppendingPathComponent:
@@ -190,31 +176,19 @@ static const void *kFLEXPersistenceQueueSpecific = &kFLEXPersistenceQueueSpecifi
 }
 
 - (NSURL *)createSandboxMirrorURL {
-    NSError *error = nil;
-    NSURL *applicationSupport = [NSFileManager.defaultManager
-        URLForDirectory:NSApplicationSupportDirectory
-               inDomain:NSUserDomainMask
-      appropriateForURL:nil
-                 create:YES
-                  error:&error];
-    if (!applicationSupport) {
-        NSString *library = NSSearchPathForDirectoriesInDomains(
-            NSLibraryDirectory,
-            NSUserDomainMask,
-            YES
-        ).firstObject;
-        applicationSupport = [[NSURL fileURLWithPath:library ?: NSTemporaryDirectory()
-                                         isDirectory:YES]
-            URLByAppendingPathComponent:@"Application Support"
-                            isDirectory:YES];
-    }
-    NSURL *directory = [applicationSupport
+    NSString *library = NSSearchPathForDirectoriesInDomains(
+        NSLibraryDirectory,
+        NSUserDomainMask,
+        YES
+    ).firstObject;
+    NSURL *libraryURL = [NSURL fileURLWithPath:
+        library.length ? library : NSTemporaryDirectory()
+                                 isDirectory:YES];
+    NSURL *directory = [[libraryURL
+        URLByAppendingPathComponent:@"Application Support"
+                        isDirectory:YES]
         URLByAppendingPathComponent:@"AllFLEXing"
                         isDirectory:YES];
-    [NSFileManager.defaultManager createDirectoryAtURL:directory
-                            withIntermediateDirectories:YES
-                                             attributes:nil
-                                                  error:nil];
     return [directory URLByAppendingPathComponent:
         [NSString stringWithFormat:@"state-%@.plist", self.hostScope]];
 }
@@ -332,6 +306,20 @@ static const void *kFLEXPersistenceQueueSpecific = &kFLEXPersistenceQueueSpecifi
     if (!URL) {
         return YES;
     }
+
+    NSURL *directory = URL.URLByDeletingLastPathComponent;
+    NSError *directoryError = nil;
+    if (![NSFileManager.defaultManager
+            createDirectoryAtURL:directory
+      withIntermediateDirectories:YES
+                       attributes:nil
+                            error:&directoryError]) {
+        if (error) {
+            *error = directoryError;
+        }
+        return NO;
+    }
+
     NSData *data = [NSPropertyListSerialization
         dataWithPropertyList:snapshot
                       format:NSPropertyListBinaryFormat_v1_0
