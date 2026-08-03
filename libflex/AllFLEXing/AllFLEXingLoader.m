@@ -13,7 +13,11 @@
 #import "FLEXWindow.h"
 
 const char *AllFLEXingSafeLaunchABIVersion =
-    "AllFLEXing post-scene deferred runtime bootstrap ABI 1";
+    "AllFLEXing post-scene UI-only bootstrap ABI 2";
+const char *AllFLEXingUserInvokedRuntimeABIVersion =
+    "AllFLEXing user-invoked runtime activation ABI 1";
+const char *AllFLEXingUpstreamCtorPolicyABIVersion =
+    "AllFLEXing upstream FLEX automatic constructors disabled ABI 1";
 
 static const void *kAllFLEXingRevealGestureKey = &kAllFLEXingRevealGestureKey;
 static id AllFLEXingDidBecomeActiveObserver;
@@ -160,17 +164,17 @@ static BOOL AllFLEXingIsUIApplicationProcess(void) {
     return NSClassFromString(@"UIApplication") != nil;
 }
 
-static dispatch_queue_t AllFLEXingDeferredRuntimeQueue(void) {
+static dispatch_queue_t AllFLEXingRuntimeActivationQueue(void) {
     static dispatch_queue_t queue;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         dispatch_queue_attr_t attributes = dispatch_queue_attr_make_with_qos_class(
             DISPATCH_QUEUE_SERIAL,
-            QOS_CLASS_UTILITY,
+            QOS_CLASS_USER_INITIATED,
             0
         );
         queue = dispatch_queue_create(
-            "com.allflexing.post-scene-bootstrap",
+            "com.allflexing.user-invoked-runtime-activation",
             attributes
         );
     });
@@ -205,64 +209,71 @@ static FLEXHookPersistence *AllFLEXingRegisterRuntimeFlags(void) {
     return flags;
 }
 
+static void AllFLEXingActivateRuntimeForWorkspace(dispatch_block_t completion) {
+    dispatch_async(AllFLEXingRuntimeActivationQueue(), ^{
+        static BOOL activated = NO;
+        if (!activated) {
+            @autoreleasepool {
+                // This is the first point where persistence, scanner and hook
+                // replay are allowed to initialize. Merely injecting/loading
+                // the dylib never touches the host defaults database or starts
+                // runtime-image monitoring.
+                (void)FLEXPersistenceStore.sharedStore;
+
+                FLEXHookPersistence *flags = AllFLEXingRegisterRuntimeFlags();
+                [flags reloadPersistedValues];
+                [flags activateRegisteredHooks];
+
+                FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
+                [FLEXRuntimeScanner startMonitoringImages];
+                [registry reapplyPersistedEntries];
+                activated = YES;
+            }
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) {
+                completion();
+            }
+        });
+    });
+}
+
 static void AllFLEXingStartUI(void) {
     NSCAssert(NSThread.isMainThread, @"FLEX UI bootstrap must run on the main thread");
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        // Flag registration only reads the host defaults domain. It neither
+        // creates the persistence store nor writes/synchronizes a value.
+        (void)AllFLEXingRegisterRuntimeFlags();
+
         [FLEXManager.sharedManager
             registerGlobalEntryWithName:@"AllFLEXing Runtime Workspace"
             action:^(__kindof UITableViewController *host) {
-                FLEXHookWorkspaceController *workspace =
-                    [FLEXHookWorkspaceController new];
-                [host presentViewController:workspace animated:YES completion:nil];
+                __weak UITableViewController *weakHost = host;
+                AllFLEXingActivateRuntimeForWorkspace(^{
+                    UITableViewController *strongHost = weakHost;
+                    if (!strongHost) {
+                        return;
+                    }
+                    FLEXHookWorkspaceController *workspace =
+                        [FLEXHookWorkspaceController new];
+                    [strongHost presentViewController:workspace
+                                             animated:YES
+                                           completion:nil];
+                });
             }];
         [AllFLEXingReveal.shared start];
         [FLEXLiquidGlass refreshVisibleFLEXViewControllers];
 
-        NSLog(@"[AllFLEXing] initialized in %@ using %@",
-            NSBundle.mainBundle.bundleIdentifier ?: NSProcessInfo.processInfo.processName,
-            FLEXMessageHookBackend());
-    });
-}
-
-static void AllFLEXingStartDeferredRuntime(void) {
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        // Wait until the active scene has had a chance to complete its first
-        // presentation. Persistence restore, registry construction and hook
-        // replay are all moved off the scene-create watchdog path.
-        dispatch_after(
-            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.50 * NSEC_PER_SEC)),
-            AllFLEXingDeferredRuntimeQueue(),
-            ^{
-                @autoreleasepool {
-                    (void)FLEXPersistenceStore.sharedStore;
-
-                    FLEXHookPersistence *flags = AllFLEXingRegisterRuntimeFlags();
-                    [flags reloadPersistedValues];
-                    [flags activateRegisteredHooks];
-
-                    FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
-                    [FLEXRuntimeScanner startMonitoringImages];
-
-                    // Reconstruct only states previously confirmed by Apply,
-                    // exactly once, after activation. The registry bootstrap
-                    // path is intentionally not used because it performs a
-                    // synchronous pre-scene replay and installs on late images.
-                    [registry reapplyPersistedEntries];
-
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        AllFLEXingStartUI();
-                    });
-                }
-            }
-        );
+        NSLog(@"[AllFLEXing] UI initialized in %@; runtime activation begins only after the workspace is opened",
+            NSBundle.mainBundle.bundleIdentifier ?: NSProcessInfo.processInfo.processName);
     });
 }
 
 static void AllFLEXingRunActivationPhase(void) {
     NSCAssert(NSThread.isMainThread, @"activation phase must run on the main thread");
-    AllFLEXingStartDeferredRuntime();
+    AllFLEXingStartUI();
 }
 
 static void AllFLEXingScheduleActivationPhase(void) {
@@ -298,9 +309,9 @@ static void AllFLEXingBootstrap(void) {
             return;
         }
 
-        // Constructor work is intentionally limited to scheduling the active-
-        // scene phase. No persistence store, registry, scan or hook provider is
-        // touched before scene creation completes.
+        // The constructor only schedules UI attachment after the active scene.
+        // Persistence, scanner startup and hook replay require an explicit tap
+        // on the Runtime Workspace entry.
         AllFLEXingScheduleActivationPhase();
     }
 }
