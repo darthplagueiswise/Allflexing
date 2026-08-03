@@ -19,30 +19,45 @@ source_files = sorted(
     if path.suffix in {".m", ".mm", ".xm", ".x"}
 )
 all_sources = "\n".join(path.read_text(errors="replace") for path in source_files)
-
 errors = []
+
 
 def require(condition: bool, message: str) -> None:
     if not condition:
         errors.append(message)
 
-def function_body(source: str, signature: str) -> str:
-    start = source.find(signature)
-    if start < 0:
-        return ""
-    brace = source.find("{", start)
-    if brace < 0:
+
+def brace_body(source: str, opening_brace: int) -> str:
+    if opening_brace < 0 or opening_brace >= len(source) or source[opening_brace] != "{":
         return ""
     depth = 0
-    for index in range(brace, len(source)):
+    for index in range(opening_brace, len(source)):
         character = source[index]
         if character == "{":
             depth += 1
         elif character == "}":
             depth -= 1
             if depth == 0:
-                return source[brace + 1:index]
+                return source[opening_brace + 1:index]
     return ""
+
+
+def function_body(source: str, signature: str) -> str:
+    start = source.find(signature)
+    if start < 0:
+        return ""
+    return brace_body(source, source.find("{", start))
+
+
+def bodies_matching(source: str, pattern: str) -> list[str]:
+    bodies = []
+    for match in re.finditer(pattern, source, re.S):
+        opening_brace = source.find("{", match.start(), match.end())
+        body = brace_body(source, opening_brace)
+        if body:
+            bodies.append(body)
+    return bodies
+
 
 require("+ (void)load" not in store,
         "FLEXPersistenceStore must remain lazy and must not implement +load")
@@ -69,8 +84,9 @@ require("launch-reapply" not in loader,
 require(loader.count("reapplyPersistedEntries") == 1,
         "persisted-state replay must exist only in the user-invoked activation path")
 
-# Runtime data must always be derived from the current process. No generated
-# database, serialized catalog or reference-binary index may enter the target.
+# Runtime rows must be reconstructed from the current process and exact selected
+# Mach-O image. A generated database, serialized catalog or reference-binary
+# index is never a valid runtime source.
 require("AllFLEXing current-process Mach-O host isolation ABI 1" in host_isolation,
         "missing current-host runtime isolation marker")
 require("header->filetype == MH_EXECUTE" in host_isolation,
@@ -106,10 +122,12 @@ require(not embedded_catalogs,
         "pre-rendered runtime catalog files are forbidden: " +
         ", ".join(str(path) for path in embedded_catalogs))
 
+# Parse complete Objective-C method/constructor bodies by balanced braces. The
+# old non-greedy regex could run past +load into later methods and report a hook
+# replay that was not actually inside +load.
 for path in source_files:
     text = path.read_text(errors="replace")
-    for match in re.finditer(r"\+ \(void\)load\s*\{(?P<body>.*?)\n\}", text, re.S):
-        body = match.group("body")
+    for body in bodies_matching(text, r"\+\s*\(void\)load\s*\{"):
         require("FLEXPersistenceStore.sharedStore" not in body,
                 f"{path} instantiates persistence from +load")
         require("reapplyPersistedEntries" not in body,
@@ -117,12 +135,10 @@ for path in source_files:
         require("FLEXHookRegistry.sharedRegistry bootstrap" not in body,
                 f"{path} bootstraps the registry from +load")
 
-    for match in re.finditer(
-        r"__attribute__\(\(constructor\)\).*?\([^;{}]*\)\s*\{(?P<body>.*?)\n\}",
+    for body in bodies_matching(
         text,
-        re.S,
+        r"__attribute__\s*\(\(constructor\)\).*?\([^;{}]*\)\s*\{",
     ):
-        body = match.group("body")
         for token in (
             "FLEXPersistenceStore.sharedStore",
             "reapplyPersistedEntries",
@@ -133,28 +149,26 @@ for path in source_files:
             require(token not in body,
                     f"{path} constructor performs forbidden startup work: {token}")
 
-load_match = re.search(
-    r"\+ \(void\)load\s*\{(?P<body>.*?)\n\}",
+integration_load_bodies = bodies_matching(
     integration,
-    re.S,
+    r"\+\s*\(void\)load\s*\{",
 )
-require(load_match is not None, "persistence integration +load not found")
-if load_match:
-    require("sharedStore" not in load_match.group("body"),
+require(bool(integration_load_bodies), "persistence integration +load not found")
+for body in integration_load_bodies:
+    require("sharedStore" not in body,
             "persistence integration +load must not instantiate the store")
 
 ctor_body = function_body(loader, "static void AllFLEXingBootstrap(void)")
 require(ctor_body, "AllFLEXing constructor not found")
 if ctor_body:
-    forbidden = (
+    for token in (
         "FLEXPersistenceStore",
         "FLEXHookRegistry",
         "FLEXRuntimeScanner",
         "reapplyPersistedEntries",
         "activateRegisteredHooks",
         "AllFLEXingRegisterRuntimeFlags",
-    )
-    for token in forbidden:
+    ):
         require(token not in ctor_body,
                 f"constructor performs forbidden pre-scene work: {token}")
     require("AllFLEXingScheduleActivationPhase" in ctor_body,
