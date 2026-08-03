@@ -114,7 +114,7 @@ require_text "current-process host isolation" \
 require_text "nonretaining Objective-C class enumeration" \
     "AllFLEXing image-scoped nonretaining Objective-C class enumeration ABI 1" "$string_dump"
 require_text "host/image-scoped transient bridge" \
-    "AllFLEXing host/image-scoped transient runtime bridge ABI 3" "$string_dump"
+    "AllFLEXing host/image-scoped transient runtime bridge ABI 4" "$string_dump"
 require_text "complete-image substring search" \
     "AllFLEXing complete-image substring-index search ABI 1" "$string_dump"
 require_text "field-scoped compact-token search" \
@@ -167,6 +167,7 @@ for forbidden in \
     "AllFLEXing selected-image transient-snapshot prefix-index search ABI 7" \
     "AllFLEXing post-scene deferred runtime bootstrap ABI 1" \
     "AllFLEXing transient runtime snapshot bridge ABI 2 registry-only" \
+    "AllFLEXing host/image-scoped transient runtime bridge ABI 3" \
     "manual-apply-all" \
     "the symbol name indicates a Boolean result" \
     "The name suggests a Boolean result" \
