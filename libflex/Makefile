@@ -57,6 +57,7 @@ endif
 # Keep the SDK/deployment contract fixed and provide the TARGET_OS definitions
 # expected by the iPhoneOS 26.2 headers when Clang modules are disabled.
 ALLFLEXING_TARGET_FLAGS := \
+	-DFLEX_DISABLE_CTORS=1 \
 	-DTARGET_OS_MAC=1 \
 	-DTARGET_OS_OSX=0 \
 	-DTARGET_OS_IPHONE=1 \
