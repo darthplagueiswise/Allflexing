@@ -105,8 +105,10 @@ require("hostExecutableUUID" in host_isolation and
         "runtime entries are not stamped with host and image identity")
 require("class_getImageName" in host_isolation,
         "Objective-C rows are not verified against their live defining image")
-require("AllFLEXing host/image-scoped transient runtime bridge ABI 3" in bridge,
-        "missing host/image-scoped registry bridge marker")
+require("AllFLEXing host/image-scoped transient runtime bridge ABI 4" in bridge,
+        "missing exact host/image-provenance registry bridge marker")
+require("AllFLEXing host/image-scoped transient runtime bridge ABI 3" not in bridge,
+        "obsolete ABI 3 host/image bridge is still present")
 require("AllFLEXing transient runtime snapshot bridge ABI 2 registry-only" not in bridge,
         "obsolete process-global snapshot bridge is still present")
 for token in (
