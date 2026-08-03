@@ -8,6 +8,7 @@
 #import <mach-o/loader.h>
 #import <objc/runtime.h>
 #import <stdatomic.h>
+#import <string.h>
 
 NSNotificationName const FLEXRuntimeImagesDidChangeNotification =
     @"FLEXRuntimeImagesDidChangeNotification";
