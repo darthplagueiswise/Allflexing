@@ -59,6 +59,14 @@ def bodies_matching(source: str, pattern: str) -> list[str]:
     return bodies
 
 
+def sends_objc_message(body: str, selector: str) -> bool:
+    # @selector(reapplyPersistedEntries) is metadata used to install a filtering
+    # exchange; it does not execute replay. Reject only an actual Objective-C
+    # message expression such as [registry reapplyPersistedEntries].
+    pattern = r"\[[^\[\]]+\s+" + re.escape(selector) + r"\s*(?::|\])"
+    return re.search(pattern, body, re.S) is not None
+
+
 require("+ (void)load" not in store,
         "FLEXPersistenceStore must remain lazy and must not implement +load")
 require("AllFLEXing read-only persistence discovery ABI 1" in store,
@@ -130,7 +138,7 @@ for path in source_files:
     for body in bodies_matching(text, r"\+\s*\(void\)load\s*\{"):
         require("FLEXPersistenceStore.sharedStore" not in body,
                 f"{path} instantiates persistence from +load")
-        require("reapplyPersistedEntries" not in body,
+        require(not sends_objc_message(body, "reapplyPersistedEntries"),
                 f"{path} replays hooks from +load")
         require("FLEXHookRegistry.sharedRegistry bootstrap" not in body,
                 f"{path} bootstraps the registry from +load")
