@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - rootless
+      - dev
       - 'agent/**'
   pull_request:
   workflow_dispatch:
@@ -72,6 +73,11 @@ jobs:
           cd main
           chmod +x build.sh scripts/*.sh
           bash scripts/validate-sdk26-liquidglass.sh
+
+      - name: Validate runtime host isolation
+        run: |
+          cd main
+          bash scripts/validate-runtime-host-isolation.sh
 
       - name: Build standalone package
         id: build
