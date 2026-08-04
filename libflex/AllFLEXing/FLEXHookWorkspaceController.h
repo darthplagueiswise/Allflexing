@@ -6,9 +6,12 @@ NS_ASSUME_NONNULL_BEGIN
 /// compact environment and as a Liquid Glass sidebar when space permits.
 @interface FLEXHookWorkspaceController : UITabBarController
 
-/// Resolves the current foreground scene and visible FLEX presenter after lazy
-/// runtime activation. Repeated calls never stack duplicate workspaces.
+/// Presents the UI before any runtime, persistence or restore work begins.
+/// When the current FLEX presenter is temporarily unavailable, the Workspace
+/// owns a scene-bound overlay window rather than failing silently.
 + (void)presentDeterministicallyFromViewController:(nullable UIViewController *)host;
++ (void)presentDeterministicallyFromViewController:(nullable UIViewController *)host
+                                        completion:(nullable dispatch_block_t)completion;
 
 @end
 
