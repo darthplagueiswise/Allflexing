@@ -57,14 +57,15 @@ for token in (
     require(token in workspace, f"owned-window fallback is incomplete: {token}")
 
 # The Browser must first become visible and only then start a selected-image
-# scan. viewDidLoad is not a valid place for large Mach-O/Objective-C work.
+# scan. Wiring a Refresh button to @selector(reloadScan) is allowed in
+# viewDidLoad; actually sending [self reloadScan] there is not.
 view_did_load = method_body(browser, "- (void)viewDidLoad")
 view_did_appear = method_body(browser, "- (void)viewDidAppear:(BOOL)animated")
 require(view_did_load, "Runtime Browser viewDidLoad is missing")
 require(view_did_appear, "Runtime Browser viewDidAppear is missing")
-require("reloadScan" not in view_did_load,
+require("[self reloadScan]" not in view_did_load,
         "Runtime Browser still starts its scan from viewDidLoad")
-require("reloadScan" in view_did_appear,
+require("[self reloadScan]" in view_did_appear,
         "Runtime Browser no longer starts its lazy first scan")
 require("initialScanStarted" in browser,
         "Runtime Browser has no first-scan idempotence guard")
