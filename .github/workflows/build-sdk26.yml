@@ -85,6 +85,11 @@ jobs:
           cd main
           ./build.sh package
 
+      - name: Validate runtime binary isolation
+        run: |
+          cd main
+          bash scripts/validate-runtime-binary-isolation.sh .theos/obj/AllFLEXing.dylib
+
       - name: Verify Mach-O contract
         run: |
           cd main
