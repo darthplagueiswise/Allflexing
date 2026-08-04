@@ -16,6 +16,8 @@ NSNotificationName const FLEXRuntimeImagesDidChangeNotification =
 
 const char *FLEXRuntimeScannerHostIsolationABIVersion =
     "AllFLEXing current-host whole-runtime scanner ABI 2";
+const char *FLEXStrictObjectiveCRuntimeScannerABIVersion =
+    "AllFLEXing exact-B Objective-C runtime classification ABI 1";
 
 static dispatch_queue_t FLEXRuntimeScannerQueue(void) {
     static dispatch_queue_t queue;
@@ -75,18 +77,53 @@ static NSString *FLEXCurrentHostIdentity(void) {
         : (NSProcessInfo.processInfo.processName ?: @"host");
 }
 
-static BOOL FLEXPathBelongsToCurrentHost(NSString *path) {
-    if (!path.length) return NO;
+static NSString *FLEXCanonicalHostPath(NSString *path) {
+    if (!path.length) return @"";
+    NSString *resolved = [path stringByResolvingSymlinksInPath];
+    NSString *standardized = [resolved stringByStandardizingPath];
+    return standardized.length ? standardized : path;
+}
 
-    NSString *executablePath = NSBundle.mainBundle.executablePath;
-    if (executablePath.length && [path isEqualToString:executablePath]) {
-        return YES;
+static BOOL FLEXPathIsFrameworkExecutable(NSString *path) {
+    NSString *candidate = FLEXCanonicalHostPath(path);
+    NSString *bundle = FLEXCanonicalHostPath(NSBundle.mainBundle.bundlePath);
+    if (!candidate.length || !bundle.length) return NO;
+
+    NSString *frameworksRoot = [bundle stringByAppendingPathComponent:@"Frameworks"];
+    NSString *frameworksPrefix = [frameworksRoot stringByAppendingString:@"/"];
+    if (![candidate hasPrefix:frameworksPrefix]) return NO;
+    if ([candidate.pathExtension caseInsensitiveCompare:@"dylib"] == NSOrderedSame) {
+        return NO;
     }
 
-    NSString *bundlePath = NSBundle.mainBundle.bundlePath;
-    if (!bundlePath.length) return NO;
-    NSString *prefix = [bundlePath stringByAppendingString:@"/"];
-    return [path hasPrefix:prefix];
+    NSArray<NSString *> *components = candidate.pathComponents;
+    for (NSInteger index = (NSInteger)components.count - 2; index >= 0; index--) {
+        NSString *component = components[(NSUInteger)index];
+        if ([component.pathExtension caseInsensitiveCompare:@"framework"] != NSOrderedSame) {
+            continue;
+        }
+
+        NSString *frameworkName = component.stringByDeletingPathExtension;
+        if (![candidate.lastPathComponent isEqualToString:frameworkName]) {
+            return NO;
+        }
+
+        NSString *frameworkPath = [NSString pathWithComponents:
+            [components subarrayWithRange:NSMakeRange(0, (NSUInteger)index + 1)]];
+        NSString *frameworkPrefix = [frameworkPath stringByAppendingString:@"/"];
+        return [candidate hasPrefix:frameworkPrefix];
+    }
+    return NO;
+}
+
+static BOOL FLEXPathBelongsToCurrentHost(NSString *path) {
+    NSString *candidate = FLEXCanonicalHostPath(path);
+    NSString *executable = FLEXCanonicalHostPath(NSBundle.mainBundle.executablePath);
+    if (!candidate.length) return NO;
+    if (executable.length && [candidate isEqualToString:executable]) {
+        return YES;
+    }
+    return FLEXPathIsFrameworkExecutable(candidate);
 }
 
 static NSString *FLEXUUIDForHeader(const struct mach_header_64 *header) {
@@ -112,6 +149,7 @@ static NSString *FLEXUUIDForHeader(const struct mach_header_64 *header) {
 static NSString *FLEXUUIDForLoadedImagePath(NSString *path) {
     if (!path.length || !FLEXPathBelongsToCurrentHost(path)) return @"";
 
+    NSString *requestedPath = FLEXCanonicalHostPath(path);
     uint32_t count = _dyld_image_count();
     for (uint32_t index = 0; index < count; index++) {
         const char *rawPath = _dyld_get_image_name(index);
@@ -119,8 +157,9 @@ static NSString *FLEXUUIDForLoadedImagePath(NSString *path) {
         if (!rawPath || !genericHeader || genericHeader->magic != MH_MAGIC_64) {
             continue;
         }
-        NSString *loadedPath = [NSString stringWithUTF8String:rawPath];
-        if (![loadedPath isEqualToString:path]) continue;
+        NSString *loadedPath = FLEXCanonicalHostPath(
+            [NSString stringWithUTF8String:rawPath]);
+        if (![loadedPath isEqualToString:requestedPath]) continue;
         return FLEXUUIDForHeader((const struct mach_header_64 *)genericHeader);
     }
     return @"";
@@ -204,7 +243,8 @@ static NSString *FLEXCurrentHostCIdentifier(NSString *imageUUID,
 
     const char *rawImage = class_getImageName(targetClass);
     if (!rawImage || !rawImage[0]) return nil;
-    NSString *imagePath = [NSString stringWithUTF8String:rawImage];
+    NSString *imagePath = FLEXCanonicalHostPath(
+        [NSString stringWithUTF8String:rawImage]);
     if (!FLEXPathBelongsToCurrentHost(imagePath)) return nil;
 
     NSString *imageUUID = FLEXUUIDForLoadedImagePath(imagePath);
@@ -257,6 +297,7 @@ static NSString *FLEXCurrentHostCIdentifier(NSString *imageUUID,
         @"image": imagePath,
         @"imageUUID": imageUUID,
         @"methodAddress": @((uintptr_t)method_getImplementation(method)),
+        @"abiEvidence": @"objc-type-encoding-exact-B",
     };
     entry.available = providerAvailable;
     entry.hookable = providerAvailable && engineEnabled;
@@ -283,7 +324,8 @@ static NSString *FLEXCurrentHostCIdentifier(NSString *imageUUID,
                 const char *rawImage = class_getImageName(targetClass);
                 if (!rawImage || !rawImage[0]) continue;
 
-                NSString *imagePath = [NSString stringWithUTF8String:rawImage];
+                NSString *imagePath = FLEXCanonicalHostPath(
+                    [NSString stringWithUTF8String:rawImage]);
                 if (!FLEXPathBelongsToCurrentHost(imagePath)) continue;
 
                 for (NSUInteger pass = 0; pass < 2; pass++) {
@@ -345,7 +387,8 @@ static NSString *FLEXCurrentHostCIdentifier(NSString *imageUUID,
                     continue;
                 }
 
-                NSString *imagePath = [NSString stringWithUTF8String:rawPath];
+                NSString *imagePath = FLEXCanonicalHostPath(
+                    [NSString stringWithUTF8String:rawPath]);
                 if (!FLEXPathBelongsToCurrentHost(imagePath)) continue;
 
                 const struct mach_header_64 *header =
@@ -438,8 +481,7 @@ static NSString *FLEXCurrentHostCIdentifier(NSString *imageUUID,
                             continue;
                         }
 
-                        uint32_t stringIndex =
-                            symbols[symbolIndex].n_un.n_strx;
+                        uint32_t stringIndex = symbols[symbolIndex].n_un.n_strx;
                         if (stringIndex == 0 ||
                             stringIndex >= symtabCommand->strsize) {
                             continue;
@@ -447,8 +489,7 @@ static NSString *FLEXCurrentHostCIdentifier(NSString *imageUUID,
 
                         const char *rawSymbol = strings + stringIndex;
                         if (!rawSymbol || !rawSymbol[0]) continue;
-                        NSString *symbol =
-                            [NSString stringWithUTF8String:rawSymbol];
+                        NSString *symbol = [NSString stringWithUTF8String:rawSymbol];
                         if ([symbol hasPrefix:@"_"]) {
                             symbol = [symbol substringFromIndex:1];
                         }
@@ -515,7 +556,7 @@ static NSString *FLEXCurrentHostCIdentifier(NSString *imageUUID,
                                imageName:(NSString *)imageName {
     NSString *normalized = [symbol hasPrefix:@"_"]
         ? [symbol substringFromIndex:1] : symbol;
-    NSString *resolvedImage = imageName ?: @"";
+    NSString *resolvedImage = FLEXCanonicalHostPath(imageName ?: @"");
     NSString *imageUUID = FLEXUUIDForLoadedImagePath(resolvedImage);
     NSString *host = FLEXCurrentHostIdentity();
 
@@ -543,7 +584,7 @@ static NSString *FLEXCurrentHostCIdentifier(NSString *imageUUID,
     entry.hookable = NO;
     entry.userConfigured = YES;
     entry.lastError = entry.available
-        ? nil : @"Select a currently loaded host image before resolving this symbol";
+        ? nil : @"Select a loaded main executable or embedded framework before resolving this symbol";
     return entry;
 }
 
