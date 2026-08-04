@@ -22,6 +22,15 @@
 const char *FLEXLiquidGlassNativeABIVersion =
     "AllFLEXing native UIKit 26 Liquid Glass and scroll-edge ABI 2";
 
+// Native grouped rendering marker. This used to live in
+// FLEXCompactFLEXBaseStyle.m, which re-applied a worse copy of the styling
+// below over FLEXTableViewController via a +load swizzle. That layer is gone:
+// the pinned FLEX patch calls styleTableView:/styleTableCell:/styleSearchBar:
+// from FLEX's own viewDidLoad/viewWillAppear, so the grouped rendering the
+// contract asserts is implemented here and nowhere else.
+__attribute__((used)) const char *FLEXNativeUIKitRenderingABIVersion =
+    "AllFLEXing native UIKit rendering bootstrap ABI 1";
+
 static const void *kFLEXOriginalButtonConfigurationKey =
     &kFLEXOriginalButtonConfigurationKey;
 static const void *kFLEXGlassCellSelectionKey =
