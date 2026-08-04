@@ -197,6 +197,110 @@ static BOOL FLEXRegistrySameRuntimeIdentity(FLEXHookEntry *left,
     return YES;
 }
 
+__attribute__((used)) static const char kFLEXObjectiveCHookContextMarker[] =
+    "AllFLEXing typed Objective-C hook context ABI 1";
+
+@interface FLEXObjectiveCHookContext : NSObject
+@property (nonatomic, strong, readonly) FLEXHookEntry *entry;
+@property (nonatomic, readonly) SEL selector;
+@property (atomic, assign) IMP original;
+- (instancetype)initWithEntry:(FLEXHookEntry *)entry selector:(SEL)selector;
+@end
+
+@implementation FLEXObjectiveCHookContext
+
+- (instancetype)initWithEntry:(FLEXHookEntry *)entry selector:(SEL)selector {
+    NSParameterAssert(entry != nil);
+    NSParameterAssert(selector != NULL);
+    self = [super init];
+    if (self) {
+        _entry = entry;
+        _selector = selector;
+        _original = NULL;
+    }
+    return self;
+}
+
+@end
+
+static IMP FLEXMakeObjectiveCBoolNoArgumentsReplacement(
+    FLEXObjectiveCHookContext *context
+) {
+    return imp_implementationWithBlock(^BOOL(id receiver) {
+        FLEXHookEntry *entry = context.entry;
+        if (entry.effectiveEnabled) {
+            [entry recordOverrideHit];
+            return entry.forceValue;
+        }
+        [entry recordHit];
+        IMP original = context.original;
+        return original
+            ? ((BOOL (*)(id, SEL))original)(receiver, context.selector)
+            : NO;
+    });
+}
+
+static IMP FLEXMakeObjectiveCBoolObjectArgumentReplacement(
+    FLEXObjectiveCHookContext *context
+) {
+    return imp_implementationWithBlock(^BOOL(id receiver, id argument) {
+        FLEXHookEntry *entry = context.entry;
+        if (entry.effectiveEnabled) {
+            [entry recordOverrideHit];
+            return entry.forceValue;
+        }
+        [entry recordHit];
+        IMP original = context.original;
+        return original
+            ? ((BOOL (*)(id, SEL, id))original)(
+                receiver,
+                context.selector,
+                argument
+            )
+            : NO;
+    });
+}
+
+static IMP FLEXMakeObjectiveCBoolIntegerArgumentReplacement(
+    FLEXObjectiveCHookContext *context
+) {
+    return imp_implementationWithBlock(^BOOL(
+        id receiver,
+        uintptr_t argument
+    ) {
+        FLEXHookEntry *entry = context.entry;
+        if (entry.effectiveEnabled) {
+            [entry recordOverrideHit];
+            return entry.forceValue;
+        }
+        [entry recordHit];
+        IMP original = context.original;
+        return original
+            ? ((BOOL (*)(id, SEL, uintptr_t))original)(
+                receiver,
+                context.selector,
+                argument
+            )
+            : NO;
+    });
+}
+
+static IMP FLEXMakeObjectiveCReplacement(
+    FLEXHookABI abi,
+    FLEXObjectiveCHookContext *context
+) {
+    switch (abi) {
+        case FLEXHookABIObjCBoolNoArguments:
+            return FLEXMakeObjectiveCBoolNoArgumentsReplacement(context);
+        case FLEXHookABIObjCBoolObjectArgument:
+            return FLEXMakeObjectiveCBoolObjectArgumentReplacement(context);
+        case FLEXHookABIObjCBoolIntegerArgument:
+            return FLEXMakeObjectiveCBoolIntegerArgumentReplacement(context);
+        default:
+            return NULL;
+    }
+}
+
 NSString *FLEXHookSurfaceName(FLEXHookSurface surface) {
     switch (surface) {
         case FLEXHookSurfaceFeature: return @"AllFLEXing";
@@ -966,68 +1070,13 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
         return NO;
     }
 
-    __weak FLEXHookEntry *weakEntry = entry;
-    __block IMP original = NULL;
-    IMP replacement = NULL;
-    SEL capturedSelector = selector;
-
-    switch (entry.abi) {
-        case FLEXHookABIObjCBoolNoArguments: {
-            replacement = imp_implementationWithBlock(^BOOL(id receiver) {
-                FLEXHookEntry *strongEntry = weakEntry;
-                if (strongEntry.effectiveEnabled) {
-                    [strongEntry recordOverrideHit];
-                    return strongEntry.forceValue;
-                }
-                [strongEntry recordHit];
-                return original
-                    ? ((BOOL (*)(id, SEL))original)(receiver, capturedSelector)
-                    : NO;
-            });
-            break;
-        }
-        case FLEXHookABIObjCBoolObjectArgument: {
-            replacement = imp_implementationWithBlock(^BOOL(id receiver, id argument) {
-                FLEXHookEntry *strongEntry = weakEntry;
-                if (strongEntry.effectiveEnabled) {
-                    [strongEntry recordOverrideHit];
-                    return strongEntry.forceValue;
-                }
-                [strongEntry recordHit];
-                return original
-                    ? ((BOOL (*)(id, SEL, id))original)(
-                        receiver,
-                        capturedSelector,
-                        argument
-                    )
-                    : NO;
-            });
-            break;
-        }
-        case FLEXHookABIObjCBoolIntegerArgument: {
-            replacement = imp_implementationWithBlock(^BOOL(
-                id receiver,
-                uintptr_t argument
-            ) {
-                FLEXHookEntry *strongEntry = weakEntry;
-                if (strongEntry.effectiveEnabled) {
-                    [strongEntry recordOverrideHit];
-                    return strongEntry.forceValue;
-                }
-                [strongEntry recordHit];
-                return original
-                    ? ((BOOL (*)(id, SEL, uintptr_t))original)(
-                        receiver,
-                        capturedSelector,
-                        argument
-                    )
-                    : NO;
-            });
-            break;
-        }
-        default:
-            break;
-    }
+    FLEXObjectiveCHookContext *context =
+    [[FLEXObjectiveCHookContext alloc] initWithEntry:entry
+                                            selector:selector];
+    // Seed forwarding before the provider mutates dispatch. A target
+    // call racing installation can still reach the displaced method.
+    context.original = method_getImplementation(method);
+    IMP replacement = FLEXMakeObjectiveCReplacement(entry.abi, context);
 
     if (!replacement) {
         if (error) {
@@ -1039,6 +1088,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
         return NO;
     }
 
+    IMP original = NULL;
     BOOL installed = classMethod
         ? FLEXHookClassMessage(targetClass, selector, replacement, &original)
         : FLEXHookMessage(targetClass, selector, replacement, &original);
@@ -1052,6 +1102,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
         return NO;
     }
 
+    context.original = original;
     entry.original = original;
     entry.replacementIMP = replacement;
     entry.installed = YES;
