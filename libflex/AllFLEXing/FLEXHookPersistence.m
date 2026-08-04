@@ -1,4 +1,5 @@
 #import "FLEXHookPersistence.h"
+#import "FLEXPersistenceStore.h"
 
 NSNotificationName const FLEXHookFlagsDidChangeNotification = @"FLEXHookFlagsDidChangeNotification";
 
@@ -149,6 +150,7 @@ NSNotificationName const FLEXHookFlagsDidChangeNotification = @"FLEXHookFlagsDid
         self.cachedValues[identifier] = @(value);
         [self.defaults setBool:value forKey:[self storageKeyForIdentifier:identifier]];
     }
+    [FLEXPersistenceStore.sharedStore synchronizeSoon];
 
     if (!changed) {
         return;
@@ -164,6 +166,30 @@ NSNotificationName const FLEXHookFlagsDidChangeNotification = @"FLEXHookFlagsDid
         notification();
     } else {
         dispatch_async(dispatch_get_main_queue(), notification);
+    }
+}
+
+- (void)reloadPersistedValues {
+    NSMutableArray<NSString *> *changed = [NSMutableArray array];
+    @synchronized (self) {
+        for (FLEXHookFlag *flag in self.mutableFlags) {
+            NSString *key = [self storageKeyForIdentifier:flag.identifier];
+            id persisted = [self.defaults objectForKey:key];
+            BOOL value = persisted ? [persisted boolValue] : flag.defaultValue;
+            NSNumber *previous = self.cachedValues[flag.identifier];
+            if (!previous || previous.boolValue != value) {
+                self.cachedValues[flag.identifier] = @(value);
+                [changed addObject:flag.identifier];
+            }
+        }
+    }
+    for (NSString *identifier in changed) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [NSNotificationCenter.defaultCenter
+                postNotificationName:FLEXHookFlagsDidChangeNotification
+                              object:self
+                            userInfo:@{ @"identifier": identifier }];
+        });
     }
 }
 

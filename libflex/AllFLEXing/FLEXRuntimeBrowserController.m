@@ -48,7 +48,7 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
                       forEdge:(NSDirectionalRectEdgeTop | NSDirectionalRectEdgeBottom)];
 
     self.scopeItem = [[UIBarButtonItem alloc]
-        initWithTitle:@"App images"
+        initWithTitle:@"Current app"
                  menu:[self scopeMenu]];
     self.reloadItem = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh
@@ -174,34 +174,19 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
 }
 
 - (UIMenu *)scopeMenu {
-    __weak typeof(self) weakSelf = self;
-    UIAction *app = [UIAction
-        actionWithTitle:@"Host app images"
+    self.includeSystemImages = NO;
+    UIAction *host = [UIAction
+        actionWithTitle:@"Main executable and embedded frameworks"
                   image:[UIImage systemImageNamed:@"app"]
              identifier:nil
-                handler:^(__unused UIAction *action) {
-        weakSelf.includeSystemImages = NO;
-        weakSelf.scopeItem.title = @"App images";
-        weakSelf.scopeItem.menu = [weakSelf scopeMenu];
-        [weakSelf reloadScan];
-    }];
-    app.state = self.includeSystemImages ? UIMenuElementStateOff : UIMenuElementStateOn;
-    UIAction *all = [UIAction
-        actionWithTitle:@"All loaded images"
-                  image:[UIImage systemImageNamed:@"square.stack.3d.up"]
-             identifier:nil
-                handler:^(__unused UIAction *action) {
-        weakSelf.includeSystemImages = YES;
-        weakSelf.scopeItem.title = @"All images";
-        weakSelf.scopeItem.menu = [weakSelf scopeMenu];
-        [weakSelf reloadScan];
-    }];
-    all.state = self.includeSystemImages ? UIMenuElementStateOn : UIMenuElementStateOff;
+                handler:^(__unused UIAction *action) {}];
+    host.state = UIMenuElementStateOn;
+    host.attributes = UIMenuElementAttributesDisabled;
     return [UIMenu menuWithTitle:@"Runtime scope"
                          image:nil
                     identifier:nil
                        options:UIMenuOptionsDisplayInline
-                      children:@[app, all]];
+                      children:@[host]];
 }
 
 - (void)addManualSymbol:(UIBarButtonItem *)sender {

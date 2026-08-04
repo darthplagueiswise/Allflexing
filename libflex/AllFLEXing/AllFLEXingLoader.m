@@ -6,6 +6,8 @@
 #import "FLEXHookWorkspaceController.h"
 #import "FLEXHooking.h"
 #import "FLEXLiquidGlass.h"
+#import "FLEXPersistenceStore.h"
+#import "FLEXRuntimeScanner.h"
 #import "FLEXManager.h"
 #import "FLEXManager+Extensibility.h"
 #import "FLEXWindow.h"
@@ -155,32 +157,59 @@ static BOOL AllFLEXingIsUIApplicationProcess(void) {
     return NSClassFromString(@"UIApplication") != nil;
 }
 
-static void AllFLEXingRegisterRuntime(void) {
+static FLEXHookPersistence *AllFLEXingRegisterRuntimeFlags(void) {
     FLEXHookPersistence *flags = FLEXHookPersistence.sharedManager;
-    [flags registerFlag:@"glass.enabled"
-                  title:@"Liquid Glass UI"
-                 detail:@"Use native UIKit 26 glass for FLEX navigation and controls."
-           defaultValue:YES];
-    [flags registerFlag:@"reveal.three_finger"
-                  title:@"Three-finger reveal"
-                 detail:@"Open FLEX with a 0.55 second three-finger long press."
-           defaultValue:YES];
-    [flags registerFlag:@"engine.objc_ellekit"
-                  title:@"Objective-C / ElleKit"
-                 detail:@"Allow ABI-validated runtime methods through MSHookMessageEx."
-           defaultValue:YES];
-    [flags registerFlag:@"engine.fishhook"
-                  title:@"C imports / fishhook"
-                 detail:@"Allow rebinding only when a Mach-O import slot is confirmed."
-           defaultValue:YES];
-    [flags registerFlag:@"engine.inline_ellekit"
-                  title:@"C inline / ElleKit"
-                 detail:@"Allow MSHookFunction only for an explicit C ABI and resolved address."
-           defaultValue:YES];
-    // Reapply only exact, versioned targets after engine defaults exist and
-    // before the first main-runloop turn. No broad scan or UIKit work occurs.
-    [FLEXHookRegistry.sharedRegistry bootstrap];
-    [flags activateRegisteredHooks];
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        [flags registerFlag:@"glass.enabled"
+                      title:@"Liquid Glass UI"
+                     detail:@"Use native UIKit 26 glass for FLEX navigation and controls."
+               defaultValue:YES];
+        [flags registerFlag:@"reveal.three_finger"
+                      title:@"Three-finger reveal"
+                     detail:@"Open FLEX with a 0.55 second three-finger long press."
+               defaultValue:YES];
+        [flags registerFlag:@"engine.objc_ellekit"
+                      title:@"Objective-C / ElleKit"
+                     detail:@"Allow ABI-validated runtime methods through MSHookMessageEx."
+               defaultValue:YES];
+        [flags registerFlag:@"engine.fishhook"
+                      title:@"C imports / fishhook"
+                     detail:@"Allow rebinding only when a Mach-O import slot is confirmed."
+               defaultValue:YES];
+        [flags registerFlag:@"engine.inline_ellekit"
+                      title:@"C inline / ElleKit"
+                     detail:@"Allow MSHookFunction only for an explicit C ABI and resolved address."
+               defaultValue:YES];
+    });
+    return flags;
+}
+
+static void AllFLEXingActivateRuntime(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        FLEXHookPersistence *flags = AllFLEXingRegisterRuntimeFlags();
+        [flags reloadPersistedValues];
+        [FLEXHookRegistry.sharedRegistry bootstrap];
+        [flags activateRegisteredHooks];
+        [FLEXRuntimeScanner startMonitoringImages];
+    });
+}
+
+static void AllFLEXingReArmConfirmedHooksAtLaunch(void) {
+    // Restore host-scoped mirrors first. This performs no scan and writes
+    // nothing. A clean first run remains free of registry/scanner/hook work.
+    (void)FLEXPersistenceStore.sharedStore;
+    FLEXHookPersistence *flags = AllFLEXingRegisterRuntimeFlags();
+    [flags reloadPersistedValues];
+    if (!FLEXHookRegistry.hasPersistedConfirmedEntries) {
+        NSLog(@"[AllFLEXing] no Apply-confirmed hooks for this host; launch re-arm skipped");
+        return;
+    }
+
+    AllFLEXingActivateRuntime();
+    NSLog(@"[AllFLEXing] re-armed Apply-confirmed hooks for %@",
+        NSBundle.mainBundle.bundleIdentifier ?: NSProcessInfo.processInfo.processName);
 }
 
 static void AllFLEXingStartUI(void) {
@@ -189,6 +218,7 @@ static void AllFLEXingStartUI(void) {
         [FLEXManager.sharedManager
             registerGlobalEntryWithName:@"AllFLEXing Runtime Workspace"
             action:^(__kindof UITableViewController *host) {
+                AllFLEXingActivateRuntime();
                 FLEXHookWorkspaceController *workspace =
                     [FLEXHookWorkspaceController new];
                 [host presentViewController:workspace animated:YES completion:nil];
@@ -204,14 +234,7 @@ static void AllFLEXingStartUI(void) {
 
 static void AllFLEXingRunActivationPhase(void) {
     NSCAssert(NSThread.isMainThread, @"activation phase must run on the main thread");
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        // The constructor already replays exact targets that exist at image
-        // load. Re-resolve once after UIApplication becomes active to cover
-        // Swift/late Objective-C realization without delaying early hooks.
-        [FLEXHookRegistry.sharedRegistry reapplyPersistedEntries];
-        AllFLEXingStartUI();
-    });
+    AllFLEXingStartUI();
 }
 
 static void AllFLEXingScheduleActivationPhase(void) {
@@ -247,9 +270,10 @@ static void AllFLEXingBootstrap(void) {
             return;
         }
 
-        // Method and symbol hooks are registered synchronously at image load so
-        // early app calls cannot win a race with the first main-runloop turn.
-        AllFLEXingRegisterRuntime();
+        // Only hooks that were confirmed by Apply in this exact host/image are
+        // eligible for early launch re-arm. No discovered runtime catalogue is
+        // loaded or persisted.
+        AllFLEXingReArmConfirmedHooksAtLaunch();
         AllFLEXingScheduleActivationPhase();
     }
 }

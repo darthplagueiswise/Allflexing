@@ -81,6 +81,9 @@ typedef void (^FLEXHookApplyCompletion)(NSArray<FLEXHookEntry *> *applied,
 @interface FLEXHookRegistry : NSObject
 
 @property (class, nonatomic, readonly) FLEXHookRegistry *sharedRegistry;
+/// Cheap host-scoped launch probe. Returns YES only for entries previously
+/// confirmed by Apply in this exact host executable.
+@property (class, nonatomic, readonly) BOOL hasPersistedConfirmedEntries;
 @property (nonatomic, copy, readonly) NSArray<FLEXHookEntry *> *entries;
 @property (nonatomic, readonly) BOOL safeMode;
 @property (nonatomic, copy, readonly, nullable) NSString *safeModeEntryIdentifier;

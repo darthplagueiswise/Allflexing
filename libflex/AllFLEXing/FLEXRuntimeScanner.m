@@ -3,6 +3,7 @@
 #import "FLEXHookRegistry.h"
 #import "FLEXHookPersistence.h"
 #import "FLEXHooking.h"
+#import "FLEXRuntimeHostIdentity.h"
 
 #import <mach-o/dyld.h>
 #import <mach-o/loader.h>
@@ -56,15 +57,7 @@ static void FLEXRuntimeImageAdded(const struct mach_header *header, intptr_t sli
 }
 
 static BOOL FLEXImageIsInsideHostApp(NSString *path) {
-    if (path.length == 0) {
-        return NO;
-    }
-    NSString *bundlePath = NSBundle.mainBundle.bundlePath;
-    if (bundlePath.length && [path hasPrefix:bundlePath]) {
-        return YES;
-    }
-    NSString *executablePath = NSBundle.mainBundle.executablePath;
-    return executablePath.length && [path isEqualToString:executablePath];
+    return FLEXRuntimeImageIsAllowedHostImage(path);
 }
 
 static const char *FLEXSkipObjCQualifiers(const char *type) {
@@ -209,13 +202,13 @@ static NSString *FLEXUUIDForHeader(const struct mach_header_64 *header) {
     entry.surface = FLEXHookSurfaceObjectiveC;
     entry.backend = FLEXHookBackendObjectiveCElleKit;
     entry.abi = abi;
-    entry.locator = @{
+    entry.locator = FLEXLocatorByAddingCurrentHostIdentity(@{
         @"class": className,
         @"selector": selectorName,
         @"classMethod": @(classMethod),
         @"encoding": encoding,
         @"image": image,
-    };
+    });
     entry.available = providerAvailable;
     entry.hookable = providerAvailable && engineEnabled;
     entry.stale = NO;
@@ -241,7 +234,8 @@ static NSString *FLEXUUIDForHeader(const struct mach_header_64 *header) {
                     continue;
                 }
                 NSString *image = [NSString stringWithUTF8String:rawImage];
-                if (!includeSystemImages && !FLEXImageIsInsideHostApp(image)) {
+                (void)includeSystemImages;
+                if (!FLEXImageIsInsideHostApp(image)) {
                     continue;
                 }
 
@@ -310,7 +304,8 @@ static NSString *FLEXUUIDForHeader(const struct mach_header_64 *header) {
                     continue;
                 }
                 NSString *imagePath = [NSString stringWithUTF8String:rawPath];
-                if (!includeSystemImages && !FLEXImageIsInsideHostApp(imagePath)) {
+                (void)includeSystemImages;
+                if (!FLEXImageIsInsideHostApp(imagePath)) {
                     continue;
                 }
 
@@ -426,12 +421,12 @@ static NSString *FLEXUUIDForHeader(const struct mach_header_64 *header) {
                             entriesByID[identifier] = entry;
                         }
                         bindSlots++;
-                        entry.locator = @{
+                        entry.locator = FLEXLocatorByAddingCurrentHostIdentity(@{
                             @"symbol": symbol,
                             @"image": imagePath,
                             @"imageUUID": uuid ?: @"",
                             @"bindSlots": @(bindSlots),
-                        };
+                        });
                         entry.detail = [NSString stringWithFormat:
                             @"%lu imported bind slot%@ · ABI required",
                             (unsigned long)bindSlots,
@@ -471,11 +466,11 @@ static NSString *FLEXUUIDForHeader(const struct mach_header_64 *header) {
     entry.surface = FLEXHookSurfaceCInline;
     entry.backend = FLEXHookBackendInlineElleKit;
     entry.abi = FLEXHookABIUnknown;
-    entry.locator = @{
+    entry.locator = FLEXLocatorByAddingCurrentHostIdentity(@{
         @"symbol": normalized ?: @"",
         @"image": imageName ?: @"",
         @"bindSlots": @0,
-    };
+    });
     entry.available = normalized.length > 0 && FLEXMSHookFunctionProviderAvailable();
     entry.hookable = NO;
     entry.userConfigured = YES;

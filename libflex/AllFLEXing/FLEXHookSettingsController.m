@@ -2,6 +2,7 @@
 
 #import "FLEXHookPersistence.h"
 #import "FLEXHookRegistry.h"
+#import "FLEXPersistenceStore.h"
 #import "FLEXLiquidGlass.h"
 #import <objc/runtime.h>
 
@@ -164,7 +165,7 @@ typedef NS_ENUM(NSInteger, FLEXHookSettingsSection) {
     if (indexPath.section == FLEXHookSettingsSectionStorage) {
         [self configureCell:cell
                        text:@"Jailed host storage"
-                  secondary:FLEXHookPersistence.sharedManager.storageDomainDescription
+                  secondary:FLEXPersistenceStore.sharedStore.storageDescription
                       image:@"internaldrive.fill"
                        tint:UIColor.systemIndigoColor];
         cell.selectionStyle = UITableViewCellSelectionStyleNone;

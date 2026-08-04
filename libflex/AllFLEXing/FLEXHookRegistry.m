@@ -3,6 +3,8 @@
 #import "FLEXCHookEngine.h"
 #import "FLEXHookPersistence.h"
 #import "FLEXHooking.h"
+#import "FLEXPersistenceStore.h"
+#import "FLEXRuntimeHostIdentity.h"
 #import "FLEXRuntimeScanner.h"
 
 #import <stdatomic.h>
@@ -10,9 +12,31 @@
 NSNotificationName const FLEXHookRegistryDidChangeNotification =
     @"FLEXHookRegistryDidChangeNotification";
 
-static NSString *const kFLEXHookRegistryStorageKey = @"com.allflexing.registry.v1";
-static NSString *const kFLEXHookRegistryInFlightKey = @"com.allflexing.registry.applyInFlight";
-static NSInteger const kFLEXHookRegistrySchema = 1;
+static NSString *const kFLEXHookRegistryLegacyStorageKey = @"com.allflexing.registry.v1";
+static NSInteger const kFLEXHookRegistrySchema = 2;
+
+static NSString *FLEXHookRegistryStorageKey(void) {
+    return [@"com.allflexing.registry.v2." stringByAppendingString:FLEXCurrentHostScope()];
+}
+
+static NSString *FLEXHookRegistryInFlightKey(void) {
+    return [@"com.allflexing.registry.applyInFlight.v2."
+        stringByAppendingString:FLEXCurrentHostScope()];
+}
+
+static BOOL FLEXRegistryPayloadMatchesCurrentHost(NSDictionary *payload) {
+    if (![payload isKindOfClass:NSDictionary.class] ||
+        [payload[@"schema"] integerValue] != kFLEXHookRegistrySchema) {
+        return NO;
+    }
+    NSString *host = [payload[@"hostBundleIdentifier"] isKindOfClass:NSString.class]
+        ? payload[@"hostBundleIdentifier"] : @"";
+    NSString *hostUUID = [payload[@"hostExecutableUUID"] isKindOfClass:NSString.class]
+        ? payload[@"hostExecutableUUID"] : @"";
+    return [host isEqualToString:FLEXCurrentHostBundleIdentifier()] &&
+        hostUUID.length &&
+        [hostUUID caseInsensitiveCompare:FLEXCurrentHostExecutableUUID()] == NSOrderedSame;
+}
 
 NSString *FLEXHookSurfaceName(FLEXHookSurface surface) {
     switch (surface) {
@@ -267,6 +291,23 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     return registry;
 }
 
++ (BOOL)hasPersistedConfirmedEntries {
+    NSDictionary *payload = [NSUserDefaults.standardUserDefaults
+        objectForKey:FLEXHookRegistryStorageKey()];
+    if (!FLEXRegistryPayloadMatchesCurrentHost(payload)) return NO;
+    NSArray *records = [payload[@"entries"] isKindOfClass:NSArray.class]
+        ? payload[@"entries"] : @[];
+    for (NSDictionary *record in records) {
+        NSDictionary *locator = [record[@"locator"] isKindOfClass:NSDictionary.class]
+            ? record[@"locator"] : nil;
+        if ([record[@"desiredEnabled"] boolValue] &&
+            FLEXLocatorMatchesCurrentHost(locator)) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
 - (instancetype)init {
     self = [super init];
     if (self) {
@@ -274,6 +315,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
         _defaults = NSUserDefaults.standardUserDefaults;
         _mutableEntries = [NSMutableArray array];
         _entriesByIdentifier = [NSMutableDictionary dictionary];
+        [_defaults removeObjectForKey:kFLEXHookRegistryLegacyStorageKey];
         [self loadPersistedEntries];
         [self detectInterruptedApply];
     }
@@ -344,19 +386,22 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
 }
 
 - (void)loadPersistedEntries {
-    NSDictionary *payload = [self.defaults objectForKey:kFLEXHookRegistryStorageKey];
-    if (![payload isKindOfClass:NSDictionary.class] ||
-        [payload[@"schema"] integerValue] != kFLEXHookRegistrySchema) {
+    NSDictionary *payload = [self.defaults objectForKey:FLEXHookRegistryStorageKey()];
+    if (!FLEXRegistryPayloadMatchesCurrentHost(payload)) {
+        [self.defaults removeObjectForKey:FLEXHookRegistryStorageKey()];
         return;
     }
 
     NSArray *records = [payload[@"entries"] isKindOfClass:NSArray.class]
         ? payload[@"entries"] : @[];
     for (NSDictionary *record in records) {
+        if (![record[@"desiredEnabled"] boolValue]) continue;
         FLEXHookEntry *entry = [FLEXHookEntry entryWithDictionary:record];
-        if (!entry || self.entriesByIdentifier[entry.identifier]) {
+        if (!entry || self.entriesByIdentifier[entry.identifier] ||
+            !FLEXLocatorMatchesCurrentHost(entry.locator)) {
             continue;
         }
+        entry.userConfigured = YES;
         self.entriesByIdentifier[entry.identifier] = entry;
         [self.mutableEntries addObject:entry];
     }
@@ -366,20 +411,28 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     NSMutableArray<NSDictionary *> *records = [NSMutableArray array];
     @synchronized (self) {
         for (FLEXHookEntry *entry in self.mutableEntries) {
-            if (entry.desiredEnabled || entry.userConfigured) {
-                [records addObject:entry.dictionaryRepresentation];
+            // Runtime discovery is transient. Only an entry confirmed by Apply
+            // may survive a process restart or be re-armed at launch.
+            if (!entry.desiredEnabled ||
+                !FLEXLocatorMatchesCurrentHost(entry.locator)) {
+                continue;
             }
+            [records addObject:entry.dictionaryRepresentation];
         }
     }
     NSDictionary *payload = @{
         @"schema": @(kFLEXHookRegistrySchema),
+        @"hostBundleIdentifier": FLEXCurrentHostBundleIdentifier(),
+        @"hostExecutableUUID": FLEXCurrentHostExecutableUUID(),
         @"entries": records.copy,
     };
-    [self.defaults setObject:payload forKey:kFLEXHookRegistryStorageKey];
+    [self.defaults setObject:payload forKey:FLEXHookRegistryStorageKey()];
+    [self.defaults removeObjectForKey:kFLEXHookRegistryLegacyStorageKey];
+    [FLEXPersistenceStore.sharedStore synchronizeSoon];
 }
 
 - (void)detectInterruptedApply {
-    NSDictionary *inFlight = [self.defaults objectForKey:kFLEXHookRegistryInFlightKey];
+    NSDictionary *inFlight = [self.defaults objectForKey:FLEXHookRegistryInFlightKey()];
     NSString *identifier = [inFlight[@"identifier"] isKindOfClass:NSString.class]
         ? inFlight[@"identifier"] : nil;
     if (identifier.length == 0) {
@@ -395,7 +448,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
         entry.effectiveEnabled = NO;
         entry.lastError = @"Disabled by safe mode after an interrupted apply";
     }
-    [self.defaults removeObjectForKey:kFLEXHookRegistryInFlightKey];
+    [self.defaults removeObjectForKey:FLEXHookRegistryInFlightKey()];
     [self persistEntries];
 }
 
@@ -403,12 +456,12 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     [self.defaults setObject:@{
         @"identifier": entry.identifier ?: @"",
         @"date": @([NSDate.date timeIntervalSince1970]),
-    } forKey:kFLEXHookRegistryInFlightKey];
+    } forKey:FLEXHookRegistryInFlightKey()];
     [self.defaults synchronize];
 }
 
 - (void)clearApplyInFlight {
-    [self.defaults removeObjectForKey:kFLEXHookRegistryInFlightKey];
+    [self.defaults removeObjectForKey:FLEXHookRegistryInFlightKey()];
     [self.defaults synchronize];
 }
 
@@ -426,7 +479,9 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
         }
 
         for (FLEXHookEntry *discovered in entries) {
-            if (discovered.identifier.length == 0) {
+            discovered.locator = FLEXLocatorByAddingCurrentHostIdentity(discovered.locator);
+            if (discovered.identifier.length == 0 ||
+                !FLEXRuntimeImageIsAllowedHostImage(discovered.locator[@"image"])) {
                 continue;
             }
             FLEXHookEntry *existing = self.entriesByIdentifier[discovered.identifier];
@@ -491,7 +546,9 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
 }
 
 - (FLEXHookEntry *)upsertDiscoveredEntry:(FLEXHookEntry *)entry {
-    if (entry.identifier.length == 0) {
+    entry.locator = FLEXLocatorByAddingCurrentHostIdentity(entry.locator);
+    if (entry.identifier.length == 0 ||
+        !FLEXRuntimeImageIsAllowedHostImage(entry.locator[@"image"])) {
         return entry;
     }
 
@@ -565,6 +622,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
 }
 
 - (void)addOrUpdateManualEntry:(FLEXHookEntry *)entry {
+    entry.locator = FLEXLocatorByAddingCurrentHostIdentity(entry.locator);
     if (entry.identifier.length == 0) {
         return;
     }
@@ -753,6 +811,15 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
                 continue;
             }
 
+            if (!FLEXLocatorMatchesCurrentHost(entry.locator)) {
+                entry.lastError = @"Target belongs to another host or image build";
+                entry.pendingEnabled = entry.desiredEnabled;
+                entry.available = NO;
+                entry.hookable = NO;
+                [failed addObject:entry];
+                continue;
+            }
+
             if (!entry.available || !entry.hookable) {
                 entry.lastError = entry.available
                     ? @"ABI or provider is not valid for this target"
@@ -786,6 +853,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
         }
 
         [self persistEntries];
+        [FLEXPersistenceStore.sharedStore synchronizeNow];
         [self finishApplyOperationWithReason:reason
                                     applied:applied.copy
                                      failed:failed.copy
@@ -970,6 +1038,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
 - (void)reapplyPersistedEntriesWithReason:(NSString *)reason {
     for (FLEXHookEntry *entry in self.entries) {
         if (!entry.desiredEnabled ||
+            !FLEXLocatorMatchesCurrentHost(entry.locator) ||
             [entry.identifier isEqualToString:self.safeModeEntryIdentifier]) {
             continue;
         }
@@ -1007,6 +1076,13 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
 }
 
 - (void)refreshPersistedEntryAvailability:(FLEXHookEntry *)entry {
+    if (!FLEXLocatorMatchesCurrentHost(entry.locator)) {
+        entry.available = NO;
+        entry.hookable = NO;
+        entry.stale = YES;
+        entry.lastError = @"Target belongs to another host or image build";
+        return;
+    }
     if (entry.surface == FLEXHookSurfaceObjectiveC) {
         NSString *className = [entry.locator[@"class"] isKindOfClass:NSString.class]
             ? entry.locator[@"class"] : nil;

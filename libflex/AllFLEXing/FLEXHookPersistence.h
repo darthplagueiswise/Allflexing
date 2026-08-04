@@ -34,6 +34,7 @@ typedef void (^FLEXHookInstallBlock)(void);
 
 - (BOOL)boolForFlag:(NSString *)identifier;
 - (void)setBool:(BOOL)value forFlag:(NSString *)identifier;
+- (void)reloadPersistedValues;
 
 /// Installs every registered hook exactly once. Flag values gate hook bodies;
 /// they never cause a running process to be re-hooked.
