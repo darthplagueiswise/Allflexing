@@ -29,10 +29,7 @@ diff --git a/Classes/GlobalStateExplorers/RuntimeBrowser/FLEXKeyPathSearchContro
 +@property (nonatomic) BOOL plainTextMode;
 +@property (nonatomic) NSUInteger plainSearchGeneration;
  @end
-@@ -76,6 +78,48 @@
-     }];
- }
- 
+@@ -76,1 +78,35 @@
 +- (BOOL)delegateHandlesPlainTextQuery:(NSString *)query {
 +    return query.length &&
 +        [self.delegate respondsToSelector:@selector(runtimeBrowserShouldUsePlainTextSearchForQuery:)] &&
