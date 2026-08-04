@@ -1,0 +1,118 @@
+diff --git a/Classes/GlobalStateExplorers/RuntimeBrowser/FLEXKeyPathSearchController.h b/Classes/GlobalStateExplorers/RuntimeBrowser/FLEXKeyPathSearchController.h
+index 98c2960..d8f0a41 100644
+--- a/Classes/GlobalStateExplorers/RuntimeBrowser/FLEXKeyPathSearchController.h
++++ b/Classes/GlobalStateExplorers/RuntimeBrowser/FLEXKeyPathSearchController.h
+@@ -18,6 +18,14 @@
+ - (void)didSelectImagePath:(NSString *)message shortName:(NSString *)shortName;
+ - (void)didSelectBundle:(NSBundle *)bundle;
+ - (void)didSelectClass:(Class)cls;
++
++@optional
++/// Optional filtering hooks. FLEX still owns tokenization, runtime discovery,
++/// reflection models, caching, grouping and table navigation.
++- (BOOL)runtimeBrowserShouldIncludeImagePath:(NSString *)path
++                                  shortName:(NSString *)shortName;
++- (BOOL)runtimeBrowserShouldIncludeMethod:(FLEXMethod *)method
++                             inClassNamed:(NSString *)className;
+ 
+ @end
+ 
+diff --git a/Classes/GlobalStateExplorers/RuntimeBrowser/FLEXKeyPathSearchController.m b/Classes/GlobalStateExplorers/RuntimeBrowser/FLEXKeyPathSearchController.m
+index e33cf7c..49a227d 100644
+--- a/Classes/GlobalStateExplorers/RuntimeBrowser/FLEXKeyPathSearchController.m
++++ b/Classes/GlobalStateExplorers/RuntimeBrowser/FLEXKeyPathSearchController.m
+@@ -8,6 +8,7 @@
+ #import "FLEXKeyPathSearchController.h"
+ #import "FLEXRuntimeKeyPathTokenizer.h"
+ #import "FLEXRuntimeController.h"
++#import "FLEXSearchToken.h"
+ #import "NSString+FLEX.h"
+ #import "NSArray+FLEX.h"
+ #import "UITextField+Range.h"
+@@ -45,9 +46,9 @@ @implementation FLEXKeyPathSearchController
+ 
+ + (instancetype)delegate:(id<FLEXKeyPathSearchControllerDelegate>)delegate {
+     FLEXKeyPathSearchController *controller = [self new];
+-    controller->_bundlesOrClasses = [FLEXRuntimeController allBundleNames];
+     controller->_delegate         = delegate;
+     controller->_emptySuggestion  = NSBundle.mainBundle.executablePath.lastPathComponent;
++    controller->_bundlesOrClasses = [controller filteredBundleNames:[FLEXRuntimeController allBundleNames]];
+ 
+     NSParameterAssert(delegate.tableView);
+     NSParameterAssert(delegate.searchController);
+@@ -64,6 +65,57 @@ @implementation FLEXKeyPathSearchController
+     return controller;
+ }
+ 
++- (NSArray<NSString *> *)filteredBundleNames:(NSArray<NSString *> *)bundleNames {
++    if (![self.delegate respondsToSelector:@selector(runtimeBrowserShouldIncludeImagePath:shortName:)]) {
++        return bundleNames;
++    }
++
++    return [bundleNames flex_filtered:^BOOL(NSString *shortName, NSUInteger idx) {
++        NSString *path = [FLEXRuntimeController imagePathWithShortName:shortName];
++        return [self.delegate runtimeBrowserShouldIncludeImagePath:path shortName:shortName];
++    }];
++}
++
++- (void)applyDelegateMethodFilter:(NSMutableArray<NSArray<FLEXMethod *> *> *)methods
++                          classes:(NSMutableArray<NSString *> *)classes {
++    if (![self.delegate respondsToSelector:@selector(runtimeBrowserShouldIncludeMethod:inClassNamed:)]) {
++        return;
++    }
++
++    NSUInteger count = MIN(methods.count, classes.count);
++    for (NSUInteger idx = 0; idx < count; idx++) {
++        NSString *className = classes[idx];
++        NSArray<FLEXMethod *> *filtered = [methods[idx] flex_filtered:^BOOL(FLEXMethod *method, NSUInteger methodIndex) {
++            return [self.delegate runtimeBrowserShouldIncludeMethod:method inClassNamed:className];
++        }];
++        methods[idx] = filtered;
++    }
++}
++
++- (void)showOnlyClassesWithAcceptedMethods:(NSArray<NSString *> *)classNames {
++    NSMutableArray<NSString *> *classes = classNames.mutableCopy;
++    NSMutableArray<NSArray<FLEXMethod *> *> *methods = [[FLEXRuntimeController
++        methodsForToken:FLEXSearchToken.any
++        instance:nil
++        inClasses:classes
++    ] mutableCopy];
++
++    self.bundlesOrClasses = nil;
++    [self setNonEmptyMethodLists:methods withClasses:classes];
++}
++
+ - (void)scrollViewDidScroll:(UIScrollView *)scrollView {
+     if (scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating) {
+         [self.delegate.searchController.searchBar resignFirstResponder];
+@@ -178,8 +230,12 @@ @implementation FLEXKeyPathSearchController
+                 [self setNonEmptyMethodLists:methods withClasses:classes];
+             } else { // We're looking at bundles or classes
+-                self.bundlesOrClasses = models;
+-                self.classesToMethods = nil;
++                if (keyPath.classKey && [self.delegate respondsToSelector:@selector(runtimeBrowserShouldIncludeMethod:inClassNamed:)]) {
++                    [self showOnlyClassesWithAcceptedMethods:models];
++                } else {
++                    self.bundlesOrClasses = [self filteredBundleNames:models];
++                    self.classesToMethods = nil;
++                }
+             }
+         }
+@@ -202,6 +258,8 @@ @implementation FLEXKeyPathSearchController
+ - (void)setNonEmptyMethodLists:(NSMutableArray<NSArray<FLEXMethod *> *> *)methods
+                    withClasses:(NSMutableArray<NSString *> *)classes {
++    [self applyDelegateMethodFilter:methods classes:classes];
++
+     // Remove sections with no methods
+     NSIndexSet *allEmpty = [methods indexesOfObjectsPassingTest:^BOOL(NSArray *list, NSUInteger idx, BOOL *stop) {
+         return list.count == 0;
+@@ -263,7 +321,7 @@ @implementation FLEXKeyPathSearchController
+     }
+     // ... or remove all rows
+     else {
+-        _bundlesOrClasses = [FLEXRuntimeController allBundleNames];
++        _bundlesOrClasses = [self filteredBundleNames:[FLEXRuntimeController allBundleNames]];
+         _classesToMethods = nil;
+         _classes = nil;
+         _keyPath = nil;
