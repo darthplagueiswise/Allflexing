@@ -11,7 +11,6 @@
 static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKey;
 
 @interface FLEXRuntimeBrowserController () <UISearchResultsUpdating>
-@property (nonatomic) FLEXRuntimeBrowserKind kind;
 @property (nonatomic) BOOL includeSystemImages;
 @property (nonatomic) BOOL scanning;
 @property (nonatomic) UISearchController *searchController;
@@ -22,25 +21,20 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
 
 @implementation FLEXRuntimeBrowserController
 
-- (instancetype)initWithKind:(FLEXRuntimeBrowserKind)kind {
-    self = [super initWithStyle:UITableViewStyleInsetGrouped];
-    if (self) {
-        _kind = kind;
-    }
-    return self;
+- (instancetype)init {
+    return [super initWithStyle:UITableViewStyleInsetGrouped];
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = self.kind == FLEXRuntimeBrowserKindObjectiveC
-        ? @"Objective-C Runtime" : @"C Runtime";
+    self.title = @"C Runtime";
     self.tableView.rowHeight = UITableViewAutomaticDimension;
     self.tableView.estimatedRowHeight = 74.0;
 
     self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
     self.searchController.obscuresBackgroundDuringPresentation = NO;
     self.searchController.searchResultsUpdater = self;
-    self.searchController.searchBar.placeholder = @"Class, selector, symbol, image";
+    self.searchController.searchBar.placeholder = @"Symbol or image";
     self.navigationItem.searchController = self.searchController;
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;
@@ -62,16 +56,13 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
     if (@available(iOS 26.0, *)) {
         separator.hidesSharedBackground = YES;
     }
-    NSMutableArray<UIBarButtonItem *> *items = [NSMutableArray arrayWithObjects:
-        self.reloadItem, separator, self.scopeItem, nil];
-    if (self.kind == FLEXRuntimeBrowserKindC) {
-        UIBarButtonItem *add = [[UIBarButtonItem alloc]
-            initWithBarButtonSystemItem:UIBarButtonSystemItemAdd
-                                 target:self
-                                 action:@selector(addManualSymbol:)];
-        [items insertObject:add atIndex:0];
-    }
-    self.navigationItem.rightBarButtonItems = items;
+    UIBarButtonItem *add = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemAdd
+                             target:self
+                             action:@selector(addManualSymbol:)];
+    self.navigationItem.rightBarButtonItems = @[
+        add, self.reloadItem, separator, self.scopeItem
+    ];
 
     [NSNotificationCenter.defaultCenter
         addObserver:self
@@ -115,10 +106,8 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
     NSString *query = self.searchController.searchBar.text.lowercaseString ?: @"";
     NSMutableArray<FLEXHookEntry *> *filtered = [NSMutableArray array];
     for (FLEXHookEntry *entry in entries) {
-        BOOL surfaceMatches = self.kind == FLEXRuntimeBrowserKindObjectiveC
-            ? entry.surface == FLEXHookSurfaceObjectiveC
-            : (entry.surface == FLEXHookSurfaceCImport ||
-               entry.surface == FLEXHookSurfaceCInline);
+        BOOL surfaceMatches = entry.surface == FLEXHookSurfaceCImport ||
+                              entry.surface == FLEXHookSurfaceCInline;
         if (!surfaceMatches) {
             continue;
         }
@@ -148,29 +137,19 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
     [self updateUnavailableConfiguration];
 
     __weak typeof(self) weakSelf = self;
-    FLEXRuntimeScanCompletion completion = ^(NSArray<FLEXHookEntry *> *entries) {
+    [FLEXRuntimeScanner scanCImportsIncludingSystemImages:self.includeSystemImages
+                                                completion:^(NSArray<FLEXHookEntry *> *entries) {
         __strong typeof(weakSelf) self = weakSelf;
         if (!self) {
             return;
         }
-        FLEXHookSurface surface = self.kind == FLEXRuntimeBrowserKindObjectiveC
-            ? FLEXHookSurfaceObjectiveC : FLEXHookSurfaceCImport;
-        [FLEXHookRegistry.sharedRegistry mergeDiscoveredEntries:entries surface:surface];
+        [FLEXHookRegistry.sharedRegistry mergeDiscoveredEntries:entries
+                                                        surface:FLEXHookSurfaceCImport];
         self.scanning = NO;
         self.reloadItem.enabled = YES;
         self.scopeItem.enabled = YES;
         [self reloadEntries];
-    };
-
-    if (self.kind == FLEXRuntimeBrowserKindObjectiveC) {
-        [FLEXRuntimeScanner
-            scanObjectiveCRuntimeIncludingSystemImages:self.includeSystemImages
-                                             completion:completion];
-    } else {
-        [FLEXRuntimeScanner
-            scanCImportsIncludingSystemImages:self.includeSystemImages
-                                    completion:completion];
-    }
+    }];
 }
 
 - (UIMenu *)scopeMenu {
@@ -247,7 +226,7 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
 
 - (UITableViewCell *)tableView:(UITableView *)tableView
          cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    static NSString *identifier = @"AllFLEXingRuntimeBrowserCell";
+    static NSString *identifier = @"AllFLEXingCRuntimeBrowserCell";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:identifier];
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
@@ -288,7 +267,7 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
 
 - (void)updateNavigationStatus {
     NSString *status = self.scanning
-        ? @"Scanning safely in the background…"
+        ? @"Scanning Mach-O imports in the background…"
         : [NSString stringWithFormat:@"%lu discovered target(s)",
             (unsigned long)self.filteredEntries.count];
     if (@available(iOS 26.0, *)) {
@@ -307,10 +286,10 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
             : (self.searchController.searchBar.text.length
                 ? [UIContentUnavailableConfiguration searchConfiguration]
                 : [UIContentUnavailableConfiguration emptyConfiguration]);
-        configuration.text = self.scanning ? @"Scanning runtime" : @"No matching targets";
+        configuration.text = self.scanning ? @"Scanning C runtime" : @"No matching C targets";
         configuration.secondaryText = self.scanning
-            ? @"Class and Mach-O work is running away from the main thread."
-            : @"Change the search or runtime scope, then scan again.";
+            ? @"Mach-O bind inspection is running away from the main thread."
+            : @"Change the search, then scan again.";
         self.contentUnavailableConfiguration = configuration;
     }
 }
@@ -319,18 +298,16 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
     (void)tableView;
     (void)section;
     if (self.scanning) {
-        return @"Scanning safely in the background…";
+        return @"Scanning Mach-O imports…";
     }
-    return [NSString stringWithFormat:@"%lu runtime entries",
+    return [NSString stringWithFormat:@"%lu C runtime entries",
         (unsigned long)self.filteredEntries.count];
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     (void)tableView;
     (void)section;
-    return self.kind == FLEXRuntimeBrowserKindObjectiveC
-        ? @"Only ABI-validated BOOL methods are toggleable. Each switch revalidates and applies its target immediately."
-        : @"Imported symbols are listed from Mach-O bind sections. A C toggle remains disabled until an explicit ABI is selected.";
+    return @"Imported symbols come from Mach-O bind sections. Toggles change pending state only; Apply installs the selected ABI/backend.";
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -354,26 +331,11 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
     if (!entry || entry.pendingEnabled != requestedState) {
         UINotificationFeedbackGenerator *feedback = [UINotificationFeedbackGenerator new];
         [feedback notificationOccurred:UINotificationFeedbackTypeError];
-        [self reloadEntries];
-        return;
+    } else {
+        UISelectionFeedbackGenerator *feedback = [UISelectionFeedbackGenerator new];
+        [feedback selectionChanged];
     }
-    UISelectionFeedbackGenerator *feedback = [UISelectionFeedbackGenerator new];
-    [feedback selectionChanged];
-    __weak typeof(self) weakSelf = self;
-    [registry applyEntryIdentifier:identifier completion:^(
-        __unused NSArray<FLEXHookEntry *> *applied,
-        NSArray<FLEXHookEntry *> *failed
-    ) {
-        UINotificationFeedbackGenerator *resultFeedback = [UINotificationFeedbackGenerator new];
-        FLEXHookEntry *resolved = [registry entryForIdentifier:identifier];
-        UINotificationFeedbackType feedbackType = failed.count
-            ? UINotificationFeedbackTypeError
-            : (resolved.overrideHitCount > 0
-                ? UINotificationFeedbackTypeSuccess
-                : UINotificationFeedbackTypeWarning);
-        [resultFeedback notificationOccurred:feedbackType];
-        [weakSelf reloadEntries];
-    }];
+    [self reloadEntries];
 }
 
 @end
