@@ -84,24 +84,19 @@ require_text "public flag API" "_FLEXFlag" "$symbols"
 require_text "libFLEX compatibility API" "_FLXGetManager" "$symbols"
 require_text "libFLEX compatibility API" "_FLXRevealSEL" "$symbols"
 require_text "libFLEX compatibility API" "_FLXWindowClass" "$symbols"
-require_text "UIKit 26 glass class reference" \
-    '_OBJC_CLASS_$_UIGlassEffect' "$symbols"
-require_text "UIKit 26 container class reference" \
-    '_OBJC_CLASS_$_UIGlassContainerEffect' "$symbols"
-require_text "UIKit 26 corner configuration" \
-    '_OBJC_CLASS_$_UICornerConfiguration' "$symbols"
+require_text "UIKit 26 glass class reference" '_OBJC_CLASS_$_UIGlassEffect' "$symbols"
+require_text "UIKit 26 container class reference" '_OBJC_CLASS_$_UIGlassContainerEffect' "$symbols"
+require_text "UIKit 26 corner configuration" '_OBJC_CLASS_$_UICornerConfiguration' "$symbols"
 require_text "Objective-C hook import" "_MSHookMessageEx" "$symbols"
 require_text "inline C hook import" "_MSHookFunction" "$symbols"
-require_text "independent Objective-C provider capability" \
-    "_FLEXMSHookMessageProviderAvailable" "$defined_symbols"
-require_text "independent inline provider capability" \
-    "_FLEXMSHookFunctionProviderAvailable" "$defined_symbols"
-require_text "embedded fishhook link contract" \
-    "_FLEXEmbeddedFishhookAvailable" "$defined_symbols"
-require_text "embedded fishhook ABI marker" \
-    "_FLEXEmbeddedFishhookABIVersion" "$defined_symbols"
-require_text "contextual runtime hook actions" \
-    '_OBJC_CLASS_$_FLEXRuntimeHookActions' "$defined_symbols"
+require_text "independent Objective-C provider capability" "_FLEXMSHookMessageProviderAvailable" "$defined_symbols"
+require_text "independent inline provider capability" "_FLEXMSHookFunctionProviderAvailable" "$defined_symbols"
+require_text "embedded fishhook link contract" "_FLEXEmbeddedFishhookAvailable" "$defined_symbols"
+require_text "embedded fishhook ABI marker" "_FLEXEmbeddedFishhookABIVersion" "$defined_symbols"
+require_text "contextual runtime hook actions" '_OBJC_CLASS_$_FLEXRuntimeHookActions' "$defined_symbols"
+require_text "FLEX metadata hook resolver" '_OBJC_CLASS_$_FLEXObjCHookResolver' "$defined_symbols"
+require_text "filtered FLEX runtime controller" '_OBJC_CLASS_$_FLEXHookableObjCRuntimeViewController' "$defined_symbols"
+require_text "filtered FLEX object explorer" '_OBJC_CLASS_$_FLEXHookableObjectExplorerViewController' "$defined_symbols"
 
 string_dump="$(strings -a "$dylib")"
 require_text "hook persistence class" "FLEXHookPersistence" "$string_dump"
@@ -118,18 +113,35 @@ require_text "UIKit 26 floating search placement" "searchBarPlacementBarButtonIt
 require_text "modern runtime control plane" "Runtime control plane" "$string_dump"
 require_text "hook registry" "FLEXHookRegistry" "$string_dump"
 require_text "ABI-aware C engine" "FLEXCHookEngine" "$string_dump"
-require_text "runtime scanner" "FLEXRuntimeScanner" "$string_dump"
+require_text "C-only runtime scanner" "com.allflexing.c-runtime-scanner" "$string_dump"
+require_text "FLEX-native Objective-C title" "Hookable Objective-C" "$string_dump"
+require_text "plain semantic search placeholder" "Nome, palavras ou sintaxe FLEX" "$string_dump"
+require_text "plain semantic search help" "Busca normal (recomendada)" "$string_dump"
+require_text "advanced FLEX syntax help" "Sintaxe FLEX avançada" "$string_dump"
+require_text "semantic compact query example" "fbconfigmanager" "$string_dump"
+require_text "semantic multi-term example" "employee enable" "$string_dump"
 require_text "contextual TRUE action" "Force TRUE" "$string_dump"
 require_text "contextual FALSE action" "Force FALSE" "$string_dump"
-require_text "contextual per-target apply action" "Reapply This Hook" "$string_dump"
-require_text "real-time targeted registry apply" "runtime-toggle-applied" "$string_dump"
+require_text "explicit per-target apply action" "Apply This Hook" "$string_dump"
 require_text "installed hook state" "Armed" "$string_dump"
 require_text "runtime-observed hook state" "Observed" "$string_dump"
-require_text "runtime verification fail-closed" "runtime-verification-failed" "$string_dump"
 require_text "late-image monitor" "FLEXRuntimeImagesDidChangeNotification" "$string_dump"
-require_text "idempotent late-image reapply" "late-image-reapply" "$string_dump"
-require_text "UIApplication activation reapply" "UIApplicationDidBecomeActiveNotification" "$symbols"
 require_text "FLEX menu entry" "AllFLEXing Runtime Workspace" "$string_dump"
+
+for forbidden in \
+    'Reapply This Hook' \
+    'scanObjectiveCRuntimeIncludingSystemImages' \
+    'objectiveCEntryForClass' \
+    'com.allflexing.runtime-scanner' \
+    'Instagram' \
+    'RyukGram' \
+    'com.burbn' \
+    'FBSharedFramework'; do
+    if grep -Fq -- "$forbidden" <<<"$string_dump"; then
+        echo "error: forbidden legacy/host-specific runtime marker: $forbidden" >&2
+        exit 1
+    fi
+done
 
 if grep -Fq 'FLEXGlassAutostyle' <<<"$string_dump"; then
     echo "error: legacy global view-tree autostyle is still linked" >&2
