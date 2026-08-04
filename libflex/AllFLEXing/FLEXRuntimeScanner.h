@@ -8,14 +8,10 @@ typedef void (^FLEXRuntimeScanCompletion)(NSArray<FLEXHookEntry *> *entries);
 
 FOUNDATION_EXPORT NSNotificationName const FLEXRuntimeImagesDidChangeNotification;
 
+/// Mach-O C import scanner only. Objective-C discovery/search is owned by FLEX.
 @interface FLEXRuntimeScanner : NSObject
 
 + (void)startMonitoringImages;
-+ (nullable FLEXHookEntry *)objectiveCEntryForClass:(Class)targetClass
-                                           selector:(SEL)selector
-                                        classMethod:(BOOL)classMethod;
-+ (void)scanObjectiveCRuntimeIncludingSystemImages:(BOOL)includeSystemImages
-                                         completion:(FLEXRuntimeScanCompletion)completion;
 + (void)scanCImportsIncludingSystemImages:(BOOL)includeSystemImages
                                 completion:(FLEXRuntimeScanCompletion)completion;
 + (FLEXHookEntry *)manualCEntryForSymbol:(NSString *)symbol
