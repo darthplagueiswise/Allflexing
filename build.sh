@@ -12,10 +12,7 @@ fi
 readonly PRODUCT_NAME="AllFLEXing"
 readonly RELEASE_DIR="$PROJECT_ROOT/release"
 readonly FLEX_UI_PATCH="$PROJECT_ROOT/patches/flex-uikit26-liquid-glass.patch"
-readonly FLEX_RUNTIME_FILTER_PATCH="$PROJECT_ROOT/patches/flex-hookable-runtime-filter.patch"
-# Retained as a source-level audit fixture; its behavior is consolidated into
-# FLEX_RUNTIME_FILTER_PATCH so only one atomic runtime patch is applied.
-readonly FLEX_RUNTIME_SEMANTIC_PATCH="$PROJECT_ROOT/patches/flex-semantic-runtime-search.patch"
+readonly FLEX_RUNTIME_TRANSFORMER="$PROJECT_ROOT/scripts/apply-flex-runtime-extension-v2.py"
 readonly FLEX_KEYCHAIN_SOURCE="$PROJECT_ROOT/libflex/FLEX/Classes/GlobalStateExplorers/Keychain/FLEXKeychainViewController.m"
 
 log() {
@@ -66,23 +63,22 @@ apply_pinned_flex_patch() {
 	local label="$2"
 	[ -f "$patch" ] || die "missing pinned FLEX patch: $patch"
 
-	# --recount derives hunk sizes from the actual diff body and makes each
-	# pinned source transformation reproducible from the exact FLEX submodule.
-	if git -C "$PROJECT_ROOT/libflex/FLEX" apply --recount --reverse --check "$patch" >/dev/null 2>&1; then
+	if git -C "$PROJECT_ROOT/libflex/FLEX" apply --reverse --check "$patch" >/dev/null 2>&1; then
 		log "$label is already applied"
 	else
-		if ! git -C "$PROJECT_ROOT/libflex/FLEX" apply --recount --check "$patch"; then
+		if ! git -C "$PROJECT_ROOT/libflex/FLEX" apply --check "$patch"; then
 			die "FLEX submodule does not match the pinned patch base: $label"
 		fi
-		git -C "$PROJECT_ROOT/libflex/FLEX" apply --recount "$patch"
+		git -C "$PROJECT_ROOT/libflex/FLEX" apply "$patch"
 		log "applied $label"
 	fi
 }
 
 prepare_flex_ui() {
 	[ -d "$PROJECT_ROOT/libflex/FLEX" ] || die "FLEX submodule is missing"
+	[ -f "$FLEX_RUNTIME_TRANSFORMER" ] || die "missing FLEX runtime transformer"
 	apply_pinned_flex_patch "$FLEX_UI_PATCH" "pinned FLEX UIKit 26 presentation patch"
-	apply_pinned_flex_patch "$FLEX_RUNTIME_FILTER_PATCH" "pinned FLEX hookable semantic runtime patch"
+	python3 "$FLEX_RUNTIME_TRANSFORMER"
 	sanitize_flex_upstream_examples
 }
 
