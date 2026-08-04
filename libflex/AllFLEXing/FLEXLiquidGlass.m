@@ -107,8 +107,29 @@ static UIViewController *FLEXVisibleController(UIViewController *controller) {
     return FLEXFlag(@"glass.enabled");
 }
 
+/// YES when the host process opted out of the iOS 26 design via
+/// UIDesignRequiresCompatibility. In that mode the process renders with the
+/// legacy design system even though the SDK-26 symbols (UIGlassEffect, tab
+/// sidebar, minimize behavior) still resolve - so gating purely on
+/// @available(iOS 26) or "class exists" is wrong and can drive UIKit into a
+/// state it rejects. This is read once from the host's own Info.plist.
++ (BOOL)hostRequiresLegacyCompatibility {
+    static BOOL requiresCompat = NO;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        id value = NSBundle.mainBundle
+            .infoDictionary[@"UIDesignRequiresCompatibility"];
+        requiresCompat = [value respondsToSelector:@selector(boolValue)]
+            && [value boolValue];
+    });
+    return requiresCompat;
+}
+
 + (BOOL)isGlassAvailable {
 #if ALLFLEXING_HAS_UIKIT_GLASS
+    if (self.hostRequiresLegacyCompatibility) {
+        return NO;
+    }
     if (@available(iOS 26.0, *)) {
         return NSClassFromString(@"UIGlassEffect") != nil;
     }

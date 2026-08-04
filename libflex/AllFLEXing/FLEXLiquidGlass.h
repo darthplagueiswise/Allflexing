@@ -6,6 +6,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 + (BOOL)isEnabled;
 + (BOOL)isGlassAvailable;
++ (BOOL)hostRequiresLegacyCompatibility;
 + (UIVisualEffect *)glassEffectInteractive:(BOOL)interactive
                                        tint:(nullable UIColor *)tint;
 + (nullable UIVisualEffect *)containerEffectWithSpacing:(CGFloat)spacing;

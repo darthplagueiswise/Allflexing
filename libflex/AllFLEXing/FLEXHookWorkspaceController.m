@@ -186,7 +186,20 @@ static void FLEXWorkspaceTearDownOwnedWindow(void) {
         return;
     }
 
-    FLEXHookWorkspaceController *workspace = [FLEXHookWorkspaceController new];
+    FLEXHookWorkspaceController *workspace = nil;
+    @try {
+        workspace = [FLEXHookWorkspaceController new];
+    } @catch (NSException *exception) {
+        // If constructing the tab workspace throws (observed only in hosts that
+        // opted out of the iOS 26 design), do not leave the in-flight gate stuck
+        // - that is the silent hang. Log the reason so it is diagnosable and bail
+        // cleanly so a later tap can try again.
+        NSLog(@"[AllFLEXing] Runtime Workspace construction failed: %@ - %@",
+            exception.name, exception.reason);
+        gFLEXWorkspacePresentationInFlight = NO;
+        gFLEXPresentedWorkspace = nil;
+        return;
+    }
     gFLEXPresentedWorkspace = workspace;
     gFLEXWorkspacePresentationInFlight = YES;
 
@@ -250,7 +263,19 @@ static void FLEXWorkspaceTearDownOwnedWindow(void) {
     gFLEXWorkspaceOwnedWindow = window;
     [window makeKeyAndVisible];
 
-    FLEXHookWorkspaceController *workspace = [FLEXHookWorkspaceController new];
+    FLEXHookWorkspaceController *workspace = nil;
+    @try {
+        workspace = [FLEXHookWorkspaceController new];
+    } @catch (NSException *exception) {
+        NSLog(@"[AllFLEXing] Runtime Workspace construction failed (owned window): %@ - %@",
+            exception.name, exception.reason);
+        gFLEXWorkspacePresentationInFlight = NO;
+        gFLEXPresentedWorkspace = nil;
+        gFLEXWorkspaceOwnedWindow.hidden = YES;
+        gFLEXWorkspaceOwnedWindow = nil;
+        [gFLEXWorkspacePreviousKeyWindow makeKeyWindow];
+        return;
+    }
     gFLEXPresentedWorkspace = workspace;
     gFLEXWorkspacePresentationInFlight = YES;
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -330,9 +355,15 @@ static void FLEXWorkspaceTearDownOwnedWindow(void) {
     ];
     [self setViewControllers:self.workspaceNavigationControllers animated:NO];
     self.selectedIndex = 0;
+    // Tab sidebar mode and customization are iOS 26 design features. In a host
+    // that opted out via UIDesignRequiresCompatibility they can push UIKit into
+    // a state it rejects, which is why the menu never appeared in those apps.
+    // Fall back to the plain tab bar there.
     if (@available(iOS 18.0, *)) {
-        self.mode = UITabBarControllerModeTabSidebar;
-        self.customizationIdentifier = @"com.allflexing.runtime-workspace";
+        if (![FLEXLiquidGlass hostRequiresLegacyCompatibility]) {
+            self.mode = UITabBarControllerModeTabSidebar;
+            self.customizationIdentifier = @"com.allflexing.runtime-workspace";
+        }
     }
 }
 
@@ -346,7 +377,9 @@ static void FLEXWorkspaceTearDownOwnedWindow(void) {
     self.view.accessibilityIdentifier =
         @"AllFLEXing.RuntimeWorkspace.Root";
     if (@available(iOS 26.0, *)) {
-        self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorOnScrollDown;
+        if (![FLEXLiquidGlass hostRequiresLegacyCompatibility]) {
+            self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorOnScrollDown;
+        }
     }
 }
 
