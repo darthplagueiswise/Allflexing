@@ -71,7 +71,7 @@ fi
 
 for module in HookRuntime HookProviders LiquidGlassUI; do
     grep -q "include modules/$module/Module.mk" libflex/Makefile
- done
+done
 
 grep -q 'FLEX_FISHHOOK_SOURCE' libflex/Makefile
 grep -q 'ALLFLEXING_EMBEDDED_FISHHOOK_SOURCES' libflex/Makefile
@@ -140,11 +140,12 @@ grep -q 'FLEXConfigureCompactRuntimeTable' "$detail"
 grep -q 'No patch, swizzle or hook is installed until Apply is pressed' "$hook_center"
 grep -q 'Apply This Hook' "$actions"
 
-# Workspace is a concrete UIKit child hierarchy with deterministic presentation.
+# Workspace is a concrete UIKit child hierarchy with UI-first deterministic presentation.
 grep -q 'setViewControllers:self.workspaceNavigationControllers' "$workspace"
-grep -q 'AllFLEXing deterministic Runtime Workspace presentation ABI 1' "$workspace"
+grep -q 'AllFLEXing UI-first Runtime Workspace presentation ABI 2' "$workspace"
 grep -q 'UISceneActivationStateForegroundActive' "$workspace"
 grep -q 'gFLEXWorkspacePresentationInFlight' "$workspace"
+grep -q 'gFLEXWorkspaceOwnedWindow' "$workspace"
 grep -q 'AllFLEXing.RuntimeWorkspace.TabBar' "$workspace"
 grep -q 'UITabBarMinimizeBehaviorOnScrollDown' "$workspace"
 grep -q 'sheet.largestUndimmedDetentIdentifier = nil' "$workspace"
@@ -186,4 +187,4 @@ if grep -q 'GENERATOR[[:space:]]*:=[[:space:]]*internal' libflex/Makefile; then
     exit 1
 fi
 
-echo "SDK 26.2 native Liquid Glass, scroll edges, concrete owners and deterministic Workspace: OK"
+echo "SDK 26.2 native Liquid Glass, scroll edges, concrete owners and UI-first Workspace: OK"
