@@ -4,6 +4,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 FOUNDATION_EXPORT const char *FLEXPersistenceStoreABIVersion;
 FOUNDATION_EXPORT const char *FLEXPersistenceSafeLaunchABIVersion;
+FOUNDATION_EXPORT const char *FLEXPersistenceKeychainABIVersion;
 
 @interface FLEXPersistenceStore : NSObject
 
@@ -12,13 +13,18 @@ FOUNDATION_EXPORT const char *FLEXPersistenceSafeLaunchABIVersion;
 @property (nonatomic, copy, readonly) NSString *hostScope;
 @property (nonatomic, copy, readonly, nullable) NSString *applicationGroupIdentifier;
 @property (nonatomic, readonly) BOOL usesApplicationGroup;
+@property (nonatomic, readonly) BOOL usesKeychain;
+@property (nonatomic, copy, readonly) NSString *keychainService;
+@property (nonatomic, copy, readonly) NSString *keychainAccount;
+@property (nonatomic, copy, readonly, nullable) NSString *keychainAccessGroup;
+@property (nonatomic, readonly) NSInteger lastKeychainStatus;
 @property (nonatomic, copy, readonly, nullable) NSString *lastError;
 
-/// Flushes every `com.allflexing.*` preference to standard defaults, an
-/// entitlement-backed App Group when available, and atomic plist mirrors.
-/// This must not be called from pre-main/+load code.
+/// Commits confirmed `com.allflexing.*` state to Keychain and mirrors it to
+/// host defaults, an entitlement-backed App Group, and atomic plist files.
+/// This method must never be called from pre-main/+load code.
 - (BOOL)synchronizeNow;
-/// Coalesces frequent writes while still persisting them during the same run.
+/// Coalesces confirmed writes on the persistence queue.
 - (void)synchronizeSoon;
 
 @end
