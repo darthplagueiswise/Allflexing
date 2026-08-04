@@ -12,6 +12,7 @@ fi
 readonly PRODUCT_NAME="AllFLEXing"
 readonly RELEASE_DIR="$PROJECT_ROOT/release"
 readonly FLEX_UI_PATCH="$PROJECT_ROOT/patches/flex-uikit26-liquid-glass.patch"
+readonly FLEX_KEYCHAIN_SOURCE="$PROJECT_ROOT/libflex/FLEX/Classes/GlobalStateExplorers/Keychain/FLEXKeychainViewController.m"
 
 log() {
 	printf '[AllFLEXing] %s\n' "$*"
@@ -33,19 +34,44 @@ ensure_theos() {
 	die "THEOS is not set and ${HOME}/theos does not exist"
 }
 
+sanitize_flex_upstream_examples() {
+	[ -f "$FLEX_KEYCHAIN_SOURCE" ] || die "FLEX Keychain source is missing"
+	python3 - "$FLEX_KEYCHAIN_SOURCE" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+old = 'make.textField(@"Service name, i.e. Instagram");'
+new = 'make.textField(@"Service name, e.g. app service");'
+
+if old in text:
+    path.write_text(text.replace(old, new), encoding="utf-8")
+elif new not in text:
+    raise SystemExit("unexpected FLEX Keychain placeholder source")
+PY
+
+	if grep -Eqi 'Instagram|RyukGram|com\.burbn|FBSharedFramework' "$FLEX_KEYCHAIN_SOURCE"; then
+		die "fixed host-app example remains in FLEX Keychain source"
+	fi
+	log "sanitized fixed host-app examples from upstream FLEX"
+}
+
 prepare_flex_ui() {
 	[ -f "$FLEX_UI_PATCH" ] || die "missing pinned FLEX UIKit 26 patch"
 	[ -d "$PROJECT_ROOT/libflex/FLEX" ] || die "FLEX submodule is missing"
 
 	if git -C "$PROJECT_ROOT/libflex/FLEX" apply --reverse --check "$FLEX_UI_PATCH" >/dev/null 2>&1; then
 		log "pinned FLEX UIKit 26 patch is already applied"
-		return
+	else
+		if ! git -C "$PROJECT_ROOT/libflex/FLEX" apply --check "$FLEX_UI_PATCH"; then
+			die "FLEX submodule does not match the pinned Liquid Glass patch base"
+		fi
+		git -C "$PROJECT_ROOT/libflex/FLEX" apply "$FLEX_UI_PATCH"
+		log "applied pinned FLEX UIKit 26 presentation patch"
 	fi
-	if ! git -C "$PROJECT_ROOT/libflex/FLEX" apply --check "$FLEX_UI_PATCH"; then
-		die "FLEX submodule does not match the pinned Liquid Glass patch base"
-	fi
-	git -C "$PROJECT_ROOT/libflex/FLEX" apply "$FLEX_UI_PATCH"
-	log "applied pinned FLEX UIKit 26 presentation patch"
+
+	sanitize_flex_upstream_examples
 }
 
 clean_build() {
