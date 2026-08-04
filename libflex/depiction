@@ -1,3 +1,1 @@
-(For SCInsta) A dynamically loadable library for FLEX. Requires a loader, such as FLEXing.
-
-<a href="https://github.com/FLEXTool/FLEX/releases">Changelog</a>
+Complete FLEX runtime, loader, hook backends, persistence, and UIKit 26 UI in AllFLEXing.dylib. No separate loader or libFLEX dependency.
