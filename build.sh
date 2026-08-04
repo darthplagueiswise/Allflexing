@@ -13,6 +13,9 @@ readonly PRODUCT_NAME="AllFLEXing"
 readonly RELEASE_DIR="$PROJECT_ROOT/release"
 readonly FLEX_UI_PATCH="$PROJECT_ROOT/patches/flex-uikit26-liquid-glass.patch"
 readonly FLEX_RUNTIME_TRANSFORMER="$PROJECT_ROOT/scripts/apply-flex-runtime-extension-v2.py"
+# Audit provenance retained while the transformer replaces the fragile diffs:
+# patches/flex-hookable-runtime-filter.patch
+# patches/flex-semantic-runtime-search.patch
 readonly FLEX_KEYCHAIN_SOURCE="$PROJECT_ROOT/libflex/FLEX/Classes/GlobalStateExplorers/Keychain/FLEXKeychainViewController.m"
 
 log() {
