@@ -11,9 +11,11 @@
 #import <stdatomic.h>
 
 const char *FLEXRuntimeImageSessionABIVersion =
-    "AllFLEXing complete selected-image runtime session ABI 1";
+    "AllFLEXing complete selected-image runtime session ABI 2";
 const char *FLEXRuntimeObjectiveCEnumerationABIVersion =
     "AllFLEXing image-scoped nonretaining Objective-C class enumeration ABI 1";
+const char *FLEXRuntimeHostIsolationABIVersion =
+    "AllFLEXing current-process Mach-O host isolation ABI 2";
 
 static NSString *const FLEXRuntimeImageSessionErrorDomain =
     @"FLEXRuntimeImageSession";
@@ -34,20 +36,263 @@ static dispatch_queue_t FLEXRuntimeImageSessionQueue(void) {
     return queue;
 }
 
+static NSString *FLEXRuntimeCanonicalPath(NSString *path) {
+    if (!path.length) return @"";
+    NSString *resolved = path.stringByResolvingSymlinksInPath;
+    NSString *standardized = resolved.stringByStandardizingPath;
+    return standardized.length ? standardized : path;
+}
+
 static NSString *FLEXImageUUID(const struct mach_header_64 *header) {
     if (!header || header->magic != MH_MAGIC_64) return @"";
     const uint8_t *cursor = (const uint8_t *)(header + 1);
     for (uint32_t index = 0; index < header->ncmds; index++) {
         const struct load_command *command = (const struct load_command *)cursor;
         if (command->cmdsize < sizeof(struct load_command)) break;
-        if (command->cmd == LC_UUID && command->cmdsize >= sizeof(struct uuid_command)) {
-            const struct uuid_command *uuid = (const struct uuid_command *)command;
+        if (command->cmd == LC_UUID &&
+            command->cmdsize >= sizeof(struct uuid_command)) {
+            const struct uuid_command *uuid =
+                (const struct uuid_command *)command;
             NSUUID *value = [[NSUUID alloc] initWithUUIDBytes:uuid->uuid];
             return value.UUIDString ?: @"";
         }
         cursor += command->cmdsize;
     }
     return @"";
+}
+
+static const struct mach_header_64 *FLEXRuntimeMainExecutableHeader(void) {
+    const struct mach_header_64 *fallback = NULL;
+    uint32_t count = _dyld_image_count();
+    for (uint32_t index = 0; index < count; index++) {
+        const struct mach_header *generic = _dyld_get_image_header(index);
+        if (!generic || generic->magic != MH_MAGIC_64) continue;
+        const struct mach_header_64 *header =
+            (const struct mach_header_64 *)generic;
+        if (!fallback) fallback = header;
+        if (header->filetype == MH_EXECUTE) return header;
+    }
+    return fallback;
+}
+
+static NSString *FLEXRuntimeHostExecutableUUID(void) {
+    static NSString *uuid;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        uuid = FLEXImageUUID(FLEXRuntimeMainExecutableHeader());
+        if (!uuid.length) uuid = @"unknown-host-uuid";
+    });
+    return uuid;
+}
+
+static NSString *FLEXRuntimeHostIdentifier(void) {
+    return NSBundle.mainBundle.bundleIdentifier.length
+        ? NSBundle.mainBundle.bundleIdentifier
+        : (NSProcessInfo.processInfo.processName ?: @"host");
+}
+
+static BOOL FLEXRuntimePathIsFrameworkExecutable(NSString *path) {
+    NSString *candidate = FLEXRuntimeCanonicalPath(path);
+    NSString *bundle = FLEXRuntimeCanonicalPath(NSBundle.mainBundle.bundlePath);
+    if (!candidate.length || !bundle.length) return NO;
+
+    NSString *frameworksRoot = [bundle stringByAppendingPathComponent:@"Frameworks"];
+    NSString *frameworksPrefix = [frameworksRoot stringByAppendingString:@"/"];
+    if (![candidate hasPrefix:frameworksPrefix]) return NO;
+    if ([candidate.pathExtension caseInsensitiveCompare:@"dylib"] == NSOrderedSame) {
+        return NO;
+    }
+
+    NSArray<NSString *> *components = candidate.pathComponents;
+    for (NSInteger index = (NSInteger)components.count - 2; index >= 0; index--) {
+        NSString *component = components[(NSUInteger)index];
+        if ([component.pathExtension caseInsensitiveCompare:@"framework"] !=
+            NSOrderedSame) {
+            continue;
+        }
+        NSString *frameworkName = component.stringByDeletingPathExtension;
+        if (![candidate.lastPathComponent isEqualToString:frameworkName]) {
+            return NO;
+        }
+        NSString *frameworkPath = [NSString pathWithComponents:
+            [components subarrayWithRange:NSMakeRange(0, (NSUInteger)index + 1)]];
+        return [candidate hasPrefix:[frameworkPath stringByAppendingString:@"/"]];
+    }
+    return NO;
+}
+
+static BOOL FLEXRuntimePathBelongsToCurrentHost(NSString *path) {
+    NSString *candidate = FLEXRuntimeCanonicalPath(path);
+    NSString *executable = FLEXRuntimeCanonicalPath(NSBundle.mainBundle.executablePath);
+    if (!candidate.length) return NO;
+    if (executable.length && [candidate isEqualToString:executable]) return YES;
+    return FLEXRuntimePathIsFrameworkExecutable(candidate);
+}
+
+static FLEXRuntimeImageDescriptor *FLEXRuntimeDescriptorForLoadedIndex(
+    uint32_t index,
+    const struct mach_header_64 *mainHeader
+) {
+    const char *rawPath = _dyld_get_image_name(index);
+    const struct mach_header *generic = _dyld_get_image_header(index);
+    if (!rawPath || !generic || generic->magic != MH_MAGIC_64) return nil;
+
+    const struct mach_header_64 *header =
+        (const struct mach_header_64 *)generic;
+    NSString *path = FLEXRuntimeCanonicalPath(
+        [NSString stringWithUTF8String:rawPath]
+    );
+    BOOL mainExecutable = header == mainHeader || header->filetype == MH_EXECUTE;
+    if (!mainExecutable && !FLEXRuntimePathBelongsToCurrentHost(path)) return nil;
+
+    FLEXRuntimeImageDescriptor *descriptor = [FLEXRuntimeImageDescriptor new];
+    descriptor.path = path;
+    descriptor.displayName = mainExecutable
+        ? FLEXRuntimeHostIdentifier()
+        : path.lastPathComponent;
+    descriptor.uuid = FLEXImageUUID(header);
+    descriptor.headerAddress = (uintptr_t)header;
+    descriptor.slide = _dyld_get_image_vmaddr_slide(index);
+    descriptor.mainExecutable = mainExecutable;
+    return descriptor;
+}
+
+static NSArray<FLEXRuntimeImageDescriptor *> *FLEXRuntimeLoadedHostImages(void) {
+    const struct mach_header_64 *mainHeader = FLEXRuntimeMainExecutableHeader();
+    NSMutableArray<FLEXRuntimeImageDescriptor *> *images = [NSMutableArray array];
+    NSMutableSet<NSNumber *> *seenHeaders = [NSMutableSet set];
+
+    uint32_t count = _dyld_image_count();
+    for (uint32_t index = 0; index < count; index++) {
+        FLEXRuntimeImageDescriptor *descriptor =
+            FLEXRuntimeDescriptorForLoadedIndex(index, mainHeader);
+        if (!descriptor) continue;
+        NSNumber *header = @(descriptor.headerAddress);
+        if ([seenHeaders containsObject:header]) continue;
+        [seenHeaders addObject:header];
+        [images addObject:descriptor];
+    }
+
+    [images sortUsingComparator:^NSComparisonResult(
+        FLEXRuntimeImageDescriptor *left,
+        FLEXRuntimeImageDescriptor *right
+    ) {
+        if (left.mainExecutable != right.mainExecutable) {
+            return left.mainExecutable ? NSOrderedAscending : NSOrderedDescending;
+        }
+        return [left.displayName localizedCaseInsensitiveCompare:right.displayName];
+    }];
+    return images.copy;
+}
+
+static FLEXRuntimeImageDescriptor *FLEXRuntimeCurrentDescriptor(
+    FLEXRuntimeImageDescriptor *requested
+) {
+    if (!requested) return nil;
+    NSString *requestedPath = FLEXRuntimeCanonicalPath(requested.path);
+    for (FLEXRuntimeImageDescriptor *candidate in FLEXRuntimeLoadedHostImages()) {
+        BOOL sameHeader = requested.headerAddress != 0 &&
+            candidate.headerAddress == requested.headerAddress;
+        BOOL samePath = requestedPath.length &&
+            [candidate.path isEqualToString:requestedPath];
+        BOOL sameUUID = !requested.uuid.length || !candidate.uuid.length ||
+            [candidate.uuid caseInsensitiveCompare:requested.uuid] == NSOrderedSame;
+        if ((sameHeader || samePath) && sameUUID) return candidate;
+    }
+    return nil;
+}
+
+static BOOL FLEXRuntimeEntryMatchesImage(FLEXHookEntry *entry,
+                                         FLEXRuntimeImageDescriptor *image) {
+    if (!entry || !image) return NO;
+    NSDictionary *locator = [entry.locator isKindOfClass:NSDictionary.class]
+        ? entry.locator : @{};
+    NSString *entryPath = [locator[@"image"] isKindOfClass:NSString.class]
+        ? FLEXRuntimeCanonicalPath(locator[@"image"]) : @"";
+    NSString *entryUUID = [locator[@"imageUUID"] isKindOfClass:NSString.class]
+        ? locator[@"imageUUID"] : @"";
+    if (!entryPath.length || ![entryPath isEqualToString:image.path]) return NO;
+    if (entryUUID.length && image.uuid.length &&
+        [entryUUID caseInsensitiveCompare:image.uuid] != NSOrderedSame) {
+        return NO;
+    }
+
+    if (entry.surface == FLEXHookSurfaceObjectiveC) {
+        NSString *className = [locator[@"class"] isKindOfClass:NSString.class]
+            ? locator[@"class"] : nil;
+        Class targetClass = className.length ? NSClassFromString(className) : Nil;
+        const char *rawImage = targetClass ? class_getImageName(targetClass) : NULL;
+        NSString *classImage = rawImage
+            ? FLEXRuntimeCanonicalPath([NSString stringWithUTF8String:rawImage])
+            : @"";
+        if (!classImage.length || ![classImage isEqualToString:image.path]) return NO;
+    }
+    return YES;
+}
+
+static NSString *FLEXRuntimeScopedIdentifier(FLEXHookEntry *entry,
+                                              FLEXRuntimeImageDescriptor *image) {
+    NSString *prefix = [NSString stringWithFormat:@"runtime|%@|%@|",
+        FLEXRuntimeHostExecutableUUID(),
+        image.uuid.length ? image.uuid : @"unknown-image-uuid"];
+    NSString *base = entry.identifier.length ? entry.identifier : @"runtime-entry";
+    return [base hasPrefix:prefix] ? base : [prefix stringByAppendingString:base];
+}
+
+static FLEXRuntimeImageSnapshot *FLEXRuntimeFinalizeSnapshot(
+    FLEXRuntimeImageSnapshot *snapshot,
+    FLEXRuntimeImageDescriptor *requested
+) {
+    FLEXRuntimeImageDescriptor *live = FLEXRuntimeCurrentDescriptor(requested);
+    if (!snapshot || !live) return nil;
+
+    NSMutableArray<FLEXHookEntry *> *entries = [NSMutableArray array];
+    NSUInteger imports = 0;
+    NSUInteger named = 0;
+    NSUInteger anonymous = 0;
+    NSString *hostUUID = FLEXRuntimeHostExecutableUUID();
+    NSString *hostID = FLEXRuntimeHostIdentifier();
+
+    for (FLEXHookEntry *entry in snapshot.entries ?: @[]) {
+        if (!FLEXRuntimeEntryMatchesImage(entry, live)) continue;
+        NSMutableDictionary *locator = [entry.locator mutableCopy]
+            ?: [NSMutableDictionary dictionary];
+        locator[@"hostBundleIdentifier"] = hostID;
+        locator[@"hostExecutableUUID"] = hostUUID;
+        locator[@"image"] = live.path;
+        locator[@"imageUUID"] = live.uuid ?: @"";
+        locator[@"runtimeSessionImagePath"] = live.path;
+        locator[@"runtimeSessionImageUUID"] = live.uuid ?: @"";
+        locator[@"runtimeHostIsolated"] = @YES;
+        entry.locator = locator.copy;
+        entry.identifier = FLEXRuntimeScopedIdentifier(entry, live);
+        entry.imageName = live.displayName;
+        [entries addObject:entry];
+
+        if (entry.surface == FLEXHookSurfaceCImport) {
+            imports++;
+        } else if (entry.surface == FLEXHookSurfaceCInline) {
+            NSString *source = [locator[@"source"] isKindOfClass:NSString.class]
+                ? locator[@"source"] : @"";
+            if ([source isEqualToString:@"LC_FUNCTION_STARTS"] &&
+                [entry.title hasPrefix:@"sub_"]) {
+                anonymous++;
+            } else {
+                named++;
+            }
+        }
+    }
+
+    snapshot.image = live;
+    snapshot.entries = entries.copy;
+    if (snapshot.kind == FLEXRuntimeBrowserKindObjectiveC) {
+        snapshot.objectiveCMethodCount = entries.count;
+    } else {
+        snapshot.importedSymbolCount = imports;
+        snapshot.definedFunctionCount = named;
+        snapshot.anonymousFunctionCount = anonymous;
+    }
+    return snapshot;
 }
 
 static const char *FLEXSkipObjCQualifiers(const char *type) {
@@ -63,8 +308,7 @@ static FLEXHookABI FLEXExactObjectiveCABI(Method method) {
     if (!method) return FLEXHookABIUnknown;
     char returnType[64] = {0};
     method_getReturnType(method, returnType, sizeof(returnType));
-    const char *returnCode = FLEXSkipObjCQualifiers(returnType);
-    if (*returnCode != 'B') return FLEXHookABIUnknown;
+    if (*FLEXSkipObjCQualifiers(returnType) != 'B') return FLEXHookABIUnknown;
 
     unsigned int argumentCount = method_getNumberOfArguments(method);
     if (argumentCount == 2) return FLEXHookABIObjCBoolNoArguments;
@@ -116,11 +360,6 @@ static void FLEXReportProgress(FLEXRuntimeImageProgress progress,
     });
 }
 
-static BOOL FLEXPathBelongsToHost(NSString *path) {
-    NSString *bundlePath = NSBundle.mainBundle.bundlePath;
-    return path.length && bundlePath.length && [path hasPrefix:bundlePath];
-}
-
 @implementation FLEXRuntimeImageDescriptor
 
 - (id)copyWithZone:(NSZone *)zone {
@@ -148,39 +387,7 @@ static BOOL FLEXPathBelongsToHost(NSString *path) {
 @implementation FLEXRuntimeImageSession
 
 + (NSArray<FLEXRuntimeImageDescriptor *> *)loadedAppImages {
-    NSMutableArray<FLEXRuntimeImageDescriptor *> *images = [NSMutableArray array];
-    NSString *mainPath = NSBundle.mainBundle.executablePath;
-    uint32_t count = _dyld_image_count();
-    for (uint32_t index = 0; index < count; index++) {
-        const char *rawPath = _dyld_get_image_name(index);
-        const struct mach_header *genericHeader = _dyld_get_image_header(index);
-        if (!rawPath || !genericHeader || genericHeader->magic != MH_MAGIC_64) continue;
-        NSString *path = [NSString stringWithUTF8String:rawPath];
-        if (!FLEXPathBelongsToHost(path)) continue;
-
-        const struct mach_header_64 *header =
-            (const struct mach_header_64 *)genericHeader;
-        FLEXRuntimeImageDescriptor *descriptor = [FLEXRuntimeImageDescriptor new];
-        descriptor.path = path;
-        descriptor.displayName = [path isEqualToString:mainPath]
-            ? (NSBundle.mainBundle.bundleIdentifier ?: path.lastPathComponent)
-            : path.lastPathComponent;
-        descriptor.uuid = FLEXImageUUID(header);
-        descriptor.headerAddress = (uintptr_t)header;
-        descriptor.slide = _dyld_get_image_vmaddr_slide(index);
-        descriptor.mainExecutable = [path isEqualToString:mainPath];
-        [images addObject:descriptor];
-    }
-    [images sortUsingComparator:^NSComparisonResult(
-        FLEXRuntimeImageDescriptor *left,
-        FLEXRuntimeImageDescriptor *right
-    ) {
-        if (left.mainExecutable != right.mainExecutable) {
-            return left.mainExecutable ? NSOrderedAscending : NSOrderedDescending;
-        }
-        return [left.displayName localizedCaseInsensitiveCompare:right.displayName];
-    }];
-    return images.copy;
+    return FLEXRuntimeLoadedHostImages();
 }
 
 - (instancetype)initWithImage:(FLEXRuntimeImageDescriptor *)image {
@@ -204,7 +411,20 @@ static BOOL FLEXPathBelongsToHost(NSString *path) {
         progress:(FLEXRuntimeImageProgress)progress
       completion:(FLEXRuntimeImageCompletion)completion {
     atomic_store_explicit(&_cancelled, false, memory_order_release);
-    FLEXRuntimeImageDescriptor *image = [self.image copy];
+    FLEXRuntimeImageDescriptor *image = FLEXRuntimeCurrentDescriptor(self.image);
+    if (!image) {
+        NSError *error = [NSError errorWithDomain:FLEXRuntimeImageSessionErrorDomain
+                                             code:10
+                                         userInfo:@{
+            NSLocalizedDescriptionKey:
+                @"The selected image is not a current executable/framework image of this host"
+        }];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) completion(nil, error);
+        });
+        return;
+    }
+
     __weak typeof(self) weakSelf = self;
     dispatch_async(FLEXRuntimeImageSessionQueue(), ^{
         __strong typeof(weakSelf) self = weakSelf;
@@ -243,7 +463,17 @@ static BOOL FLEXPathBelongsToHost(NSString *path) {
             snapshot.definedFunctionCount = definedCount;
             snapshot.anonymousFunctionCount = anonymousCount;
             snapshot.completedAt = NSDate.date;
+            snapshot = FLEXRuntimeFinalizeSnapshot(snapshot, image);
+            if (!snapshot && !error) {
+                error = [NSError errorWithDomain:FLEXRuntimeImageSessionErrorDomain
+                                             code:11
+                                         userInfo:@{
+                    NSLocalizedDescriptionKey:
+                        @"The selected Mach-O image changed while its snapshot was built"
+                }];
+            }
         }
+
         dispatch_async(dispatch_get_main_queue(), ^{
             if (completion) completion(snapshot, error);
         });
@@ -272,10 +502,6 @@ static BOOL FLEXPathBelongsToHost(NSString *path) {
     __block NSUInteger completedClasses = 0;
     __block BOOL cancelled = NO;
 
-    // Enumerate only classes belonging to the selected Mach-O image. A Class
-    // pointer is runtime metadata, not necessarily an NSObject-compatible
-    // object. Process it immediately with C runtime APIs and never place the
-    // raw Class value in NSArray/NSMutableArray, which would send it retain.
     objc_enumerateClasses(
         (const void *)header,
         NULL,
@@ -353,9 +579,10 @@ static BOOL FLEXPathBelongsToHost(NSString *path) {
                             @"imageUUID": image.uuid ?: @"",
                             @"methodAddress":
                                 @((uintptr_t)method_getImplementation(method)),
-                            @"backendEvidence": @"MSHookMessageEx",
+                            @"backendEvidence": @"MSHookMessageEx-live-provider",
                             @"abiEvidence": abi == FLEXHookABIUnknown
-                                ? @"unresolved" : @"objc-type-encoding",
+                                ? @"unresolved"
+                                : @"objc-type-encoding-operational-profile",
                         };
                         if (!provider) {
                             entry.lastError = @"MSHookMessageEx provider unavailable";
@@ -439,7 +666,6 @@ static BOOL FLEXReadULEB128(const uint8_t **cursor,
     uint64_t textVMAddress = 0;
     NSMutableArray<NSValue *> *indirectSections = [NSMutableArray array];
     NSMutableIndexSet *executableSectionIndexes = [NSMutableIndexSet indexSet];
-    NSMutableArray<NSValue *> *executableRanges = [NSMutableArray array];
 
     uint32_t globalSectionIndex = 1;
     const uint8_t *cursor = (const uint8_t *)(header + 1);
@@ -452,12 +678,6 @@ static BOOL FLEXReadULEB128(const uint8_t **cursor,
             if (strcmp(segment->segname, SEG_LINKEDIT) == 0) linkedit = segment;
             if (strcmp(segment->segname, SEG_TEXT) == 0) textVMAddress = segment->vmaddr;
             BOOL executable = (segment->initprot & VM_PROT_EXECUTE) != 0;
-            if (executable && segment->vmsize) {
-                NSRange range = NSMakeRange(
-                    (NSUInteger)(segment->vmaddr + image.slide),
-                    (NSUInteger)segment->vmsize);
-                [executableRanges addObject:[NSValue valueWithRange:range]];
-            }
             const struct section_64 *sections =
                 (const struct section_64 *)(segment + 1);
             for (uint32_t sectionIndex = 0;
@@ -472,7 +692,7 @@ static BOOL FLEXReadULEB128(const uint8_t **cursor,
                         sections[sectionIndex], type
                     };
                     [indirectSections addObject:[NSValue valueWithBytes:&record
-                                                                 objCType:@encode(struct FLEXIndirectSectionRecord)]];
+                        objCType:@encode(struct FLEXIndirectSectionRecord)]];
                 }
             }
         } else if (command->cmd == LC_SYMTAB) {
@@ -556,13 +776,16 @@ static BOOL FLEXReadULEB128(const uint8_t **cursor,
             }
             NSMutableDictionary *locator = [entry.locator mutableCopy];
             if (record.type == S_SYMBOL_STUBS) {
-                NSMutableArray *stubs = [locator[@"stubAddresses"] mutableCopy] ?: [NSMutableArray array];
-                uintptr_t address = (uintptr_t)(record.section.addr + image.slide + item * stride);
+                NSMutableArray *stubs = [locator[@"stubAddresses"] mutableCopy]
+                    ?: [NSMutableArray array];
+                uintptr_t address = (uintptr_t)(record.section.addr +
+                    image.slide + item * stride);
                 [stubs addObject:@(address)];
                 locator[@"stubAddresses"] = stubs.copy;
             } else {
-                NSUInteger slots = [locator[@"bindSlots"] unsignedIntegerValue] + 1;
-                locator[@"bindSlots"] = @(slots);
+                locator[@"bindSlots"] = @(
+                    [locator[@"bindSlots"] unsignedIntegerValue] + 1
+                );
             }
             entry.locator = locator.copy;
         }
@@ -626,15 +849,17 @@ static BOOL FLEXReadULEB128(const uint8_t **cursor,
 
     NSMutableArray<NSNumber *> *starts = [NSMutableArray array];
     if (functionStarts && functionStarts->datasize && textVMAddress) {
-        const uint8_t *startCursor = (const uint8_t *)(linkeditBase + functionStarts->dataoff);
+        const uint8_t *startCursor =
+            (const uint8_t *)(linkeditBase + functionStarts->dataoff);
         const uint8_t *end = startCursor + functionStarts->datasize;
         uint64_t cumulative = 0;
         while (startCursor < end) {
             uint64_t delta = 0;
             if (!FLEXReadULEB128(&startCursor, end, &delta) || delta == 0) break;
             cumulative += delta;
-            uintptr_t address = (uintptr_t)(textVMAddress + image.slide + cumulative);
-            [starts addObject:@(address)];
+            [starts addObject:@((uintptr_t)(
+                textVMAddress + image.slide + cumulative
+            ))];
         }
     }
     [starts sortUsingSelector:@selector(compare:)];
