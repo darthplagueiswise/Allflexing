@@ -7,6 +7,7 @@
 #import "FLEXRuntimeScanner.h"
 
 #import <stdatomic.h>
+#import <stdlib.h>
 
 NSNotificationName const FLEXHookRegistryDidChangeNotification =
     @"FLEXHookRegistryDidChangeNotification";

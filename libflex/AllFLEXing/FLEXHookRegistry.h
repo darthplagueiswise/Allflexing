@@ -94,6 +94,10 @@ typedef void (^FLEXHookApplyCompletion)(NSArray<FLEXHookEntry *> *applied,
 @interface FLEXHookRegistry : NSObject
 
 @property (class, nonatomic, readonly) FLEXHookRegistry *sharedRegistry;
+/// Cheap launch-time probe: is there at least one confirmed (desiredEnabled)
+/// persisted entry? Reads only the defaults payload and builds nothing, so a
+/// first run with nothing confirmed stays fully inert at launch.
+@property (class, nonatomic, readonly) BOOL hasPersistedConfirmedEntries;
 @property (nonatomic, copy, readonly) NSArray<FLEXHookEntry *> *entries;
 @property (nonatomic, readonly) BOOL safeMode;
 @property (nonatomic, copy, readonly, nullable) NSString *safeModeEntryIdentifier;
