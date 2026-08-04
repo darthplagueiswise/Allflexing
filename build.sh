@@ -12,6 +12,7 @@ fi
 readonly PRODUCT_NAME="AllFLEXing"
 readonly RELEASE_DIR="$PROJECT_ROOT/release"
 readonly FLEX_UI_PATCH="$PROJECT_ROOT/patches/flex-uikit26-liquid-glass.patch"
+readonly FLEX_RUNTIME_FILTER_PATCH="$PROJECT_ROOT/patches/flex-hookable-runtime-filter.patch"
 readonly FLEX_KEYCHAIN_SOURCE="$PROJECT_ROOT/libflex/FLEX/Classes/GlobalStateExplorers/Keychain/FLEXKeychainViewController.m"
 
 log() {
@@ -57,20 +58,26 @@ PY
 	log "sanitized fixed host-app examples from upstream FLEX"
 }
 
-prepare_flex_ui() {
-	[ -f "$FLEX_UI_PATCH" ] || die "missing pinned FLEX UIKit 26 patch"
-	[ -d "$PROJECT_ROOT/libflex/FLEX" ] || die "FLEX submodule is missing"
+apply_pinned_flex_patch() {
+	local patch="$1"
+	local label="$2"
+	[ -f "$patch" ] || die "missing pinned FLEX patch: $patch"
 
-	if git -C "$PROJECT_ROOT/libflex/FLEX" apply --reverse --check "$FLEX_UI_PATCH" >/dev/null 2>&1; then
-		log "pinned FLEX UIKit 26 patch is already applied"
+	if git -C "$PROJECT_ROOT/libflex/FLEX" apply --reverse --check "$patch" >/dev/null 2>&1; then
+		log "$label is already applied"
 	else
-		if ! git -C "$PROJECT_ROOT/libflex/FLEX" apply --check "$FLEX_UI_PATCH"; then
-			die "FLEX submodule does not match the pinned Liquid Glass patch base"
+		if ! git -C "$PROJECT_ROOT/libflex/FLEX" apply --check "$patch"; then
+			die "FLEX submodule does not match the pinned patch base: $label"
 		fi
-		git -C "$PROJECT_ROOT/libflex/FLEX" apply "$FLEX_UI_PATCH"
-		log "applied pinned FLEX UIKit 26 presentation patch"
+		git -C "$PROJECT_ROOT/libflex/FLEX" apply "$patch"
+		log "applied $label"
 	fi
+}
 
+prepare_flex_ui() {
+	[ -d "$PROJECT_ROOT/libflex/FLEX" ] || die "FLEX submodule is missing"
+	apply_pinned_flex_patch "$FLEX_UI_PATCH" "pinned FLEX UIKit 26 presentation patch"
+	apply_pinned_flex_patch "$FLEX_RUNTIME_FILTER_PATCH" "pinned FLEX hookability predicate patch"
 	sanitize_flex_upstream_examples
 }
 
