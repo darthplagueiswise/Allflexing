@@ -1,0 +1,417 @@
+from pathlib import Path
+
+root = Path("libflex/AllFLEXing")
+session_path = root / "FLEXRuntimeImageSession.mm"
+browser_path = root / "FLEXRuntimeBrowserController.m"
+safe_path = Path("scripts/validate-safe-launch.sh")
+verify_path = Path("scripts/verify-dylib.sh")
+
+session = session_path.read_text()
+browser = browser_path.read_text()
+safe = safe_path.read_text()
+verify = verify_path.read_text()
+
+
+def replace_once(text: str, old: str, new: str, label: str) -> str:
+    count = text.count(old)
+    if count != 1:
+        raise SystemExit(f"{label}: expected one match, found {count}")
+    return text.replace(old, new, 1)
+
+
+session = replace_once(
+    session,
+    "#import <stdatomic.h>\n",
+    "#import <stdatomic.h>\n#import <string.h>\n",
+    "string import",
+)
+session = replace_once(
+    session,
+    'const char *FLEXRuntimeHostIsolationABIVersion =\n    "AllFLEXing current-process Mach-O host isolation ABI 2";\n',
+    'const char *FLEXRuntimeHostIsolationABIVersion =\n    "AllFLEXing current-process Mach-O host isolation ABI 2";\nconst char *FLEXRuntimeBoundedMachOScannerABIVersion =\n    "AllFLEXing bounded LINKEDIT scanner and compact function-start ABI 1";\n',
+    "bounded scanner marker",
+)
+
+helper_anchor = "static NSString *FLEXNormalizedSymbol(NSString *symbol) {"
+helpers = r'''static BOOL FLEXRuntimeFileRangeWithinLinkedit(
+    const struct segment_command_64 *linkedit,
+    uint64_t fileOffset,
+    uint64_t length
+) {
+    if (!linkedit || fileOffset < linkedit->fileoff) return NO;
+    uint64_t relative = fileOffset - linkedit->fileoff;
+    if (relative > linkedit->filesize) return NO;
+    return length <= linkedit->filesize - relative;
+}
+
+static NSString *FLEXRuntimeStringFromTable(const char *table,
+                                             uint32_t tableSize,
+                                             uint32_t index) {
+    if (!table || index >= tableSize) return nil;
+    size_t maximum = (size_t)tableSize - index;
+    size_t length = strnlen(table + index, maximum);
+    if (length == maximum) return nil;
+    return [[NSString alloc] initWithBytes:table + index
+                                   length:length
+                                 encoding:NSUTF8StringEncoding];
+}
+
+'''
+session = replace_once(session, helper_anchor, helpers + helper_anchor, "Mach-O helpers")
+
+objc_anchor = "                        FLEXHookABI abi = FLEXExactObjectiveCABI(method);\n\n                        FLEXHookEntry *entry = [FLEXHookEntry new];"
+session = replace_once(
+    session,
+    objc_anchor,
+    "                        FLEXHookABI abi = FLEXExactObjectiveCABI(method);\n                        if (abi == FLEXHookABIUnknown) continue;\n\n                        FLEXHookEntry *entry = [FLEXHookEntry new];",
+    "Objective-C operational filter",
+)
+
+command_old = '''    uint32_t globalSectionIndex = 1;
+    const uint8_t *cursor = (const uint8_t *)(header + 1);
+    for (uint32_t commandIndex = 0; commandIndex < header->ncmds; commandIndex++) {
+        const struct load_command *command = (const struct load_command *)cursor;
+        if (command->cmdsize < sizeof(struct load_command)) break;
+        if (command->cmd == LC_SEGMENT_64) {
+            const struct segment_command_64 *segment =
+                (const struct segment_command_64 *)command;
+'''
+command_new = '''    uint32_t globalSectionIndex = 1;
+    const uint8_t *cursor = (const uint8_t *)(header + 1);
+    const uint8_t *commandsEnd = cursor + header->sizeofcmds;
+    for (uint32_t commandIndex = 0; commandIndex < header->ncmds; commandIndex++) {
+        if (cursor > commandsEnd ||
+            (size_t)(commandsEnd - cursor) < sizeof(struct load_command)) {
+            if (error) *error = [NSError errorWithDomain:FLEXRuntimeImageSessionErrorDomain
+                                                     code:12
+                                                 userInfo:@{NSLocalizedDescriptionKey:
+                                                     @"Mach-O load-command table is truncated"}];
+            return nil;
+        }
+        const struct load_command *command = (const struct load_command *)cursor;
+        size_t remaining = (size_t)(commandsEnd - cursor);
+        if (command->cmdsize < sizeof(struct load_command) ||
+            command->cmdsize > remaining) {
+            if (error) *error = [NSError errorWithDomain:FLEXRuntimeImageSessionErrorDomain
+                                                     code:12
+                                                 userInfo:@{NSLocalizedDescriptionKey:
+                                                     @"Mach-O load command has an invalid size"}];
+            return nil;
+        }
+        if (command->cmd == LC_SEGMENT_64) {
+            if (command->cmdsize < sizeof(struct segment_command_64)) {
+                if (error) *error = [NSError errorWithDomain:FLEXRuntimeImageSessionErrorDomain
+                                                         code:12
+                                                     userInfo:@{NSLocalizedDescriptionKey:
+                                                         @"Mach-O segment command is truncated"}];
+                return nil;
+            }
+            const struct segment_command_64 *segment =
+                (const struct segment_command_64 *)command;
+            uint64_t sectionBytes = 0;
+            if (__builtin_mul_overflow((uint64_t)segment->nsects,
+                                       (uint64_t)sizeof(struct section_64),
+                                       &sectionBytes) ||
+                sectionBytes > command->cmdsize - sizeof(*segment)) {
+                if (error) *error = [NSError errorWithDomain:FLEXRuntimeImageSessionErrorDomain
+                                                         code:12
+                                                     userInfo:@{NSLocalizedDescriptionKey:
+                                                         @"Mach-O section table is truncated"}];
+                return nil;
+            }
+'''
+session = replace_once(session, command_old, command_new, "load-command bounds")
+
+pointer_old = '''    uintptr_t linkeditBase = (uintptr_t)image.slide +
+        (uintptr_t)linkedit->vmaddr - (uintptr_t)linkedit->fileoff;
+    const struct nlist_64 *symbols = (const struct nlist_64 *)(
+        linkeditBase + symtab->symoff);
+    const char *strings = (const char *)(linkeditBase + symtab->stroff);
+    const uint32_t *indirect = (const uint32_t *)(
+        linkeditBase + dysymtab->indirectsymoff);
+'''
+pointer_new = '''    uint64_t symbolBytes = 0;
+    uint64_t indirectBytes = 0;
+    BOOL symbolOverflow = __builtin_mul_overflow(
+        (uint64_t)symtab->nsyms,
+        (uint64_t)sizeof(struct nlist_64),
+        &symbolBytes
+    );
+    BOOL indirectOverflow = __builtin_mul_overflow(
+        (uint64_t)dysymtab->nindirectsyms,
+        (uint64_t)sizeof(uint32_t),
+        &indirectBytes
+    );
+    if (symbolOverflow || indirectOverflow ||
+        !FLEXRuntimeFileRangeWithinLinkedit(linkedit, symtab->symoff, symbolBytes) ||
+        !FLEXRuntimeFileRangeWithinLinkedit(linkedit, symtab->stroff, symtab->strsize) ||
+        !FLEXRuntimeFileRangeWithinLinkedit(
+            linkedit,
+            dysymtab->indirectsymoff,
+            indirectBytes
+        )) {
+        if (error) *error = [NSError errorWithDomain:FLEXRuntimeImageSessionErrorDomain
+                                                 code:13
+                                             userInfo:@{NSLocalizedDescriptionKey:
+                                                 @"Mach-O symbol metadata falls outside __LINKEDIT"}];
+        return nil;
+    }
+    if (functionStarts &&
+        !FLEXRuntimeFileRangeWithinLinkedit(
+            linkedit,
+            functionStarts->dataoff,
+            functionStarts->datasize
+        )) {
+        functionStarts = NULL;
+    }
+
+    uintptr_t linkeditBase = (uintptr_t)image.slide +
+        (uintptr_t)linkedit->vmaddr - (uintptr_t)linkedit->fileoff;
+    const struct nlist_64 *symbols = (const struct nlist_64 *)(
+        linkeditBase + symtab->symoff);
+    const char *strings = (const char *)(linkeditBase + symtab->stroff);
+    const uint32_t *indirect = dysymtab->nindirectsyms
+        ? (const uint32_t *)(linkeditBase + dysymtab->indirectsymoff)
+        : NULL;
+'''
+session = replace_once(session, pointer_old, pointer_new, "LINKEDIT ranges")
+
+item_anchor = '''        NSUInteger itemCount = (NSUInteger)(record.section.size / stride);
+        for (NSUInteger item = 0; item < itemCount; item++) {
+'''
+item_replacement = '''        NSUInteger itemCount = (NSUInteger)(record.section.size / stride);
+        if (!indirect || record.section.reserved1 >= dysymtab->nindirectsyms) {
+            continue;
+        }
+        itemCount = MIN(
+            itemCount,
+            (NSUInteger)dysymtab->nindirectsyms - record.section.reserved1
+        );
+        for (NSUInteger item = 0; item < itemCount; item++) {
+'''
+session = replace_once(session, item_anchor, item_replacement, "indirect table cap")
+
+unsafe_string = '''NSString *symbol = FLEXNormalizedSymbol(
+            [NSString stringWithUTF8String:strings + stringIndex]);'''
+safe_string = '''NSString *symbol = FLEXNormalizedSymbol(
+            FLEXRuntimeStringFromTable(strings, symtab->strsize, stringIndex));'''
+if session.count(unsafe_string) != 2:
+    raise SystemExit(f"symbol string conversion count changed: {session.count(unsafe_string)}")
+session = session.replace(unsafe_string, safe_string)
+
+starts_begin = session.index("    NSMutableArray<NSNumber *> *starts = [NSMutableArray array];")
+starts_end = session.index("\n    for (FLEXHookEntry *entry in imports.allValues) {", starts_begin)
+compact_starts = '''    NSUInteger anonymous = 0;
+    NSUInteger functionStartCount = 0;
+    if (functionStarts && functionStarts->datasize && textVMAddress) {
+        const uint8_t *startCursor =
+            (const uint8_t *)(linkeditBase + functionStarts->dataoff);
+        const uint8_t *end = startCursor + functionStarts->datasize;
+        uint64_t cumulative = 0;
+        uintptr_t previousAddress = 0;
+        while (startCursor < end) {
+            uint64_t delta = 0;
+            if (!FLEXReadULEB128(&startCursor, end, &delta) || delta == 0) break;
+            cumulative += delta;
+            uintptr_t address = (uintptr_t)(
+                textVMAddress + image.slide + cumulative
+            );
+            if (previousAddress) {
+                FLEXHookEntry *entry = functionsByAddress[@(previousAddress)];
+                NSUInteger size = address > previousAddress
+                    ? (NSUInteger)(address - previousAddress) : 0;
+                if (entry) {
+                    if (size) {
+                        NSMutableDictionary *locator = [entry.locator mutableCopy];
+                        locator[@"functionSize"] = @(size);
+                        entry.locator = locator.copy;
+                    }
+                } else {
+                    anonymous++;
+                }
+            }
+            previousAddress = address;
+            functionStartCount++;
+            if ((functionStartCount & 4095) == 0) {
+                FLEXReportProgress(progress,
+                                   @"Indexing compact function starts",
+                                   functionStartCount,
+                                   0);
+            }
+        }
+        if (previousAddress && !functionsByAddress[@(previousAddress)]) {
+            anonymous++;
+        }
+        FLEXReportProgress(progress,
+                           @"Indexing compact function starts",
+                           functionStartCount,
+                           functionStartCount);
+    }
+'''
+session = session[:starts_begin] + compact_starts + session[starts_end:]
+session = replace_once(
+    session,
+    "    if (definedCount) *definedCount = defined.count - anonymous;",
+    "    if (definedCount) *definedCount = defined.count;",
+    "defined count",
+)
+
+browser = replace_once(
+    browser,
+    "@property (nonatomic) BOOL indexing;\n",
+    "@property (nonatomic) BOOL indexing;\n@property (nonatomic) BOOL initialScanStarted;\n",
+    "initial scan state",
+)
+browser = replace_once(
+    browser,
+    '''    [FLEXLiquidGlass applyToViewController:self];
+    if (self.selectedImage) [self reloadScan];
+    else [self updateUnavailableConfigurationWithError:nil];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+''',
+    '''    [FLEXLiquidGlass applyToViewController:self];
+    [self updateUnavailableConfigurationWithError:nil];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+''',
+    "remove viewDidLoad scan",
+)
+view_will = '''- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self refreshCanonicalEntries];
+    [FLEXLiquidGlass applyToViewController:self];
+}
+'''
+view_with_appear = view_will + '''
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    if (self.initialScanStarted || !self.selectedImage) return;
+    self.initialScanStarted = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.viewIfLoaded.window && !self.scanning && !self.snapshot) {
+            [self reloadScan];
+        }
+    });
+}
+'''
+browser = replace_once(browser, view_will, view_with_appear, "lazy first scan")
+
+completion_old = '''        self.snapshot = snapshot;
+        NSMutableArray<FLEXHookEntry *> *entries =
+            [NSMutableArray arrayWithCapacity:snapshot.entries.count];
+        FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
+        for (FLEXHookEntry *entry in snapshot.entries) {
+            FLEXHookEntry *resolved = [registry upsertDiscoveredEntry:entry];
+            [entries addObject:resolved ?: entry];
+        }
+        [self buildSearchIndexForEntries:entries.copy];
+'''
+completion_new = '''        self.snapshot = snapshot;
+        NSArray<FLEXHookEntry *> *projected =
+            FLEXRuntimeOperationalProjection(self.kind, snapshot.entries);
+        NSMutableArray<FLEXHookEntry *> *entries =
+            [NSMutableArray arrayWithCapacity:projected.count];
+        FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
+        for (FLEXHookEntry *entry in projected) {
+            @autoreleasepool {
+                FLEXHookEntry *resolved = [registry upsertDiscoveredEntry:entry];
+                [entries addObject:resolved ?: entry];
+            }
+        }
+        [self buildSearchIndexForEntries:entries.copy];
+'''
+browser = replace_once(browser, completion_old, completion_new, "project before registry")
+projection_old = '''    NSArray<FLEXHookEntry *> *projected =
+        FLEXRuntimeOperationalProjection(self.kind, entries);
+'''
+browser = replace_once(
+    browser,
+    projection_old,
+    "    NSArray<FLEXHookEntry *> *projected = entries.copy ?: @[];\n",
+    "single projection",
+)
+
+safe = safe.replace(
+    "AllFLEXing deterministic Runtime Workspace presentation ABI 1",
+    "AllFLEXing UI-first Runtime Workspace presentation ABI 2",
+)
+safe = safe.replace(
+    "AllFLEXing user-invoked runtime activation ABI 1",
+    "AllFLEXing UI-first user-invoked runtime activation ABI 2",
+)
+safe = safe.replace(
+    '"FLEXRuntimeScanner startMonitoringImages",',
+    '"[registry bootstrap]",',
+)
+safe = safe.replace(
+    'require("presentDeterministicallyFromViewController" in loader,',
+    'require("presentDeterministicallyFromViewController:origin" in loader and\n        "completion:" in loader,',
+)
+safe = safe.replace(
+    '"gFLEXWorkspacePresentationInFlight",',
+    '"gFLEXWorkspacePresentationInFlight",\n    "gFLEXWorkspaceOwnedWindow",',
+)
+bounded_anchor = '''for token in (
+    "FLEXRuntimePathBelongsToCurrentHost",
+'''
+safe = replace_once(
+    safe,
+    bounded_anchor,
+    '''require("AllFLEXing bounded LINKEDIT scanner and compact function-start ABI 1" in session,
+        "bounded Mach-O scanner marker is missing")
+require("stringWithUTF8String:strings + stringIndex" not in session,
+        "unbounded Mach-O string-table read returned")
+require("sub_%llx" not in session,
+        "anonymous LC_FUNCTION_STARTS entries are materialized again")
+
+for token in (
+    "FLEXRuntimePathBelongsToCurrentHost",
+''',
+    "bounded validation",
+)
+
+verify = verify.replace(
+    "AllFLEXing user-invoked runtime activation ABI 1",
+    "AllFLEXing UI-first user-invoked runtime activation ABI 2",
+)
+verify = verify.replace(
+    "runtime activation begins only after the workspace is opened",
+    "runtime activation begins only after the workspace is visible",
+)
+verify = verify.replace(
+    "AllFLEXing deterministic Runtime Workspace presentation ABI 1",
+    "AllFLEXing UI-first Runtime Workspace presentation ABI 2",
+)
+verify_anchor = '''require_text "selected-image runtime session" \\
+    "AllFLEXing complete selected-image runtime session ABI 2" "$string_dump"
+'''
+verify = replace_once(
+    verify,
+    verify_anchor,
+    verify_anchor + '''require_text "bounded Mach-O scanner" \\
+    "AllFLEXing bounded LINKEDIT scanner and compact function-start ABI 1" "$string_dump"
+''',
+    "verify bounded scanner",
+)
+
+for token in (
+    "FLEXRuntimeFileRangeWithinLinkedit",
+    "FLEXRuntimeStringFromTable",
+    "Indexing compact function starts",
+):
+    if token not in session:
+        raise SystemExit(f"bounded scanner contract missing: {token}")
+if "stringWithUTF8String:strings + stringIndex" in session:
+    raise SystemExit("unbounded string-table read remains")
+if 'entry.title = [NSString stringWithFormat:@"sub_%llx"' in session:
+    raise SystemExit("anonymous function entries remain materialized")
+if "if (self.selectedImage) [self reloadScan];" in browser:
+    raise SystemExit("Browser still scans from viewDidLoad")
+
+session_path.write_text(session)
+browser_path.write_text(browser)
+safe_path.write_text(safe)
+verify_path.write_text(verify)
