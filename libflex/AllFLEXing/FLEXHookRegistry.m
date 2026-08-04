@@ -972,7 +972,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     SEL capturedSelector = selector;
 
     switch (entry.abi) {
-        case FLEXHookABIObjCBoolNoArguments:
+        case FLEXHookABIObjCBoolNoArguments: {
             replacement = imp_implementationWithBlock(^BOOL(id receiver) {
                 FLEXHookEntry *strongEntry = weakEntry;
                 if (strongEntry.effectiveEnabled) {
@@ -985,7 +985,8 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
                     : NO;
             });
             break;
-        case FLEXHookABIObjCBoolObjectArgument:
+        }
+        case FLEXHookABIObjCBoolObjectArgument: {
             replacement = imp_implementationWithBlock(^BOOL(id receiver, id argument) {
                 FLEXHookEntry *strongEntry = weakEntry;
                 if (strongEntry.effectiveEnabled) {
@@ -1002,7 +1003,8 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
                     : NO;
             });
             break;
-        case FLEXHookABIObjCBoolIntegerArgument:
+        }
+        case FLEXHookABIObjCBoolIntegerArgument: {
             replacement = imp_implementationWithBlock(^BOOL(
                 id receiver,
                 uintptr_t argument
@@ -1022,6 +1024,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
                     : NO;
             });
             break;
+        }
         default:
             break;
     }
