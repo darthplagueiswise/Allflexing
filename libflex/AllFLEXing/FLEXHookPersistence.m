@@ -1,4 +1,5 @@
 #import "FLEXHookPersistence.h"
+#import "FLEXPersistenceStore.h"
 
 NSNotificationName const FLEXHookFlagsDidChangeNotification = @"FLEXHookFlagsDidChangeNotification";
 const char *FLEXHookPersistenceReloadABIVersion =
@@ -46,9 +47,6 @@ const char *FLEXHookPersistenceReloadABIVersion =
 - (instancetype)init {
     self = [super init];
     if (self) {
-        // standardUserDefaults is already isolated by the signed host app's
-        // sandbox. A custom app-group suite would require an entitlement and is
-        // therefore less reliable for certificate sideloading.
         _defaults = NSUserDefaults.standardUserDefaults;
         _mutableFlags = [NSMutableArray array];
         _flagsByIdentifier = [NSMutableDictionary dictionary];
@@ -67,14 +65,10 @@ const char *FLEXHookPersistenceReloadABIVersion =
                 title:(NSString *)title
                detail:(NSString *)detail
          defaultValue:(BOOL)defaultValue {
-    if (identifier.length == 0 || title.length == 0) {
-        return;
-    }
+    if (identifier.length == 0 || title.length == 0) return;
 
     @synchronized (self) {
-        if (self.flagsByIdentifier[identifier]) {
-            return;
-        }
+        if (self.flagsByIdentifier[identifier]) return;
 
         FLEXHookFlag *flag = [FLEXHookFlag new];
         flag.identifier = identifier;
@@ -97,9 +91,7 @@ const char *FLEXHookPersistenceReloadABIVersion =
                       detail:(NSString *)detail
                 defaultValue:(BOOL)defaultValue
                        block:(FLEXHookInstallBlock)block {
-    if (!block) {
-        return;
-    }
+    if (!block) return;
 
     [self registerFlag:identifier title:title detail:detail defaultValue:defaultValue];
 
@@ -118,21 +110,15 @@ const char *FLEXHookPersistenceReloadABIVersion =
         }
     }
 
-    if (entryToInstall) {
-        [self installEntry:entryToInstall];
-    }
+    if (entryToInstall) [self installEntry:entryToInstall];
 }
 
 - (BOOL)boolForFlag:(NSString *)identifier {
-    if (identifier.length == 0) {
-        return NO;
-    }
+    if (identifier.length == 0) return NO;
 
     @synchronized (self) {
         NSNumber *cached = self.cachedValues[identifier];
-        if (cached) {
-            return cached.boolValue;
-        }
+        if (cached) return cached.boolValue;
 
         FLEXHookFlag *flag = self.flagsByIdentifier[identifier];
         return flag ? flag.defaultValue : NO;
@@ -140,9 +126,7 @@ const char *FLEXHookPersistenceReloadABIVersion =
 }
 
 - (void)setBool:(BOOL)value forFlag:(NSString *)identifier {
-    if (identifier.length == 0) {
-        return;
-    }
+    if (identifier.length == 0) return;
 
     BOOL changed = NO;
     @synchronized (self) {
@@ -152,9 +136,11 @@ const char *FLEXHookPersistenceReloadABIVersion =
         [self.defaults setBool:value forKey:[self storageKeyForIdentifier:identifier]];
     }
 
-    if (!changed) {
-        return;
-    }
+    if (!changed) return;
+
+    // Settings are durable immediately. Runtime hook rows use the registry's
+    // staged model and reach the store only after a committed Apply reason.
+    [FLEXPersistenceStore.sharedStore synchronizeSoon];
 
     dispatch_block_t notification = ^{
         [NSNotificationCenter.defaultCenter
@@ -184,9 +170,7 @@ const char *FLEXHookPersistenceReloadABIVersion =
         }
     }
 
-    if (!changedIdentifiers.count) {
-        return;
-    }
+    if (!changedIdentifiers.count) return;
     dispatch_async(dispatch_get_main_queue(), ^{
         for (NSString *identifier in changedIdentifiers) {
             [NSNotificationCenter.defaultCenter
@@ -204,7 +188,7 @@ const char *FLEXHookPersistenceReloadABIVersion =
 }
 
 - (NSString *)storageDomainDescription {
-    return NSBundle.mainBundle.bundleIdentifier ?: NSProcessInfo.processInfo.processName ?: @"host app";
+    return FLEXPersistenceStore.sharedStore.storageDescription;
 }
 
 - (void)activateRegisteredHooks {
