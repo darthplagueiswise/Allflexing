@@ -2,15 +2,9 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-typedef NS_ENUM(NSInteger, FLEXRuntimeBrowserKind) {
-    FLEXRuntimeBrowserKindObjectiveC = 0,
-    FLEXRuntimeBrowserKindC,
-};
-
+/// Custom runtime browser for C imports/inline symbols only. Objective-C uses
+/// FLEXHookableObjCRuntimeViewController and FLEX's native runtime pipeline.
 @interface FLEXRuntimeBrowserController : UITableViewController
-
-- (instancetype)initWithKind:(FLEXRuntimeBrowserKind)kind;
-
 @end
 
 NS_ASSUME_NONNULL_END
