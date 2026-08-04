@@ -1,6 +1,8 @@
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 
+#import "FLEXHookPersistence.h"
+
 NS_ASSUME_NONNULL_BEGIN
 
 /// Hooks an Objective-C instance method. The production sideload build links
