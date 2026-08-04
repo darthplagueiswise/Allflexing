@@ -6,10 +6,12 @@
 #import "FLEXRuntimeBrowserController.h"
 
 const char *FLEXRuntimeWorkspacePresentationABIVersion =
-    "AllFLEXing deterministic Runtime Workspace presentation ABI 1";
+    "AllFLEXing UI-first Runtime Workspace presentation ABI 2";
 
 static __weak FLEXHookWorkspaceController *gFLEXPresentedWorkspace;
 static BOOL gFLEXWorkspacePresentationInFlight = NO;
+static UIWindow *gFLEXWorkspaceOwnedWindow;
+static __weak UIWindow *gFLEXWorkspacePreviousKeyWindow;
 
 static UIViewController *FLEXWorkspaceVisibleController(
     UIViewController *controller
@@ -35,6 +37,20 @@ static UIViewController *FLEXWorkspaceVisibleController(
         return FLEXWorkspaceVisibleController(children.lastObject);
     }
     return controller;
+}
+
+static UIWindowScene *FLEXWorkspaceForegroundScene(UIViewController *preferred) {
+    UIWindowScene *preferredScene = preferred.viewIfLoaded.window.windowScene;
+    if (preferredScene.activationState == UISceneActivationStateForegroundActive) {
+        return preferredScene;
+    }
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if ([scene isKindOfClass:UIWindowScene.class] &&
+            scene.activationState == UISceneActivationStateForegroundActive) {
+            return (UIWindowScene *)scene;
+        }
+    }
+    return nil;
 }
 
 static NSArray<UIWindow *> *FLEXWorkspaceCandidateWindows(void) {
@@ -85,64 +101,168 @@ static UIViewController *FLEXWorkspaceResolvePresenter(
     return nil;
 }
 
-@interface FLEXHookWorkspaceController ()
+static void FLEXWorkspaceRestorePreviousKeyWindow(void) {
+    UIWindow *previous = gFLEXWorkspacePreviousKeyWindow;
+    gFLEXWorkspacePreviousKeyWindow = nil;
+    if (previous.windowScene.activationState == UISceneActivationStateForegroundActive &&
+        !previous.hidden) {
+        [previous makeKeyWindow];
+    }
+}
+
+static void FLEXWorkspaceTearDownOwnedWindow(void) {
+    UIWindow *owned = gFLEXWorkspaceOwnedWindow;
+    gFLEXWorkspaceOwnedWindow = nil;
+    owned.hidden = YES;
+    owned.rootViewController = nil;
+    FLEXWorkspaceRestorePreviousKeyWindow();
+}
+
+@interface FLEXHookWorkspaceController () <UIAdaptivePresentationControllerDelegate>
 @property (nonatomic, copy) NSArray<UINavigationController *> *workspaceNavigationControllers;
 @end
 
 @implementation FLEXHookWorkspaceController
 
 + (void)presentDeterministicallyFromViewController:(UIViewController *)host {
+    [self presentDeterministicallyFromViewController:host completion:nil];
+}
+
++ (void)presentDeterministicallyFromViewController:(UIViewController *)host
+                                        completion:(dispatch_block_t)completion {
     if (!NSThread.isMainThread) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            [self presentDeterministicallyFromViewController:host];
+            [self presentDeterministicallyFromViewController:host
+                                                   completion:completion];
         });
         return;
     }
-    [self attemptPresentationFrom:host retry:0];
+    [self attemptPresentationFrom:host retry:0 completion:completion];
 }
 
-+ (void)attemptPresentationFrom:(UIViewController *)host retry:(NSUInteger)retry {
++ (void)attemptPresentationFrom:(UIViewController *)host
+                          retry:(NSUInteger)retry
+                     completion:(dispatch_block_t)completion {
     FLEXHookWorkspaceController *existing = gFLEXPresentedWorkspace;
     if (existing.viewIfLoaded.window && !existing.isBeingDismissed) {
         existing.selectedIndex = 0;
         [existing.view.window makeKeyWindow];
+        if (completion) completion();
         return;
     }
-    if (gFLEXWorkspacePresentationInFlight) return;
+
+    if (gFLEXWorkspacePresentationInFlight) {
+        if (retry < 40) {
+            dispatch_after(
+                dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC),
+                dispatch_get_main_queue(),
+                ^{
+                    [self attemptPresentationFrom:host
+                                            retry:retry + 1
+                                       completion:completion];
+                }
+            );
+        }
+        return;
+    }
 
     UIViewController *presenter = FLEXWorkspaceResolvePresenter(host);
-    if ([presenter isKindOfClass:FLEXHookWorkspaceController.class]) {
-        gFLEXPresentedWorkspace = (FLEXHookWorkspaceController *)presenter;
-        return;
-    }
-
-    BOOL transitioning = !presenter || presenter.isBeingPresented ||
+    BOOL transitioning = presenter && (
+        presenter.isBeingPresented ||
         presenter.isBeingDismissed ||
-        presenter.transitionCoordinator != nil ||
         presenter.presentedViewController.isBeingPresented ||
-        presenter.presentedViewController.isBeingDismissed;
+        presenter.presentedViewController.isBeingDismissed
+    );
     if (transitioning && retry < 12) {
         dispatch_after(
-            dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
+            dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC),
             dispatch_get_main_queue(),
             ^{
-                [self attemptPresentationFrom:host retry:retry + 1];
+                [self attemptPresentationFrom:host
+                                        retry:retry + 1
+                                   completion:completion];
             }
         );
         return;
     }
-    if (!presenter || !presenter.viewIfLoaded.window) return;
 
     FLEXHookWorkspaceController *workspace = [FLEXHookWorkspaceController new];
     gFLEXPresentedWorkspace = workspace;
     gFLEXWorkspacePresentationInFlight = YES;
-    [presenter presentViewController:workspace
-                            animated:YES
-                          completion:^{
+
+    dispatch_block_t didPresent = ^{
         gFLEXWorkspacePresentationInFlight = NO;
-        [FLEXLiquidGlass applyToViewController:
-            workspace.selectedViewController];
-    }];
+        workspace.presentationController.delegate = workspace;
+        [FLEXLiquidGlass applyToViewController:workspace.selectedViewController];
+        if (completion) completion();
+    };
+
+    if (presenter.viewIfLoaded.window && !transitioning) {
+        [presenter presentViewController:workspace
+                                animated:YES
+                              completion:didPresent];
+
+        // UIKit can reject a presentation without invoking completion when the
+        // presenter becomes invalid during the transition. Fall back to an
+        // owned scene window instead of leaving the global in-flight gate stuck.
+        dispatch_after(
+            dispatch_time(DISPATCH_TIME_NOW, 1200 * NSEC_PER_MSEC),
+            dispatch_get_main_queue(),
+            ^{
+                if (gFLEXWorkspacePresentationInFlight &&
+                    !workspace.viewIfLoaded.window) {
+                    gFLEXWorkspacePresentationInFlight = NO;
+                    gFLEXPresentedWorkspace = nil;
+                    [self presentInOwnedWindowFrom:host completion:completion];
+                }
+            }
+        );
+        return;
+    }
+
+    gFLEXWorkspacePresentationInFlight = NO;
+    gFLEXPresentedWorkspace = nil;
+    [self presentInOwnedWindowFrom:host completion:completion];
+}
+
++ (void)presentInOwnedWindowFrom:(UIViewController *)host
+                       completion:(dispatch_block_t)completion {
+    UIWindowScene *scene = FLEXWorkspaceForegroundScene(host);
+    if (!scene) {
+        NSLog(@"[AllFLEXing] Runtime Workspace presentation failed: no foreground UIWindowScene");
+        return;
+    }
+
+    for (UIWindow *window in scene.windows) {
+        if (window.isKeyWindow) {
+            gFLEXWorkspacePreviousKeyWindow = window;
+            break;
+        }
+    }
+
+    UIViewController *root = [UIViewController new];
+    root.view.backgroundColor = UIColor.systemBackgroundColor;
+    root.view.opaque = YES;
+
+    UIWindow *window = [[UIWindow alloc] initWithWindowScene:scene];
+    window.windowLevel = UIWindowLevelAlert - 1.0;
+    window.rootViewController = root;
+    gFLEXWorkspaceOwnedWindow = window;
+    [window makeKeyAndVisible];
+
+    FLEXHookWorkspaceController *workspace = [FLEXHookWorkspaceController new];
+    gFLEXPresentedWorkspace = workspace;
+    gFLEXWorkspacePresentationInFlight = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [root presentViewController:workspace
+                           animated:YES
+                         completion:^{
+            gFLEXWorkspacePresentationInFlight = NO;
+            workspace.presentationController.delegate = workspace;
+            [FLEXLiquidGlass applyToViewController:workspace.selectedViewController];
+            if (completion) completion();
+        }];
+    });
 }
 
 - (instancetype)init {
@@ -252,13 +372,22 @@ static UIViewController *FLEXWorkspaceResolvePresenter(
     if (self.isBeingDismissed || !self.view.window) {
         if (gFLEXPresentedWorkspace == self) gFLEXPresentedWorkspace = nil;
         gFLEXWorkspacePresentationInFlight = NO;
+        FLEXWorkspaceTearDownOwnedWindow();
     }
+}
+
+- (void)presentationControllerDidDismiss:(UIPresentationController *)presentationController {
+    (void)presentationController;
+    if (gFLEXPresentedWorkspace == self) gFLEXPresentedWorkspace = nil;
+    gFLEXWorkspacePresentationInFlight = NO;
+    FLEXWorkspaceTearDownOwnedWindow();
 }
 
 - (void)closeWorkspace {
     [self dismissViewControllerAnimated:YES completion:^{
         if (gFLEXPresentedWorkspace == self) gFLEXPresentedWorkspace = nil;
         gFLEXWorkspacePresentationInFlight = NO;
+        FLEXWorkspaceTearDownOwnedWindow();
     }];
 }
 
