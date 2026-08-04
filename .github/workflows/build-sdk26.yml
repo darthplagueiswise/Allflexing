@@ -83,6 +83,11 @@ jobs:
           cd main
           bash scripts/validate-runtime-host-isolation.sh
 
+      - name: Validate UI-first Workspace and bounded Runtime Browser
+        run: |
+          cd main
+          bash scripts/validate-runtime-browser-safety.sh
+
       - name: Validate safe launch and persistence
         run: |
           cd main
