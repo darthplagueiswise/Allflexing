@@ -604,6 +604,16 @@ static NSArray<FLEXHookEntry *> *FLEXRuntimeQueryIndex(
     }
     self.selectedImage = matching ?: images.firstObject;
     [self updateScopeItem];
+
+    // viewDidAppear gives up when no image is loaded yet and never retries.
+    // If images only become visible afterwards, start the first scan here so
+    // the screen cannot sit on an empty/loading state indefinitely.
+    if (!self.initialScanStarted && self.selectedImage &&
+        self.viewIfLoaded.window && !self.scanning && !self.indexing &&
+        !self.snapshot) {
+        self.initialScanStarted = YES;
+        [self reloadScan];
+    }
 }
 
 - (void)registryChanged:(NSNotification *)notification {
@@ -669,6 +679,10 @@ static NSArray<FLEXHookEntry *> *FLEXRuntimeQueryIndex(
     } completion:^(FLEXRuntimeImageSnapshot *snapshot, NSError *error) {
         __strong typeof(weakSelf) self = weakSelf;
         if (!self) return;
+        NSLog(@"[AllFLEXing] scan completed kind=%ld entries=%lu error=%@",
+            (long)self.kind,
+            (unsigned long)snapshot.entries.count,
+            error.localizedDescription ?: @"none");
         self.scanning = NO;
         [self.progressSpinner stopAnimating];
         self.reloadItem.enabled = YES;
@@ -736,7 +750,34 @@ static NSArray<FLEXHookEntry *> *FLEXRuntimeQueryIndex(
                 });
             }
         );
-        if (!index || request.cancelled) return;
+        if (!index || request.cancelled) {
+            // INVARIANT: `indexing` is only ever cleared on the main queue, and
+            // it MUST be cleared on every exit. Returning silently here (the
+            // previous behaviour) left indexing == YES forever, which pinned
+            // UIContentUnavailableConfiguration.loadingConfiguration on screen
+            // and made scheduleSearchForText: a permanent no-op.
+            dispatch_async(dispatch_get_main_queue(), ^{
+                __strong typeof(weakSelf) self = weakSelf;
+                if (!self) return;
+                // A newer build already owns the UI; let it finish instead.
+                if (generation != self.searchGeneration) return;
+                self.indexing = NO;
+                [self.progressSpinner stopAnimating];
+                [self installNavigationItemsScanning:NO];
+                self.searchController.searchBar.userInteractionEnabled = YES;
+                [self.tableView reloadData];
+                [self updateNavigationStatus];
+                [self updateUnavailableConfigurationWithError:
+                    request.cancelled ? nil : [NSError
+                        errorWithDomain:@"AllFLEXing.RuntimeBrowser"
+                                   code:20
+                               userInfo:@{
+                    NSLocalizedDescriptionKey:
+                        @"The search index could not be built for this image"
+                }]];
+            });
+            return;
+        }
         dispatch_async(dispatch_get_main_queue(), ^{
             __strong typeof(weakSelf) self = weakSelf;
             if (!self || request.cancelled ||

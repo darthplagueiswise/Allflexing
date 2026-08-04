@@ -454,7 +454,37 @@ static void FLEXReportProgress(FLEXRuntimeImageProgress progress,
     __weak typeof(self) weakSelf = self;
     dispatch_async(FLEXRuntimeImageSessionQueue(), ^{
         __strong typeof(weakSelf) self = weakSelf;
-        if (!self || self.cancelled) return;
+
+        // INVARIANT: every exit path from this block must deliver exactly one
+        // completion. The previous version returned silently when the session
+        // was cancelled (or had been deallocated), which left the browser's
+        // `scanning` flag stuck at YES — and because the browser shows
+        // UIContentUnavailableConfiguration.loadingConfiguration whenever
+        // `scanning || indexing`, the screen span forever. Both the
+        // Objective-C and the C-import kinds funnel through here, which is why
+        // both hung identically.
+        __block BOOL delivered = NO;
+        void (^deliver)(FLEXRuntimeImageSnapshot *, NSError *) =
+            ^(FLEXRuntimeImageSnapshot *snapshot, NSError *error) {
+                if (delivered) return;
+                delivered = YES;
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (completion) completion(snapshot, error);
+                });
+            };
+        NSError *(^cancellationError)(void) = ^NSError *{
+            return [NSError errorWithDomain:FLEXRuntimeImageSessionErrorDomain
+                                       code:12
+                                   userInfo:@{
+                NSLocalizedDescriptionKey:
+                    @"The runtime scan was superseded before it completed"
+            }];
+        };
+
+        if (!self || self.cancelled) {
+            deliver(nil, cancellationError());
+            return;
+        }
 
         NSError *error = nil;
         NSArray<FLEXHookEntry *> *entries = nil;
@@ -477,7 +507,10 @@ static void FLEXReportProgress(FLEXRuntimeImageProgress progress,
                                  error:&error];
         }
 
-        if (self.cancelled) return;
+        if (self.cancelled) {
+            deliver(nil, error ?: cancellationError());
+            return;
+        }
         FLEXRuntimeImageSnapshot *snapshot = nil;
         if (entries) {
             snapshot = [FLEXRuntimeImageSnapshot new];
@@ -498,11 +531,18 @@ static void FLEXReportProgress(FLEXRuntimeImageProgress progress,
                         @"The selected Mach-O image changed while its snapshot was built"
                 }];
             }
+        } else if (!error) {
+            // A nil entry list with no error would otherwise present as an
+            // indistinguishable empty state; name it so the UI can explain.
+            error = [NSError errorWithDomain:FLEXRuntimeImageSessionErrorDomain
+                                         code:13
+                                     userInfo:@{
+                NSLocalizedDescriptionKey:
+                    @"The selected image produced no readable runtime entries"
+            }];
         }
 
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (completion) completion(snapshot, error);
-        });
+        deliver(snapshot, error);
     });
 }
 
