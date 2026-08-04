@@ -27,7 +27,6 @@ NS_ASSUME_NONNULL_BEGIN
 + (void)styleToolbar:(nullable UIToolbar *)toolbar;
 + (void)styleTabBar:(nullable UITabBar *)tabBar;
 + (void)styleTableView:(nullable UITableView *)tableView;
-+ (void)applyScrollEdgeEffectsToScrollView:(nullable UIScrollView *)scrollView;
 + (void)styleTableCell:(nullable UITableViewCell *)cell;
 + (void)styleSearchBar:(nullable UISearchBar *)searchBar;
 + (void)styleButton:(nullable UIButton *)button prominent:(BOOL)prominent;
