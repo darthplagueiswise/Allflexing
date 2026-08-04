@@ -2,11 +2,7 @@ ALLFLEXING_HOOK_RUNTIME_SOURCES := \
 	$(ALLFLEXING_ROOT)/FLEXABIResolver.mm \
 	$(ALLFLEXING_ROOT)/FLEXABIResolverIntegration.m \
 	$(ALLFLEXING_ROOT)/FLEXRuntimeImageSession.mm \
-	$(ALLFLEXING_ROOT)/FLEXRuntimeHostIsolation.m \
-	$(ALLFLEXING_ROOT)/FLEXRuntimeSnapshotRegistryBridge.m \
 	$(ALLFLEXING_ROOT)/FLEXRuntimeSearchSemantics.m \
-	$(ALLFLEXING_ROOT)/FLEXStableRuntimeController.m \
-	$(ALLFLEXING_ROOT)/FLEXDeferredApplyPolicy.m \
 	$(ALLFLEXING_ROOT)/FLEXAddressCHookEngine.m \
 	$(ALLFLEXING_ROOT)/FLEXAddressCHookResolverAPI.m \
 	$(ALLFLEXING_ROOT)/FLEXASLRAddressRebase.m \
