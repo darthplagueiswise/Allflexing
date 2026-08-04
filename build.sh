@@ -13,6 +13,7 @@ readonly PRODUCT_NAME="AllFLEXing"
 readonly RELEASE_DIR="$PROJECT_ROOT/release"
 readonly FLEX_UI_PATCH="$PROJECT_ROOT/patches/flex-uikit26-liquid-glass.patch"
 readonly FLEX_RUNTIME_FILTER_PATCH="$PROJECT_ROOT/patches/flex-hookable-runtime-filter.patch"
+readonly FLEX_RUNTIME_SEMANTIC_PATCH="$PROJECT_ROOT/patches/flex-semantic-runtime-search.patch"
 readonly FLEX_KEYCHAIN_SOURCE="$PROJECT_ROOT/libflex/FLEX/Classes/GlobalStateExplorers/Keychain/FLEXKeychainViewController.m"
 
 log() {
@@ -78,6 +79,7 @@ prepare_flex_ui() {
 	[ -d "$PROJECT_ROOT/libflex/FLEX" ] || die "FLEX submodule is missing"
 	apply_pinned_flex_patch "$FLEX_UI_PATCH" "pinned FLEX UIKit 26 presentation patch"
 	apply_pinned_flex_patch "$FLEX_RUNTIME_FILTER_PATCH" "pinned FLEX hookability predicate patch"
+	apply_pinned_flex_patch "$FLEX_RUNTIME_SEMANTIC_PATCH" "pinned FLEX semantic runtime search patch"
 	sanitize_flex_upstream_examples
 }
 
