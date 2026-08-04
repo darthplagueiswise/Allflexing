@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -17,7 +17,7 @@ jobs:
     name: Standalone arm64 dylib and deb
     runs-on: macos-latest
     permissions:
-      contents: read
+      contents: write
     env:
       SDK_NAME: iPhoneOS26.2.sdk
       THEOS: ${{ github.workspace }}/theos
@@ -28,6 +28,25 @@ jobs:
         with:
           path: main
           submodules: recursive
+          fetch-depth: 0
+          ref: ${{ github.head_ref || github.ref_name }}
+
+      - name: Apply bounded runtime owner migration
+        if: ${{ hashFiles('main/scripts/apply-runtime-crash-fix.py') != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd main
+          python3 scripts/apply-runtime-crash-fix.py
+          rm -f scripts/apply-runtime-crash-fix.py
+          rm -f .github/workflows/one-shot-runtime-crash-fix.yml
+          git show HEAD^:.github/workflows/build-sdk26.yml > .github/workflows/build-sdk26.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Bound runtime scans and lazily initialize the browser"
+          branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          git push origin "HEAD:${branch}"
 
       - name: Install build dependencies
         run: brew install ldid dpkg make
