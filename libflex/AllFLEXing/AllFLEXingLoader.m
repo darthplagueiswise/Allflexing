@@ -19,7 +19,8 @@ const char *AllFLEXingUserInvokedRuntimeABIVersion =
 const char *AllFLEXingUpstreamCtorPolicyABIVersion =
     "AllFLEXing upstream FLEX automatic constructors disabled ABI 1";
 
-static const void *kAllFLEXingRevealGestureKey = &kAllFLEXingRevealGestureKey;
+static const void *kAllFLEXingRevealGestureKey =
+    &kAllFLEXingRevealGestureKey;
 static id AllFLEXingDidBecomeActiveObserver;
 
 @interface AllFLEXingReveal : NSObject
@@ -90,11 +91,8 @@ static id AllFLEXingDidBecomeActiveObserver;
 }
 
 - (void)attachToCurrentWindows {
-    UIApplication *application = UIApplication.sharedApplication;
-    for (UIScene *scene in application.connectedScenes) {
-        if (![scene isKindOfClass:UIWindowScene.class]) {
-            continue;
-        }
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if (![scene isKindOfClass:UIWindowScene.class]) continue;
         for (UIWindow *window in ((UIWindowScene *)scene).windows) {
             [self attachToWindow:window];
         }
@@ -105,14 +103,16 @@ static id AllFLEXingDidBecomeActiveObserver;
     if (!window || objc_getAssociatedObject(window, kAllFLEXingRevealGestureKey)) {
         return;
     }
-
     NSString *className = NSStringFromClass(window.class);
-    if ([className hasPrefix:@"FLEX"] || window.windowLevel != UIWindowLevelNormal) {
+    if ([className hasPrefix:@"FLEX"] ||
+        window.windowLevel != UIWindowLevelNormal) {
         return;
     }
 
     UILongPressGestureRecognizer *gesture =
-        [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handle:)];
+        [[UILongPressGestureRecognizer alloc]
+            initWithTarget:self
+            action:@selector(handle:)];
     gesture.minimumPressDuration = 0.55;
     gesture.numberOfTouchesRequired = 3;
     gesture.cancelsTouchesInView = NO;
@@ -132,19 +132,14 @@ static id AllFLEXingDidBecomeActiveObserver;
         !FLEXFlag(@"reveal.three_finger")) {
         return;
     }
-
     FLEXManager *manager = FLEXManager.sharedManager;
     UIWindowScene *scene = gesture.view.window.windowScene;
-    if (scene) {
-        [manager showExplorerFromScene:scene];
-    } else {
-        [manager showExplorer];
-    }
+    if (scene) [manager showExplorerFromScene:scene];
+    else [manager showExplorer];
 }
 
 @end
 
-// Compatibility exports retained from the former libFLEX target.
 __attribute__((visibility("default"))) id FLXGetManager(void) {
     return FLEXManager.sharedManager;
 }
@@ -168,11 +163,12 @@ static dispatch_queue_t AllFLEXingRuntimeActivationQueue(void) {
     static dispatch_queue_t queue;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        dispatch_queue_attr_t attributes = dispatch_queue_attr_make_with_qos_class(
-            DISPATCH_QUEUE_SERIAL,
-            QOS_CLASS_USER_INITIATED,
-            0
-        );
+        dispatch_queue_attr_t attributes =
+            dispatch_queue_attr_make_with_qos_class(
+                DISPATCH_QUEUE_SERIAL,
+                QOS_CLASS_USER_INITIATED,
+                0
+            );
         queue = dispatch_queue_create(
             "com.allflexing.user-invoked-runtime-activation",
             attributes
@@ -214,12 +210,9 @@ static void AllFLEXingActivateRuntimeForWorkspace(dispatch_block_t completion) {
         static BOOL activated = NO;
         if (!activated) {
             @autoreleasepool {
-                // This is the first point where persistence, scanner and hook
-                // replay are allowed to initialize. Merely injecting/loading
-                // the dylib never touches the host defaults database or starts
-                // runtime-image monitoring.
+                // Persistence, scanner and replay initialize only after the
+                // user explicitly opens Runtime Workspace.
                 (void)FLEXPersistenceStore.sharedStore;
-
                 FLEXHookPersistence *flags = AllFLEXingRegisterRuntimeFlags();
                 [flags reloadPersistedValues];
                 [flags activateRegisteredHooks];
@@ -230,49 +223,43 @@ static void AllFLEXingActivateRuntimeForWorkspace(dispatch_block_t completion) {
                 activated = YES;
             }
         }
-
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (completion) {
-                completion();
-            }
+            if (completion) completion();
         });
     });
 }
 
 static void AllFLEXingStartUI(void) {
-    NSCAssert(NSThread.isMainThread, @"FLEX UI bootstrap must run on the main thread");
+    NSCAssert(NSThread.isMainThread,
+        @"FLEX UI bootstrap must run on the main thread");
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        // Flag registration only reads the host defaults domain. It neither
-        // creates the persistence store nor writes/synchronizes a value.
         (void)AllFLEXingRegisterRuntimeFlags();
 
         [FLEXManager.sharedManager
             registerGlobalEntryWithName:@"AllFLEXing Runtime Workspace"
             action:^(__kindof UITableViewController *host) {
-                __weak UITableViewController *weakHost = host;
+                // Keep the original caller alive through lazy activation, then
+                // let the Workspace owner re-resolve the foreground scene and
+                // visible presenter. No stale weak host is used for presentation.
+                UIViewController *origin = host;
                 AllFLEXingActivateRuntimeForWorkspace(^{
-                    UITableViewController *strongHost = weakHost;
-                    if (!strongHost) {
-                        return;
-                    }
-                    FLEXHookWorkspaceController *workspace =
-                        [FLEXHookWorkspaceController new];
-                    [strongHost presentViewController:workspace
-                                             animated:YES
-                                           completion:nil];
+                    [FLEXHookWorkspaceController
+                        presentDeterministicallyFromViewController:origin];
                 });
             }];
         [AllFLEXingReveal.shared start];
         [FLEXLiquidGlass refreshVisibleFLEXViewControllers];
 
         NSLog(@"[AllFLEXing] UI initialized in %@; runtime activation begins only after the workspace is opened",
-            NSBundle.mainBundle.bundleIdentifier ?: NSProcessInfo.processInfo.processName);
+            NSBundle.mainBundle.bundleIdentifier
+                ?: NSProcessInfo.processInfo.processName);
     });
 }
 
 static void AllFLEXingRunActivationPhase(void) {
-    NSCAssert(NSThread.isMainThread, @"activation phase must run on the main thread");
+    NSCAssert(NSThread.isMainThread,
+        @"activation phase must run on the main thread");
     AllFLEXingStartUI();
 }
 
@@ -283,15 +270,13 @@ static void AllFLEXingScheduleActivationPhase(void) {
             AllFLEXingRunActivationPhase();
             return;
         }
-
-        if (AllFLEXingDidBecomeActiveObserver) {
-            return;
-        }
-        AllFLEXingDidBecomeActiveObserver = [NSNotificationCenter.defaultCenter
-            addObserverForName:UIApplicationDidBecomeActiveNotification
-                        object:nil
-                         queue:NSOperationQueue.mainQueue
-                    usingBlock:^(__unused NSNotification *notification) {
+        if (AllFLEXingDidBecomeActiveObserver) return;
+        AllFLEXingDidBecomeActiveObserver =
+            [NSNotificationCenter.defaultCenter
+                addObserverForName:UIApplicationDidBecomeActiveNotification
+                            object:nil
+                             queue:NSOperationQueue.mainQueue
+                        usingBlock:^(__unused NSNotification *notification) {
             id observer = AllFLEXingDidBecomeActiveObserver;
             AllFLEXingDidBecomeActiveObserver = nil;
             if (observer) {
@@ -305,13 +290,7 @@ static void AllFLEXingScheduleActivationPhase(void) {
 __attribute__((constructor))
 static void AllFLEXingBootstrap(void) {
     @autoreleasepool {
-        if (!AllFLEXingIsUIApplicationProcess()) {
-            return;
-        }
-
-        // The constructor only schedules UI attachment after the active scene.
-        // Persistence, scanner startup and hook replay require an explicit tap
-        // on the Runtime Workspace entry.
+        if (!AllFLEXingIsUIApplicationProcess()) return;
         AllFLEXingScheduleActivationPhase();
     }
 }
