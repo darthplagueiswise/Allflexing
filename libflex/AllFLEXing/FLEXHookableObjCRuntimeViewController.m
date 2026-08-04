@@ -161,20 +161,20 @@ static BOOL FLEXSemanticFieldsMatchQuery(NSArray<NSString *> *fields,
     (void)sender;
     NSString *message =
         @"Busca normal (recomendada)\n"
-         "Digite palavras em qualquer ordem. CamelCase, snake_case, espaços e a forma compacta são equivalentes.\n\n"
-         "Exemplos:\n"
-         "fbconfigmanager\n"
-         "fb config manager\n"
-         "employee enable\n\n"
-         "Sintaxe FLEX avançada\n"
-         ". separa imagem, classe e método\n"
-         "- antes do método = método de instância\n"
-         "+ antes do método = método de classe\n"
-         "* = qualquer trecho\n\n"
-         "Exemplos avançados:\n"
-         "*.FBConfigManager.*\n"
-         "*.*.-isEnabled\n"
-         "*.*.+sharedInstance";
+        @"Digite palavras em qualquer ordem. CamelCase, snake_case, espaços e a forma compacta são equivalentes.\n\n"
+        @"Exemplos:\n"
+        @"fbconfigmanager\n"
+        @"fb config manager\n"
+        @"employee enable\n\n"
+        @"Sintaxe FLEX avançada\n"
+        @". separa imagem, classe e método\n"
+        @"- antes do método = método de instância\n"
+        @"+ antes do método = método de classe\n"
+        @"* = qualquer trecho\n\n"
+        @"Exemplos avançados:\n"
+        @"*.FBConfigManager.*\n"
+        @"*.*.-isEnabled\n"
+        @"*.*.+sharedInstance";
 
     UIAlertController *alert = [UIAlertController
         alertControllerWithTitle:@"Pesquisa Objective-C"
