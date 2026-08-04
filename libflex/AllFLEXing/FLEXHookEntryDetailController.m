@@ -181,26 +181,31 @@ typedef NS_ENUM(NSInteger, FLEXHookDetailSection) {
                 ? UITableViewCellSelectionStyleDefault
                 : UITableViewCellSelectionStyleNone;
         } else if (indexPath.row == 2) {
-            BOOL pointerResult = entry.abi == FLEXHookABICPointerNoArguments;
-            NSString *forcedResult = pointerResult
-                ? @"NULL"
-                : (entry.abi == FLEXHookABICInt64NoArguments
-                    ? (entry.forceValue ? @"1" : @"0")
-                    : (entry.forceValue ? @"TRUE" : @"FALSE"));
+            // Bool profiles keep the plain switch. The secondary-scope profiles
+            // (int64 / pointer / double / float) cannot be expressed by a
+            // switch, so they get a tappable row that opens a typed editor and
+            // shows the exact value the hook will return.
+            BOOL typedProfile = FLEXHookABIUsesTypedForceValue(entry.abi);
             [self configureCell:cell
                            text:@"Forced result"
-                      secondary:forcedResult
+                      secondary:FLEXHookForcedValueDescription(entry)
                           image:@"arrow.triangle.branch"
                            tint:UIColor.systemPurpleColor];
-            UISwitch *toggle = [UISwitch new];
-            toggle.on = entry.forceValue;
-            toggle.enabled = entry.abi != FLEXHookABIUnknown && !pointerResult;
-            [toggle sizeToFit];
-            [toggle addTarget:self
-                       action:@selector(forceChanged:)
-             forControlEvents:UIControlEventValueChanged];
-            cell.accessoryView = toggle;
-            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            if (typedProfile) {
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+                cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+                cell.accessoryView = nil;
+            } else {
+                UISwitch *toggle = [UISwitch new];
+                toggle.on = entry.forceValue;
+                toggle.enabled = entry.abi != FLEXHookABIUnknown;
+                [toggle sizeToFit];
+                [toggle addTarget:self
+                           action:@selector(forceChanged:)
+                 forControlEvents:UIControlEventValueChanged];
+                cell.accessoryView = toggle;
+                cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            }
         } else {
             [self configureCell:cell
                            text:@"Runtime hook"
@@ -283,6 +288,96 @@ typedef NS_ENUM(NSInteger, FLEXHookDetailSection) {
         [self presentBackendChooserFromCell:[tableView cellForRowAtIndexPath:indexPath]];
         return;
     }
+    if (indexPath.section == FLEXHookDetailSectionConfiguration && indexPath.row == 2 &&
+        FLEXHookABIUsesTypedForceValue(self.entry.abi)) {
+        [self presentForcedValueEditor];
+        return;
+    }
+}
+
+/// Typed force-value editor for the secondary-scope profiles. The field accepts
+/// the natural notation for the profile (decimal or 0x for integers/pointers, a
+/// decimal fraction for double/float) and stores the exact bit pattern the hook
+/// will return.
+- (void)presentForcedValueEditor {
+    FLEXHookEntry *entry = self.entry;
+    FLEXHookABI abi = entry.abi;
+
+    NSString *title = nil;
+    NSString *message = nil;
+    NSString *placeholder = nil;
+    switch (abi) {
+        case FLEXHookABICInt64NoArguments:
+            title = @"Forced int64_t";
+            message = @"Value returned in x0. Decimal, or 0x for hexadecimal.";
+            placeholder = @"0";
+            break;
+        case FLEXHookABICPointerNoArguments:
+            title = @"Forced pointer";
+            message = @"Address returned in x0. Leave empty or 0 for NULL. "
+                      @"A fabricated address is only safe if it points at storage "
+                      @"that stays valid for as long as the caller uses it.";
+            placeholder = @"NULL";
+            break;
+        case FLEXHookABICDoubleNoArguments:
+            title = @"Forced double";
+            message = @"Value returned in d0.";
+            placeholder = @"0.0";
+            break;
+        case FLEXHookABICFloatNoArguments:
+            title = @"Forced float";
+            message = @"Value returned in s0.";
+            placeholder = @"0.0";
+            break;
+        default:
+            return;
+    }
+
+    UIAlertController *alert =
+        [UIAlertController alertControllerWithTitle:title
+                                            message:message
+                                     preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = placeholder;
+        field.keyboardType = (abi == FLEXHookABICDoubleNoArguments ||
+                              abi == FLEXHookABICFloatNoArguments)
+            ? UIKeyboardTypeDecimalPad
+            : UIKeyboardTypeNumbersAndPunctuation;
+        field.autocorrectionType = UITextAutocorrectionTypeNo;
+        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        field.clearButtonMode = UITextFieldViewModeWhileEditing;
+        field.text = FLEXHookForcedValueEditableText(entry);
+    }];
+
+    __weak typeof(self) weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Set"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+        (void)action;
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self) return;
+        NSString *text = alert.textFields.firstObject.text ?: @"";
+        uint64_t bits = 0;
+        if (!FLEXHookParseForcedValue(text, abi, &bits)) {
+            UIAlertController *bad = [UIAlertController
+                alertControllerWithTitle:@"Invalid value"
+                                 message:@"That text is not a valid value for this ABI profile."
+                          preferredStyle:UIAlertControllerStyleAlert];
+            [bad addAction:[UIAlertAction actionWithTitle:@"OK"
+                                                    style:UIAlertActionStyleDefault
+                                                  handler:nil]];
+            [self presentViewController:bad animated:YES completion:nil];
+            return;
+        }
+        [FLEXHookRegistry.sharedRegistry stageForceRawValue:bits
+                                         forEntryIdentifier:self.entry.identifier];
+        [self.tableView reloadData];
+        [self updateNavigationState];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
 }
 
 - (void)updateNavigationState {
@@ -295,16 +390,36 @@ typedef NS_ENUM(NSInteger, FLEXHookDetailSection) {
 }
 
 - (void)presentABIChooserFromCell:(UITableViewCell *)cell {
+    [self presentABIChooserFromCell:cell showingAdvanced:NO];
+}
+
+/// Bool is the default scope: feature gates are what this tool is for, and a
+/// bool force is the only one where a wrong guess cannot corrupt the calling
+/// convention. The non-bool GP and FP profiles are the secondary scope, revealed
+/// on request, because forcing them requires knowing the real return class.
+- (void)presentABIChooserFromCell:(UITableViewCell *)cell
+                  showingAdvanced:(BOOL)showAdvanced {
     UIAlertController *sheet = [UIAlertController
         alertControllerWithTitle:@"C ABI profile"
-                         message:@"Choose only a signature verified for this symbol."
+                         message:showAdvanced
+            ? @"Advanced return types. Forcing a value whose return class does "
+              @"not match the callee corrupts the calling convention: integers "
+              @"and pointers return in x0, double in d0, float in s0."
+            : @"Choose only a signature verified for this symbol."
                   preferredStyle:UIAlertControllerStyleActionSheet];
-    NSArray<NSNumber *> *abis = @[
+
+    NSArray<NSNumber *> *abis = showAdvanced ? @[
         @(FLEXHookABICBoolNoArguments),
         @(FLEXHookABICBoolPointerArgument),
         @(FLEXHookABICInt64NoArguments),
         @(FLEXHookABICPointerNoArguments),
+        @(FLEXHookABICDoubleNoArguments),
+        @(FLEXHookABICFloatNoArguments),
+    ] : @[
+        @(FLEXHookABICBoolNoArguments),
+        @(FLEXHookABICBoolPointerArgument),
     ];
+
     for (NSNumber *number in abis) {
         FLEXHookABI abi = number.integerValue;
         [sheet addAction:[UIAlertAction actionWithTitle:FLEXHookABIName(abi)
@@ -319,6 +434,16 @@ typedef NS_ENUM(NSInteger, FLEXHookDetailSection) {
             [self.tableView reloadData];
         }]];
     }
+
+    if (!showAdvanced) {
+        [sheet addAction:[UIAlertAction
+            actionWithTitle:@"Show advanced return types…"
+                      style:UIAlertActionStyleDefault
+                    handler:^(__unused UIAlertAction *action) {
+            [self presentABIChooserFromCell:cell showingAdvanced:YES];
+        }]];
+    }
+
     [sheet addAction:[UIAlertAction actionWithTitle:@"Inspection only"
                                               style:UIAlertActionStyleDestructive
                                             handler:^(__unused UIAlertAction *action) {

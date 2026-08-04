@@ -8,6 +8,11 @@
 #import "FLEXRuntimeScanner.h"
 
 #import <stdatomic.h>
+#import <stdlib.h>
+#import <float.h>
+#import <math.h>
+#import <errno.h>
+#import <string.h>
 
 NSNotificationName const FLEXHookRegistryDidChangeNotification =
     @"FLEXHookRegistryDidChangeNotification";
@@ -71,8 +76,141 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
         case FLEXHookABICBoolPointerArgument: return @"bool(void *)";
         case FLEXHookABICInt64NoArguments: return @"int64_t(void)";
         case FLEXHookABICPointerNoArguments: return @"void *(void)";
+        case FLEXHookABICDoubleNoArguments: return @"double(void)";
+        case FLEXHookABICFloatNoArguments: return @"float(void)";
     }
     return @"Unknown ABI";
+}
+
+/// Human description of the value a hook forces, per ABI profile. Bool profiles
+/// read forceValue; the secondary-scope profiles read the typed raw bits.
+/// YES when the profile's forced value cannot be expressed by a bool switch and
+/// needs the typed editor (int64 / pointer / double / float).
+/// Round-trippable text for the typed editor: what the user should see when
+/// opening the field, in the same notation the parser accepts.
+NSString *FLEXHookForcedValueEditableText(FLEXHookEntry *entry) {
+    switch (entry.abi) {
+        case FLEXHookABICInt64NoArguments:
+            return [NSString stringWithFormat:@"%lld", (long long)entry.forceRawValue];
+        case FLEXHookABICPointerNoArguments:
+            return entry.forceRawValue
+                ? [NSString stringWithFormat:@"0x%llx", entry.forceRawValue] : @"";
+        case FLEXHookABICDoubleNoArguments: {
+            uint64_t bits = entry.forceRawValue;
+            double value = 0;
+            memcpy(&value, &bits, sizeof(value));
+            return [NSString stringWithFormat:@"%.17g", value];
+        }
+        case FLEXHookABICFloatNoArguments: {
+            uint32_t bits = (uint32_t)entry.forceRawValue;
+            float value = 0;
+            memcpy(&value, &bits, sizeof(value));
+            return [NSString stringWithFormat:@"%.9g", (double)value];
+        }
+        default:
+            return entry.forceValue ? @"1" : @"0";
+    }
+}
+
+/// Parses editor text into the exact bit pattern the hook returns. Returns NO on
+/// malformed input or out-of-range values rather than silently truncating.
+BOOL FLEXHookParseForcedValue(NSString *text, FLEXHookABI abi, uint64_t *outBits) {
+    if (!outBits) return NO;
+    NSString *trimmed = [text stringByTrimmingCharactersInSet:
+        NSCharacterSet.whitespaceAndNewlineCharacterSet];
+
+    switch (abi) {
+        case FLEXHookABICPointerNoArguments:
+            // Empty means NULL, which is always the safe default.
+            if (!trimmed.length) { *outBits = 0; return YES; }
+            break;
+        case FLEXHookABICInt64NoArguments:
+        case FLEXHookABICDoubleNoArguments:
+        case FLEXHookABICFloatNoArguments:
+            if (!trimmed.length) return NO;
+            break;
+        default:
+            return NO;
+    }
+
+    const char *utf8 = trimmed.UTF8String;
+    if (!utf8) return NO;
+    char *end = NULL;
+    errno = 0;
+
+    if (abi == FLEXHookABICDoubleNoArguments) {
+        double value = strtod(utf8, &end);
+        if (end == utf8 || (end && *end != '\0') || errno == ERANGE) return NO;
+        uint64_t bits = 0;
+        memcpy(&bits, &value, sizeof(bits));
+        *outBits = bits;
+        return YES;
+    }
+    if (abi == FLEXHookABICFloatNoArguments) {
+        double wide = strtod(utf8, &end);
+        if (end == utf8 || (end && *end != '\0') || errno == ERANGE) return NO;
+        if (isfinite(wide) && (wide > (double)FLT_MAX || wide < -(double)FLT_MAX)) {
+            return NO; // would become inf when narrowed
+        }
+        float value = (float)wide;
+        uint32_t bits = 0;
+        memcpy(&bits, &value, sizeof(bits));
+        *outBits = bits;
+        return YES;
+    }
+
+    // Integer and pointer: decimal, or 0x/0X hexadecimal. Base 0 also accepts a
+    // leading sign for the signed profile.
+    if (abi == FLEXHookABICPointerNoArguments) {
+        unsigned long long value = strtoull(utf8, &end, 0);
+        if (end == utf8 || (end && *end != '\0') || errno == ERANGE) return NO;
+        *outBits = (uint64_t)value;
+        return YES;
+    }
+
+    long long value = strtoll(utf8, &end, 0);
+    if (end == utf8 || (end && *end != '\0') || errno == ERANGE) return NO;
+    *outBits = (uint64_t)value;
+    return YES;
+}
+
+BOOL FLEXHookABIUsesTypedForceValue(FLEXHookABI abi) {
+    switch (abi) {
+        case FLEXHookABICInt64NoArguments:
+        case FLEXHookABICPointerNoArguments:
+        case FLEXHookABICDoubleNoArguments:
+        case FLEXHookABICFloatNoArguments:
+            return YES;
+        default:
+            return NO;
+    }
+}
+
+NSString *FLEXHookForcedValueDescription(FLEXHookEntry *entry) {
+    switch (entry.abi) {
+        case FLEXHookABICPointerNoArguments: {
+            uint64_t raw = entry.forceRawValue;
+            return raw ? [NSString stringWithFormat:@"Force 0x%llx", raw]
+                       : @"Force NULL";
+        }
+        case FLEXHookABICInt64NoArguments:
+            return [NSString stringWithFormat:@"Force %lld",
+                (long long)entry.forceRawValue];
+        case FLEXHookABICDoubleNoArguments: {
+            uint64_t bits = entry.forceRawValue;
+            double value = 0;
+            memcpy(&value, &bits, sizeof(value));
+            return [NSString stringWithFormat:@"Force %g", value];
+        }
+        case FLEXHookABICFloatNoArguments: {
+            uint32_t bits = (uint32_t)entry.forceRawValue;
+            float value = 0;
+            memcpy(&value, &bits, sizeof(value));
+            return [NSString stringWithFormat:@"Force %g", (double)value];
+        }
+        default:
+            return entry.forceValue ? @"Force TRUE" : @"Force FALSE";
+    }
 }
 
 @implementation FLEXHookEntry {
@@ -93,6 +231,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
         _abi = FLEXHookABIUnknown;
         _runtimeSlot = NSNotFound;
         _forceValue = YES;
+        _forceRawValue = 1;
         atomic_init(&_runtimeEnabled, false);
         atomic_init(&_runtimeHits, 0);
         atomic_init(&_runtimeOverrideHits, 0);
@@ -165,6 +304,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     entry.installed = self.installed;
     entry.effectiveEnabled = self.effectiveEnabled;
     entry.forceValue = self.forceValue;
+    entry.forceRawValue = self.forceRawValue;
     entry.requiresRestart = self.requiresRestart;
     entry.stale = self.stale;
     entry.lastError = self.lastError;
@@ -186,6 +326,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     dictionary[@"locator"] = self.locator ?: @{};
     dictionary[@"desiredEnabled"] = @(self.desiredEnabled);
     dictionary[@"forceValue"] = @(self.forceValue);
+    dictionary[@"forceRawValue"] = [@(self.forceRawValue) stringValue];
     dictionary[@"userConfigured"] = @(self.userConfigured);
     return dictionary.copy;
 }
@@ -218,6 +359,9 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     entry.pendingEnabled = entry.desiredEnabled;
     entry.forceValue = dictionary[@"forceValue"]
         ? [dictionary[@"forceValue"] boolValue] : YES;
+    entry.forceRawValue = [dictionary[@"forceRawValue"] isKindOfClass:NSString.class]
+        ? (uint64_t)strtoull([dictionary[@"forceRawValue"] UTF8String], NULL, 10)
+        : (entry.forceValue ? 1 : 0);
     entry.userConfigured = [dictionary[@"userConfigured"] boolValue];
     entry.available = NO;
     entry.hookable = entry.abi != FLEXHookABIUnknown &&
@@ -248,14 +392,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
             return [NSString stringWithFormat:@"Installed · forwarding original · %lu calls",
                 (unsigned long)calls];
         }
-        NSString *forced = nil;
-        if (self.abi == FLEXHookABICPointerNoArguments) {
-            forced = @"Force NULL";
-        } else if (self.abi == FLEXHookABICInt64NoArguments) {
-            forced = self.forceValue ? @"Force 1" : @"Force 0";
-        } else {
-            forced = self.forceValue ? @"Force TRUE" : @"Force FALSE";
-        }
+        NSString *forced = FLEXHookForcedValueDescription(self);
         NSUInteger overrides = self.overrideHitCount;
         if (overrides == 0) {
             return [NSString stringWithFormat:@"Armed · %@ · waiting for first call", forced];
@@ -668,6 +805,24 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     // storage. Pointer-return hooks therefore expose only the safe NULL value.
     entry.forceValue = entry.abi == FLEXHookABICPointerNoArguments
         ? NO : forceValue;
+    // Keep the typed lane in step so the engine never reads a stale value.
+    entry.forceRawValue = entry.forceValue ? 1 : 0;
+    entry.userConfigured = YES;
+    if (entry.installed) {
+        [FLEXCHookEngine setEnabled:entry.effectiveEnabled forEntry:entry];
+    }
+    [self persistEntries];
+    [self postChange:@"force"];
+}
+
+- (void)stageForceRawValue:(uint64_t)rawValue forEntryIdentifier:(NSString *)identifier {
+    FLEXHookEntry *entry = [self entryForIdentifier:identifier];
+    if (!entry) {
+        return;
+    }
+    entry.forceRawValue = rawValue;
+    // Mirror into the bool lane so mixed reads stay coherent (non-zero -> true).
+    entry.forceValue = rawValue != 0;
     entry.userConfigured = YES;
     if (entry.installed) {
         [FLEXCHookEngine setEnabled:entry.effectiveEnabled forEntry:entry];
