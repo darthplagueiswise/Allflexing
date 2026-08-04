@@ -3,6 +3,7 @@
 #import "FLEXCHookEngine.h"
 #import "FLEXHookPersistence.h"
 #import "FLEXHooking.h"
+#import "FLEXRuntimeImageSession.h"
 #import "FLEXRuntimeScanner.h"
 
 #import <stdatomic.h>
@@ -10,9 +11,191 @@
 NSNotificationName const FLEXHookRegistryDidChangeNotification =
     @"FLEXHookRegistryDidChangeNotification";
 
+const char *FLEXRuntimeSnapshotRegistryBridgeABIVersion =
+    "AllFLEXing host/image-scoped transient runtime bridge ABI 5";
+
 static NSString *const kFLEXHookRegistryStorageKey = @"com.allflexing.registry.v1";
 static NSString *const kFLEXHookRegistryInFlightKey = @"com.allflexing.registry.applyInFlight";
 static NSInteger const kFLEXHookRegistrySchema = 1;
+
+static NSMapTable<NSString *, FLEXHookEntry *> *FLEXTransientRuntimeEntries(void) {
+    static NSMapTable<NSString *, FLEXHookEntry *> *entries;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        entries = [NSMapTable strongToWeakObjectsMapTable];
+    });
+    return entries;
+}
+
+static NSString *FLEXRegistryCanonicalPath(NSString *path) {
+    if (!path.length) return @"";
+    NSString *resolved = path.stringByResolvingSymlinksInPath;
+    NSString *standardized = resolved.stringByStandardizingPath;
+    return standardized.length ? standardized : path;
+}
+
+static NSString *FLEXRegistryCurrentHostBundleID(void) {
+    return NSBundle.mainBundle.bundleIdentifier.length
+        ? NSBundle.mainBundle.bundleIdentifier
+        : (NSProcessInfo.processInfo.processName ?: @"host");
+}
+
+static FLEXRuntimeImageDescriptor *FLEXRegistryMainExecutable(void) {
+    NSArray<FLEXRuntimeImageDescriptor *> *images =
+        FLEXRuntimeImageSession.loadedAppImages;
+    for (FLEXRuntimeImageDescriptor *descriptor in images) {
+        if (descriptor.mainExecutable) return descriptor;
+    }
+    return images.firstObject;
+}
+
+static NSString *FLEXRegistryCurrentHostUUID(void) {
+    NSString *uuid = FLEXRegistryMainExecutable().uuid;
+    return uuid.length ? uuid : @"unknown-host-uuid";
+}
+
+static FLEXRuntimeImageDescriptor *FLEXRegistryLoadedImage(NSString *path) {
+    NSString *canonical = FLEXRegistryCanonicalPath(path);
+    if (!canonical.length) return nil;
+    for (FLEXRuntimeImageDescriptor *descriptor in
+         FLEXRuntimeImageSession.loadedAppImages) {
+        if ([FLEXRegistryCanonicalPath(descriptor.path)
+                isEqualToString:canonical]) {
+            return descriptor;
+        }
+    }
+    return nil;
+}
+
+static BOOL FLEXRegistryRuntimeSurface(FLEXHookEntry *entry) {
+    return entry && (
+        entry.surface == FLEXHookSurfaceObjectiveC ||
+        entry.surface == FLEXHookSurfaceCImport ||
+        entry.surface == FLEXHookSurfaceCInline
+    );
+}
+
+static BOOL FLEXRegistryObjectiveCClassMatchesImage(FLEXHookEntry *entry,
+                                                     NSString *imagePath) {
+    if (entry.surface != FLEXHookSurfaceObjectiveC) return YES;
+    NSDictionary *locator = [entry.locator isKindOfClass:NSDictionary.class]
+        ? entry.locator : @{};
+    NSString *className = [locator[@"class"] isKindOfClass:NSString.class]
+        ? locator[@"class"] : nil;
+    Class targetClass = className.length ? NSClassFromString(className) : Nil;
+    const char *rawImage = targetClass ? class_getImageName(targetClass) : NULL;
+    if (!rawImage) return NO;
+    NSString *classImage = FLEXRegistryCanonicalPath(
+        [NSString stringWithUTF8String:rawImage]
+    );
+    return classImage.length && [classImage isEqualToString:imagePath];
+}
+
+static BOOL FLEXRegistryPrepareRuntimeEntry(FLEXHookEntry *entry) {
+    if (!FLEXRegistryRuntimeSurface(entry)) return entry != nil;
+
+    NSMutableDictionary *locator = [entry.locator mutableCopy]
+        ?: [NSMutableDictionary dictionary];
+    NSString *requestedPath = [locator[@"image"] isKindOfClass:NSString.class]
+        ? locator[@"image"] : @"";
+    FLEXRuntimeImageDescriptor *live = FLEXRegistryLoadedImage(requestedPath);
+    if (!live) {
+        entry.available = NO;
+        entry.hookable = NO;
+        entry.stale = YES;
+        entry.lastError = @"Rejected: target image is not loaded by the current host";
+        return NO;
+    }
+
+    NSString *storedUUID = [locator[@"imageUUID"] isKindOfClass:NSString.class]
+        ? locator[@"imageUUID"] : @"";
+    if (storedUUID.length && live.uuid.length &&
+        [storedUUID caseInsensitiveCompare:live.uuid] != NSOrderedSame) {
+        entry.available = NO;
+        entry.hookable = NO;
+        entry.stale = YES;
+        entry.lastError = @"Rejected: Mach-O UUID belongs to a different image build";
+        return NO;
+    }
+
+    NSString *canonicalPath = FLEXRegistryCanonicalPath(live.path);
+    if (!FLEXRegistryObjectiveCClassMatchesImage(entry, canonicalPath)) {
+        entry.available = NO;
+        entry.hookable = NO;
+        entry.stale = YES;
+        entry.lastError = @"Rejected: Objective-C class belongs to another Mach-O image";
+        return NO;
+    }
+
+    NSString *hostUUID = FLEXRegistryCurrentHostUUID();
+    NSString *imageUUID = live.uuid.length ? live.uuid : @"unknown-image-uuid";
+    locator[@"hostBundleIdentifier"] = FLEXRegistryCurrentHostBundleID();
+    locator[@"hostExecutableUUID"] = hostUUID;
+    locator[@"image"] = canonicalPath;
+    locator[@"imageUUID"] = live.uuid ?: @"";
+    locator[@"runtimeSessionImagePath"] = canonicalPath;
+    locator[@"runtimeSessionImageUUID"] = live.uuid ?: @"";
+    locator[@"runtimeHostIsolated"] = @YES;
+    entry.locator = locator.copy;
+    entry.imageName = live.displayName ?: canonicalPath.lastPathComponent;
+
+    NSString *prefix = [NSString stringWithFormat:@"runtime|%@|%@|",
+        hostUUID, imageUUID];
+    NSString *base = entry.identifier.length ? entry.identifier : @"runtime-entry";
+    if (![base hasPrefix:prefix]) {
+        entry.identifier = [prefix stringByAppendingString:base];
+    }
+    return YES;
+}
+
+static BOOL FLEXRegistryEntryMatchesCurrentHost(FLEXHookEntry *entry) {
+    if (!FLEXRegistryRuntimeSurface(entry)) return entry != nil;
+    NSDictionary *locator = [entry.locator isKindOfClass:NSDictionary.class]
+        ? entry.locator : @{};
+    NSString *hostBundle = [locator[@"hostBundleIdentifier"]
+        isKindOfClass:NSString.class] ? locator[@"hostBundleIdentifier"] : @"";
+    NSString *hostUUID = [locator[@"hostExecutableUUID"]
+        isKindOfClass:NSString.class] ? locator[@"hostExecutableUUID"] : @"";
+    NSString *path = [locator[@"image"] isKindOfClass:NSString.class]
+        ? locator[@"image"] : @"";
+    NSString *imageUUID = [locator[@"imageUUID"] isKindOfClass:NSString.class]
+        ? locator[@"imageUUID"] : @"";
+    FLEXRuntimeImageDescriptor *live = FLEXRegistryLoadedImage(path);
+
+    if (!live || !hostBundle.length || !hostUUID.length ||
+        ![hostBundle isEqualToString:FLEXRegistryCurrentHostBundleID()] ||
+        [hostUUID caseInsensitiveCompare:FLEXRegistryCurrentHostUUID()] != NSOrderedSame) {
+        return NO;
+    }
+    if (imageUUID.length && live.uuid.length &&
+        [imageUUID caseInsensitiveCompare:live.uuid] != NSOrderedSame) {
+        return NO;
+    }
+    return FLEXRegistryObjectiveCClassMatchesImage(
+        entry,
+        FLEXRegistryCanonicalPath(live.path)
+    );
+}
+
+static BOOL FLEXRegistrySameRuntimeIdentity(FLEXHookEntry *left,
+                                            FLEXHookEntry *right) {
+    if (!left || !right) return NO;
+    NSDictionary *a = [left.locator isKindOfClass:NSDictionary.class]
+        ? left.locator : @{};
+    NSDictionary *b = [right.locator isKindOfClass:NSDictionary.class]
+        ? right.locator : @{};
+    NSArray<NSString *> *keys = @[
+        @"hostBundleIdentifier", @"hostExecutableUUID", @"image",
+        @"imageUUID", @"source", @"class", @"selector",
+        @"classMethod", @"symbol", @"offset"
+    ];
+    for (NSString *key in keys) {
+        id av = a[key];
+        id bv = b[key];
+        if ((av || bv) && ![av isEqual:bv]) return NO;
+    }
+    return YES;
+}
 
 NSString *FLEXHookSurfaceName(FLEXHookSurface surface) {
     switch (surface) {
@@ -80,8 +263,8 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     return atomic_load_explicit(&_runtimeEnabled, memory_order_relaxed);
 }
 
-- (void)setEffectiveEnabled:(BOOL)effectiveEnabled {
-    atomic_store_explicit(&_runtimeEnabled, effectiveEnabled, memory_order_release);
+- (void)setEffectiveEnabled:(BOOL)value {
+    atomic_store_explicit(&_runtimeEnabled, value, memory_order_release);
 }
 
 - (NSUInteger)hitCount {
@@ -100,7 +283,8 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
         return [FLEXCHookEngine overrideHitCountForEntry:self];
     }
     return (NSUInteger)atomic_load_explicit(
-        &_runtimeOverrideHits, memory_order_relaxed
+        &_runtimeOverrideHits,
+        memory_order_relaxed
     );
 }
 
@@ -111,7 +295,9 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
 - (void)recordOverrideHit {
     atomic_fetch_add_explicit(&_runtimeHits, 1, memory_order_relaxed);
     unsigned long long previous = atomic_fetch_add_explicit(
-        &_runtimeOverrideHits, 1, memory_order_relaxed
+        &_runtimeOverrideHits,
+        1,
+        memory_order_relaxed
     );
     if (previous == 0) {
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -151,32 +337,28 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
 }
 
 - (NSDictionary<NSString *, id> *)dictionaryRepresentation {
-    NSMutableDictionary<NSString *, id> *dictionary = [NSMutableDictionary dictionary];
-    dictionary[@"identifier"] = self.identifier ?: @"";
-    dictionary[@"title"] = self.title ?: @"";
-    dictionary[@"detail"] = self.detail ?: @"";
-    dictionary[@"imageName"] = self.imageName ?: @"";
-    dictionary[@"surface"] = @(self.surface);
-    dictionary[@"backend"] = @(self.backend);
-    dictionary[@"abi"] = @(self.abi);
-    dictionary[@"locator"] = self.locator ?: @{};
-    dictionary[@"desiredEnabled"] = @(self.desiredEnabled);
-    dictionary[@"forceValue"] = @(self.forceValue);
-    dictionary[@"userConfigured"] = @(self.userConfigured);
-    return dictionary.copy;
+    return @{
+        @"identifier": self.identifier ?: @"",
+        @"title": self.title ?: @"",
+        @"detail": self.detail ?: @"",
+        @"imageName": self.imageName ?: @"",
+        @"surface": @(self.surface),
+        @"backend": @(self.backend),
+        @"abi": @(self.abi),
+        @"locator": self.locator ?: @{},
+        @"desiredEnabled": @(self.desiredEnabled),
+        @"forceValue": @(self.forceValue),
+        @"userConfigured": @(self.userConfigured),
+    };
 }
 
 + (instancetype)entryWithDictionary:(NSDictionary<NSString *, id> *)dictionary {
-    if (![dictionary isKindOfClass:NSDictionary.class]) {
-        return nil;
-    }
+    if (![dictionary isKindOfClass:NSDictionary.class]) return nil;
     NSString *identifier = [dictionary[@"identifier"] isKindOfClass:NSString.class]
         ? dictionary[@"identifier"] : nil;
     NSDictionary *locator = [dictionary[@"locator"] isKindOfClass:NSDictionary.class]
         ? dictionary[@"locator"] : nil;
-    if (identifier.length == 0 || !locator) {
-        return nil;
-    }
+    if (!identifier.length || !locator) return nil;
 
     FLEXHookEntry *entry = [self new];
     entry.identifier = identifier;
@@ -196,20 +378,15 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
         ? [dictionary[@"forceValue"] boolValue] : YES;
     entry.userConfigured = [dictionary[@"userConfigured"] boolValue];
     entry.available = NO;
-    entry.hookable = entry.abi != FLEXHookABIUnknown &&
-                     entry.backend != FLEXHookBackendNone;
+    entry.hookable = NO;
     entry.stale = YES;
-    entry.lastError = @"Waiting for runtime target validation";
+    entry.lastError = @"Waiting for current-host target validation";
     return entry;
 }
 
 - (NSString *)statusSummary {
-    if (self.lastError.length) {
-        return self.lastError;
-    }
-    if (!self.available) {
-        return @"Target unavailable in the current process";
-    }
+    if (self.lastError.length) return self.lastError;
+    if (!self.available) return @"Target unavailable in the current process";
     if (!self.hookable) {
         return self.abi == FLEXHookABIUnknown
             ? @"Choose and validate an ABI before enabling"
@@ -219,25 +396,24 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
         return self.pendingEnabled ? @"Pending enable" : @"Pending disable";
     }
     if (self.installed) {
-        NSUInteger calls = self.hitCount;
         if (!self.effectiveEnabled) {
-            return [NSString stringWithFormat:@"Installed · forwarding original · %lu calls",
-                (unsigned long)calls];
+            return [NSString stringWithFormat:
+                @"Installed · forwarding original · %lu calls",
+                (unsigned long)self.hitCount];
         }
-        NSString *forced = nil;
-        if (self.abi == FLEXHookABICPointerNoArguments) {
-            forced = @"Force NULL";
-        } else if (self.abi == FLEXHookABICInt64NoArguments) {
-            forced = self.forceValue ? @"Force 1" : @"Force 0";
-        } else {
-            forced = self.forceValue ? @"Force TRUE" : @"Force FALSE";
+        NSString *forced = self.abi == FLEXHookABICPointerNoArguments
+            ? @"Force NULL"
+            : (self.abi == FLEXHookABICInt64NoArguments
+                ? (self.forceValue ? @"Force 1" : @"Force 0")
+                : (self.forceValue ? @"Force TRUE" : @"Force FALSE"));
+        if (self.overrideHitCount == 0) {
+            return [NSString stringWithFormat:
+                @"Armed · %@ · waiting for first call", forced];
         }
-        NSUInteger overrides = self.overrideHitCount;
-        if (overrides == 0) {
-            return [NSString stringWithFormat:@"Armed · %@ · waiting for first call", forced];
-        }
-        return [NSString stringWithFormat:@"Observed · %@ · %lu overridden calls",
-            forced, (unsigned long)overrides];
+        return [NSString stringWithFormat:
+            @"Observed · %@ · %lu overridden calls",
+            forced,
+            (unsigned long)self.overrideHitCount];
     }
     return self.desiredEnabled ? @"Enabled but not installed" : @"Ready";
 }
@@ -270,7 +446,10 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
 - (instancetype)init {
     self = [super init];
     if (self) {
-        _queue = dispatch_queue_create("com.allflexing.hook-registry", DISPATCH_QUEUE_SERIAL);
+        _queue = dispatch_queue_create(
+            "com.allflexing.hook-registry",
+            DISPATCH_QUEUE_SERIAL
+        );
         _defaults = NSUserDefaults.standardUserDefaults;
         _mutableEntries = [NSMutableArray array];
         _entriesByIdentifier = [NSMutableDictionary dictionary];
@@ -280,43 +459,45 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     return self;
 }
 
-- (NSString *)providerName {
-    return FLEXMSHookProviderName();
-}
-
-- (NSString *)providerPath {
-    return FLEXMSHookProviderPath();
-}
+- (NSString *)providerName { return FLEXMSHookProviderName(); }
+- (NSString *)providerPath { return FLEXMSHookProviderPath(); }
 
 - (NSArray<FLEXHookEntry *> *)entries {
     @synchronized (self) {
-        return [self.mutableEntries copy];
+        NSMutableArray<FLEXHookEntry *> *filtered = [NSMutableArray array];
+        for (FLEXHookEntry *entry in self.mutableEntries) {
+            if (!FLEXRegistryRuntimeSurface(entry) ||
+                FLEXRegistryEntryMatchesCurrentHost(entry)) {
+                [filtered addObject:entry];
+            }
+        }
+        return filtered.copy;
     }
 }
 
 - (FLEXHookEntry *)entryForIdentifier:(NSString *)identifier {
-    if (identifier.length == 0) {
-        return nil;
-    }
+    if (!identifier.length) return nil;
     @synchronized (self) {
-        return self.entriesByIdentifier[identifier];
+        FLEXHookEntry *entry = self.entriesByIdentifier[identifier];
+        if (FLEXRegistryRuntimeSurface(entry) &&
+            !FLEXRegistryEntryMatchesCurrentHost(entry)) {
+            return nil;
+        }
+        return entry;
     }
 }
 
 - (NSArray<FLEXHookEntry *> *)entriesForSurface:(FLEXHookSurface)surface {
-    NSPredicate *predicate = [NSPredicate predicateWithBlock:^BOOL(FLEXHookEntry *entry,
-                                                                    NSDictionary *bindings) {
-        (void)bindings;
-        return entry.surface == surface;
-    }];
-    return [self.entries filteredArrayUsingPredicate:predicate];
+    NSMutableArray<FLEXHookEntry *> *filtered = [NSMutableArray array];
+    for (FLEXHookEntry *entry in self.entries) {
+        if (entry.surface == surface) [filtered addObject:entry];
+    }
+    return filtered.copy;
 }
 
 - (void)bootstrap {
     @synchronized (self) {
-        if (self.bootstrapped) {
-            return;
-        }
+        if (self.bootstrapped) return;
         self.bootstrapped = YES;
     }
     [NSNotificationCenter.defaultCenter
@@ -324,22 +505,14 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
            selector:@selector(runtimeImagesChanged:)
                name:FLEXRuntimeImagesDidChangeNotification
              object:nil];
-    dispatch_sync(self.queue, ^{
-        [self reapplyPersistedEntriesWithReason:@"launch-reapply"];
-    });
     [FLEXRuntimeScanner startMonitoringImages];
+    [self refreshCapabilities];
 }
 
 - (void)runtimeImagesChanged:(NSNotification *)notification {
     (void)notification;
     dispatch_async(self.queue, ^{
-        [self reapplyPersistedEntriesWithReason:@"late-image-reapply"];
-    });
-}
-
-- (void)reapplyPersistedEntries {
-    dispatch_async(self.queue, ^{
-        [self reapplyPersistedEntriesWithReason:@"manual-reapply"];
+        [self refreshCapabilities];
     });
 }
 
@@ -349,12 +522,13 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
         [payload[@"schema"] integerValue] != kFLEXHookRegistrySchema) {
         return;
     }
-
     NSArray *records = [payload[@"entries"] isKindOfClass:NSArray.class]
         ? payload[@"entries"] : @[];
     for (NSDictionary *record in records) {
         FLEXHookEntry *entry = [FLEXHookEntry entryWithDictionary:record];
-        if (!entry || self.entriesByIdentifier[entry.identifier]) {
+        if (!entry || self.entriesByIdentifier[entry.identifier]) continue;
+        if (FLEXRegistryRuntimeSurface(entry) &&
+            !FLEXRegistryPrepareRuntimeEntry(entry)) {
             continue;
         }
         self.entriesByIdentifier[entry.identifier] = entry;
@@ -366,25 +540,24 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     NSMutableArray<NSDictionary *> *records = [NSMutableArray array];
     @synchronized (self) {
         for (FLEXHookEntry *entry in self.mutableEntries) {
-            if (entry.desiredEnabled || entry.userConfigured) {
+            if ((entry.desiredEnabled || entry.userConfigured) &&
+                (!FLEXRegistryRuntimeSurface(entry) ||
+                 FLEXRegistryEntryMatchesCurrentHost(entry))) {
                 [records addObject:entry.dictionaryRepresentation];
             }
         }
     }
-    NSDictionary *payload = @{
+    [self.defaults setObject:@{
         @"schema": @(kFLEXHookRegistrySchema),
         @"entries": records.copy,
-    };
-    [self.defaults setObject:payload forKey:kFLEXHookRegistryStorageKey];
+    } forKey:kFLEXHookRegistryStorageKey];
 }
 
 - (void)detectInterruptedApply {
     NSDictionary *inFlight = [self.defaults objectForKey:kFLEXHookRegistryInFlightKey];
     NSString *identifier = [inFlight[@"identifier"] isKindOfClass:NSString.class]
         ? inFlight[@"identifier"] : nil;
-    if (identifier.length == 0) {
-        return;
-    }
+    if (!identifier.length) return;
 
     self.safeMode = YES;
     self.safeModeEntryIdentifier = identifier;
@@ -402,7 +575,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
 - (void)markApplyInFlight:(FLEXHookEntry *)entry {
     [self.defaults setObject:@{
         @"identifier": entry.identifier ?: @"",
-        @"date": @([NSDate.date timeIntervalSince1970]),
+        @"date": @(NSDate.date.timeIntervalSince1970),
     } forKey:kFLEXHookRegistryInFlightKey];
     [self.defaults synchronize];
 }
@@ -414,206 +587,124 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
 
 - (void)mergeDiscoveredEntries:(NSArray<FLEXHookEntry *> *)entries
                        surface:(FLEXHookSurface)surface {
-    @synchronized (self) {
-        for (FLEXHookEntry *existing in self.mutableEntries) {
-            if (existing.surface == surface && !existing.userConfigured) {
-                existing.available = NO;
-                existing.stale = YES;
-                if (!existing.lastError.length) {
-                    existing.lastError = @"Not found in the latest runtime scan";
-                }
-            }
-        }
-
-        for (FLEXHookEntry *discovered in entries) {
-            if (discovered.identifier.length == 0) {
-                continue;
-            }
-            FLEXHookEntry *existing = self.entriesByIdentifier[discovered.identifier];
-            if (!existing) {
-                self.entriesByIdentifier[discovered.identifier] = discovered;
-                [self.mutableEntries addObject:discovered];
-                continue;
-            }
-
-            NSString *previousUUID = [existing.locator[@"imageUUID"]
-                isKindOfClass:NSString.class] ? existing.locator[@"imageUUID"] : nil;
-            NSString *discoveredUUID = [discovered.locator[@"imageUUID"]
-                isKindOfClass:NSString.class] ? discovered.locator[@"imageUUID"] : nil;
-            BOOL imageIdentityChanged = existing.userConfigured &&
-                previousUUID.length && discoveredUUID.length &&
-                [previousUUID caseInsensitiveCompare:discoveredUUID] != NSOrderedSame;
-
-            existing.title = discovered.title;
-            existing.detail = discovered.detail;
-            existing.imageName = discovered.imageName;
-            existing.surface = discovered.surface;
-            existing.locator = discovered.locator;
-
-            if (imageIdentityChanged) {
-                existing.abi = FLEXHookABIUnknown;
-                existing.backend = FLEXHookBackendNone;
-                existing.desiredEnabled = NO;
-                existing.pendingEnabled = NO;
-                existing.effectiveEnabled = NO;
-                existing.available = YES;
-                existing.hookable = NO;
-                existing.stale = YES;
-                existing.lastError = @"Image UUID changed; revalidate the ABI before enabling";
-                [FLEXCHookEngine setEnabled:NO forEntry:existing];
-                continue;
-            }
-
-            existing.available = discovered.available;
-            existing.stale = discovered.stale;
-            if (!existing.userConfigured || existing.abi == FLEXHookABIUnknown) {
-                existing.abi = discovered.abi;
-            }
-            if (!existing.userConfigured || existing.backend == FLEXHookBackendNone) {
-                existing.backend = discovered.backend;
-            }
-            existing.hookable = existing.abi != FLEXHookABIUnknown &&
-                                existing.backend != FLEXHookBackendNone &&
-                                discovered.available;
-            existing.lastError = existing.hookable ? nil : discovered.lastError;
-        }
-
-        [self.mutableEntries sortUsingComparator:^NSComparisonResult(FLEXHookEntry *left,
-                                                                      FLEXHookEntry *right) {
-            if (left.surface != right.surface) {
-                return left.surface < right.surface ? NSOrderedAscending : NSOrderedDescending;
-            }
-            return [left.title localizedCaseInsensitiveCompare:right.title];
-        }];
+    for (FLEXHookEntry *entry in entries) {
+        if (entry.surface == surface) [self upsertDiscoveredEntry:entry];
     }
-    [self persistEntries];
     [self postChange:@"scan"];
 }
 
 - (FLEXHookEntry *)upsertDiscoveredEntry:(FLEXHookEntry *)entry {
-    if (entry.identifier.length == 0) {
+    if (!entry.identifier.length) return entry;
+    if (FLEXRegistryRuntimeSurface(entry) &&
+        !FLEXRegistryPrepareRuntimeEntry(entry)) {
         return entry;
     }
 
-    __block FLEXHookEntry *resolved = entry;
-    __block BOOL changed = NO;
-    __block BOOL shouldPersist = NO;
     @synchronized (self) {
         FLEXHookEntry *existing = self.entriesByIdentifier[entry.identifier];
+        if (!existing && FLEXRegistryRuntimeSurface(entry) &&
+            !entry.userConfigured) {
+            [FLEXTransientRuntimeEntries() setObject:entry forKey:entry.identifier];
+            return entry;
+        }
+
         if (!existing) {
             self.entriesByIdentifier[entry.identifier] = entry;
             [self.mutableEntries addObject:entry];
-            changed = YES;
+            existing = entry;
         } else {
-            NSString *resolvedError = existing.lastError;
-            if (!entry.available || !entry.hookable) {
-                resolvedError = entry.lastError;
-            } else if (!existing.available || !existing.hookable) {
-                // A provider/engine that was unavailable has recovered. Clear
-                // only that discovery error; do not erase an apply failure just
-                // because its row was rendered again.
-                resolvedError = nil;
+            if (FLEXRegistryRuntimeSurface(existing) &&
+                !FLEXRegistrySameRuntimeIdentity(existing, entry)) {
+                existing.available = NO;
+                existing.hookable = NO;
+                existing.stale = YES;
+                existing.desiredEnabled = NO;
+                existing.pendingEnabled = NO;
+                existing.effectiveEnabled = NO;
+                existing.lastError = @"Image identity changed; revalidate this target";
+                return existing;
             }
-            changed = ![existing.title isEqualToString:entry.title] ||
-                ![existing.detail isEqualToString:entry.detail] ||
-                ![existing.imageName isEqualToString:entry.imageName] ||
-                ![existing.locator isEqualToDictionary:entry.locator] ||
-                existing.surface != entry.surface ||
-                existing.backend != entry.backend ||
-                existing.abi != entry.abi ||
-                existing.available != entry.available ||
-                existing.hookable != entry.hookable ||
-                existing.stale != entry.stale ||
-                !((existing.lastError == resolvedError) ||
-                  [existing.lastError isEqualToString:resolvedError]);
-
             existing.title = entry.title;
             existing.detail = entry.detail;
             existing.imageName = entry.imageName;
             existing.surface = entry.surface;
-            existing.backend = entry.backend;
-            existing.abi = entry.abi;
             existing.locator = entry.locator;
             existing.available = entry.available;
-            existing.hookable = entry.hookable;
             existing.stale = entry.stale;
-            existing.lastError = resolvedError;
-            resolved = existing;
-            shouldPersist = changed &&
-                (existing.desiredEnabled || existing.userConfigured);
+            if (!existing.userConfigured || existing.abi == FLEXHookABIUnknown) {
+                existing.abi = entry.abi;
+            }
+            if (!existing.userConfigured || existing.backend == FLEXHookBackendNone) {
+                existing.backend = entry.backend;
+            }
+            existing.hookable = entry.hookable &&
+                existing.abi != FLEXHookABIUnknown &&
+                existing.backend != FLEXHookBackendNone;
+            if (existing.available && existing.hookable) existing.lastError = nil;
+            else if (entry.lastError.length) existing.lastError = entry.lastError;
         }
 
-        if (changed) {
-            [self.mutableEntries sortUsingComparator:^NSComparisonResult(
-                FLEXHookEntry *left, FLEXHookEntry *right) {
-                if (left.surface != right.surface) {
-                    return left.surface < right.surface
-                        ? NSOrderedAscending : NSOrderedDescending;
-                }
-                return [left.title localizedCaseInsensitiveCompare:right.title];
-            }];
-        }
-    }
+        [self.mutableEntries sortUsingComparator:^NSComparisonResult(
+            FLEXHookEntry *left,
+            FLEXHookEntry *right
+        ) {
+            if (left.surface != right.surface) {
+                return left.surface < right.surface
+                    ? NSOrderedAscending : NSOrderedDescending;
+            }
+            return [left.title localizedCaseInsensitiveCompare:right.title];
+        }];
 
-    if (shouldPersist) {
-        [self persistEntries];
-    }
-    if (changed) {
+        if (existing.userConfigured || existing.desiredEnabled) {
+            [self persistEntries];
+        }
         [self postChange:@"context-discovery"];
+        return existing;
     }
-    return resolved;
+}
+
+- (FLEXHookEntry *)promoteTransientIdentifier:(NSString *)identifier {
+    FLEXHookEntry *existing = [self entryForIdentifier:identifier];
+    if (existing) return existing;
+
+    FLEXHookEntry *transient = nil;
+    @synchronized (FLEXTransientRuntimeEntries()) {
+        transient = [FLEXTransientRuntimeEntries() objectForKey:identifier];
+    }
+    if (!transient || !FLEXRegistryPrepareRuntimeEntry(transient)) return nil;
+    FLEXHookEntry *promoted = transient.copy;
+    promoted.userConfigured = YES;
+    NSMutableDictionary *locator = [promoted.locator mutableCopy]
+        ?: [NSMutableDictionary dictionary];
+    locator[@"runtimeSnapshotPromoted"] = @YES;
+    promoted.locator = locator.copy;
+    return [self upsertDiscoveredEntry:promoted];
 }
 
 - (void)addOrUpdateManualEntry:(FLEXHookEntry *)entry {
-    if (entry.identifier.length == 0) {
-        return;
-    }
+    if (!entry.identifier.length) return;
     entry.userConfigured = YES;
-    @synchronized (self) {
-        FLEXHookEntry *existing = self.entriesByIdentifier[entry.identifier];
-        if (existing) {
-            existing.title = entry.title;
-            existing.detail = entry.detail;
-            existing.imageName = entry.imageName;
-            existing.surface = entry.surface;
-            existing.locator = entry.locator;
-            existing.abi = entry.abi;
-            existing.backend = entry.backend;
-            existing.available = entry.available;
-            existing.hookable = entry.hookable;
-            existing.userConfigured = YES;
-            existing.lastError = entry.lastError;
-        } else {
-            self.entriesByIdentifier[entry.identifier] = entry;
-            [self.mutableEntries addObject:entry];
-        }
-    }
+    if (FLEXRegistryRuntimeSurface(entry) &&
+        !FLEXRegistryPrepareRuntimeEntry(entry)) return;
+    [self upsertDiscoveredEntry:entry];
     [self persistEntries];
     [self postChange:@"manual-entry"];
 }
 
 - (void)stageEnabled:(BOOL)enabled forEntryIdentifier:(NSString *)identifier {
     FLEXHookEntry *entry = [self entryForIdentifier:identifier];
-    if (!entry || (enabled && (!entry.available || !entry.hookable))) {
-        return;
-    }
+    if (!entry && enabled) entry = [self promoteTransientIdentifier:identifier];
+    if (!entry || (enabled && (!entry.available || !entry.hookable))) return;
     entry.pendingEnabled = enabled;
     [self postChange:@"stage"];
 }
 
-- (void)stageForceValue:(BOOL)forceValue forEntryIdentifier:(NSString *)identifier {
+- (void)stageForceValue:(BOOL)value forEntryIdentifier:(NSString *)identifier {
     FLEXHookEntry *entry = [self entryForIdentifier:identifier];
-    if (!entry) {
-        return;
-    }
-    // A fabricated non-null pointer cannot be ABI-safe without owning valid
-    // storage. Pointer-return hooks therefore expose only the safe NULL value.
-    entry.forceValue = entry.abi == FLEXHookABICPointerNoArguments
-        ? NO : forceValue;
+    if (!entry) entry = [self promoteTransientIdentifier:identifier];
+    if (!entry) return;
+    entry.forceValue = entry.abi == FLEXHookABICPointerNoArguments ? NO : value;
     entry.userConfigured = YES;
-    if (entry.installed) {
-        [FLEXCHookEngine setEnabled:entry.effectiveEnabled forEntry:entry];
-    }
     [self persistEntries];
     [self postChange:@"force"];
 }
@@ -622,18 +713,14 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
                               abi:(FLEXHookABI)abi
                           backend:(FLEXHookBackend)backend {
     FLEXHookEntry *entry = [self entryForIdentifier:identifier];
-    if (!entry) {
-        return;
-    }
+    if (!entry) entry = [self promoteTransientIdentifier:identifier];
+    if (!entry) return;
     entry.abi = abi;
     entry.backend = backend;
-    if (abi == FLEXHookABICPointerNoArguments) {
-        entry.forceValue = NO;
-    }
+    if (abi == FLEXHookABICPointerNoArguments) entry.forceValue = NO;
     entry.userConfigured = YES;
     entry.hookable = entry.available && abi != FLEXHookABIUnknown &&
-                     backend != FLEXHookBackendNone &&
-                     backend != FLEXHookBackendDobby;
+        backend != FLEXHookBackendNone && backend != FLEXHookBackendDobby;
     entry.lastError = nil;
     [self persistEntries];
     [self postChange:@"configuration"];
@@ -649,9 +736,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
 - (BOOL)hasPendingChanges {
     for (FLEXHookEntry *entry in self.entries) {
         if (entry.pendingEnabled != entry.desiredEnabled ||
-            (entry.desiredEnabled && !entry.installed)) {
-            return YES;
-        }
+            (entry.desiredEnabled && !entry.installed)) return YES;
     }
     return NO;
 }
@@ -660,9 +745,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     NSUInteger count = 0;
     for (FLEXHookEntry *entry in self.entries) {
         if (entry.pendingEnabled != entry.desiredEnabled ||
-            (entry.desiredEnabled && !entry.installed)) {
-            count++;
-        }
+            (entry.desiredEnabled && !entry.installed)) count++;
     }
     return count;
 }
@@ -670,9 +753,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
 - (NSUInteger)armedCount {
     NSUInteger count = 0;
     for (FLEXHookEntry *entry in self.entries) {
-        if (entry.installed && entry.effectiveEnabled) {
-            count++;
-        }
+        if (entry.installed && entry.effectiveEnabled) count++;
     }
     return count;
 }
@@ -687,23 +768,19 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     return count;
 }
 
-- (NSUInteger)activeCount {
-    return self.armedCount;
-}
+- (NSUInteger)activeCount { return self.armedCount; }
 
 - (NSUInteger)failureCount {
     NSUInteger count = 0;
     for (FLEXHookEntry *entry in self.entries) {
-        if (entry.lastError.length) {
-            count++;
-        }
+        if (entry.lastError.length) count++;
     }
     return count;
 }
 
 - (void)beginApplyOperation {
     @synchronized (self) {
-        self.applyOperationCount += 1;
+        self.applyOperationCount++;
         self.applying = YES;
     }
     [self postChange:@"apply-start"];
@@ -714,16 +791,12 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
                                 failed:(NSArray<FLEXHookEntry *> *)failed
                             completion:(FLEXHookApplyCompletion)completion {
     @synchronized (self) {
-        if (self.applyOperationCount > 0) {
-            self.applyOperationCount -= 1;
-        }
+        if (self.applyOperationCount > 0) self.applyOperationCount--;
         self.applying = self.applyOperationCount > 0;
     }
     dispatch_async(dispatch_get_main_queue(), ^{
         [self postChange:reason ?: @"apply-finish"];
-        if (completion) {
-            completion(applied, failed);
-        }
+        if (completion) completion(applied, failed);
     });
 }
 
@@ -732,17 +805,22 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
                reason:(NSString *)reason
            completion:(FLEXHookApplyCompletion)completion {
     [self beginApplyOperation];
-
     dispatch_async(self.queue, ^{
         NSMutableArray<FLEXHookEntry *> *applied = [NSMutableArray array];
         NSMutableArray<FLEXHookEntry *> *failed = [NSMutableArray array];
 
         for (FLEXHookEntry *entry in entries) {
-            BOOL needsStateChange = entry.pendingEnabled != entry.desiredEnabled;
-            BOOL needsInstall = entry.pendingEnabled && !entry.installed;
-            if (!force && !needsStateChange && !needsInstall) {
+            if (FLEXRegistryRuntimeSurface(entry) &&
+                !FLEXRegistryEntryMatchesCurrentHost(entry)) {
+                entry.lastError = @"Target belongs to another host/image";
+                entry.pendingEnabled = entry.desiredEnabled;
+                [failed addObject:entry];
                 continue;
             }
+
+            BOOL needsStateChange = entry.pendingEnabled != entry.desiredEnabled;
+            BOOL needsInstall = entry.pendingEnabled && !entry.installed;
+            if (!force && !needsStateChange && !needsInstall) continue;
 
             if (!entry.pendingEnabled) {
                 entry.desiredEnabled = NO;
@@ -770,7 +848,8 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
                 [self clearApplyInFlight];
             }
             if (!installed) {
-                entry.lastError = error.localizedDescription ?: @"Hook provider rejected the target";
+                entry.lastError = error.localizedDescription
+                    ?: @"Hook provider rejected the target";
                 entry.pendingEnabled = entry.desiredEnabled;
                 entry.effectiveEnabled = NO;
                 [failed addObject:entry];
@@ -803,12 +882,11 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
 - (void)applyEntryIdentifier:(NSString *)identifier
                   completion:(FLEXHookApplyCompletion)completion {
     FLEXHookEntry *entry = [self entryForIdentifier:identifier];
+    if (!entry) entry = [self promoteTransientIdentifier:identifier];
     if (!entry) {
-        if (completion) {
-            dispatch_async(dispatch_get_main_queue(), ^{
-                completion(@[], @[]);
-            });
-        }
+        if (completion) dispatch_async(dispatch_get_main_queue(), ^{
+            completion(@[], @[]);
+        });
         return;
     }
     [self applyEntries:@[entry]
@@ -819,14 +897,13 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
 
 - (void)failClosedEntryIdentifier:(NSString *)identifier reason:(NSString *)reason {
     FLEXHookEntry *entry = [self entryForIdentifier:identifier];
-    if (!entry) {
-        return;
-    }
+    if (!entry) return;
     entry.desiredEnabled = NO;
     entry.pendingEnabled = NO;
     entry.effectiveEnabled = NO;
     entry.lastError = reason.length
-        ? reason : @"Installed replacement failed runtime dispatch verification";
+        ? reason
+        : @"Installed replacement failed runtime dispatch verification";
     [FLEXCHookEngine setEnabled:NO forEntry:entry];
     [self persistEntries];
     [self postChange:@"runtime-verification-failed"];
@@ -873,7 +950,8 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
         ? class_getClassMethod(targetClass, selector)
         : class_getInstanceMethod(targetClass, selector);
     NSString *currentEncoding = method
-        ? [NSString stringWithUTF8String:method_getTypeEncoding(method) ?: ""] : nil;
+        ? [NSString stringWithUTF8String:method_getTypeEncoding(method) ?: ""]
+        : nil;
 
     if (!targetClass || !selector || !method ||
         (savedEncoding.length && ![savedEncoding isEqualToString:currentEncoding])) {
@@ -894,7 +972,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     SEL capturedSelector = selector;
 
     switch (entry.abi) {
-        case FLEXHookABIObjCBoolNoArguments: {
+        case FLEXHookABIObjCBoolNoArguments:
             replacement = imp_implementationWithBlock(^BOOL(id receiver) {
                 FLEXHookEntry *strongEntry = weakEntry;
                 if (strongEntry.effectiveEnabled) {
@@ -903,11 +981,11 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
                 }
                 [strongEntry recordHit];
                 return original
-                    ? ((BOOL (*)(id, SEL))original)(receiver, capturedSelector) : NO;
+                    ? ((BOOL (*)(id, SEL))original)(receiver, capturedSelector)
+                    : NO;
             });
             break;
-        }
-        case FLEXHookABIObjCBoolObjectArgument: {
+        case FLEXHookABIObjCBoolObjectArgument:
             replacement = imp_implementationWithBlock(^BOOL(id receiver, id argument) {
                 FLEXHookEntry *strongEntry = weakEntry;
                 if (strongEntry.effectiveEnabled) {
@@ -916,12 +994,19 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
                 }
                 [strongEntry recordHit];
                 return original
-                    ? ((BOOL (*)(id, SEL, id))original)(receiver, capturedSelector, argument) : NO;
+                    ? ((BOOL (*)(id, SEL, id))original)(
+                        receiver,
+                        capturedSelector,
+                        argument
+                    )
+                    : NO;
             });
             break;
-        }
-        case FLEXHookABIObjCBoolIntegerArgument: {
-            replacement = imp_implementationWithBlock(^BOOL(id receiver, uintptr_t argument) {
+        case FLEXHookABIObjCBoolIntegerArgument:
+            replacement = imp_implementationWithBlock(^BOOL(
+                id receiver,
+                uintptr_t argument
+            ) {
                 FLEXHookEntry *strongEntry = weakEntry;
                 if (strongEntry.effectiveEnabled) {
                     [strongEntry recordOverrideHit];
@@ -929,10 +1014,14 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
                 }
                 [strongEntry recordHit];
                 return original
-                    ? ((BOOL (*)(id, SEL, uintptr_t))original)(receiver, capturedSelector, argument) : NO;
+                    ? ((BOOL (*)(id, SEL, uintptr_t))original)(
+                        receiver,
+                        capturedSelector,
+                        argument
+                    )
+                    : NO;
             });
             break;
-        }
         default:
             break;
     }
@@ -967,46 +1056,43 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     return YES;
 }
 
-- (void)reapplyPersistedEntriesWithReason:(NSString *)reason {
-    for (FLEXHookEntry *entry in self.entries) {
-        if (!entry.desiredEnabled ||
-            [entry.identifier isEqualToString:self.safeModeEntryIdentifier]) {
-            continue;
+- (void)reapplyPersistedEntries {
+    dispatch_async(self.queue, ^{
+        NSMutableArray<FLEXHookEntry *> *eligible = [NSMutableArray array];
+        for (FLEXHookEntry *entry in self.entries) {
+            if (!entry.desiredEnabled ||
+                [entry.identifier isEqualToString:self.safeModeEntryIdentifier]) {
+                continue;
+            }
+            [self refreshPersistedEntryAvailability:entry];
+            if (entry.available && entry.hookable) {
+                entry.pendingEnabled = YES;
+                [eligible addObject:entry];
+            }
         }
-
-        // Image notifications can arrive in bursts. Never install a second
-        // replacement for an entry that already owns a validated trampoline.
-        if (entry.installed) {
-            entry.pendingEnabled = YES;
-            entry.effectiveEnabled = [self engineEnabledForEntry:entry];
-            [FLEXCHookEngine setEnabled:entry.effectiveEnabled forEntry:entry];
-            continue;
-        }
-
-        [self refreshPersistedEntryAvailability:entry];
-        if (!entry.available || !entry.hookable) {
-            continue;
-        }
-
-        [self markApplyInFlight:entry];
-        NSError *error = nil;
-        BOOL installed = [self installEntry:entry error:&error];
-        [self clearApplyInFlight];
-        if (installed) {
-            entry.pendingEnabled = YES;
-            entry.effectiveEnabled = YES;
-            [FLEXCHookEngine setEnabled:YES forEntry:entry];
-            entry.lastError = nil;
-        } else {
-            entry.effectiveEnabled = NO;
-            entry.lastError = error.localizedDescription ?: @"Launch reapply failed";
-        }
-    }
-    [self persistEntries];
-    [self postChange:reason ?: @"runtime-reapply"];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!eligible.count) {
+                [self postChange:@"manual-reapply-empty"];
+                return;
+            }
+            [self applyEntries:eligible
+                         force:YES
+                        reason:@"manual-reapply"
+                    completion:nil];
+        });
+    });
 }
 
 - (void)refreshPersistedEntryAvailability:(FLEXHookEntry *)entry {
+    if (FLEXRegistryRuntimeSurface(entry) &&
+        !FLEXRegistryEntryMatchesCurrentHost(entry)) {
+        entry.available = NO;
+        entry.hookable = NO;
+        entry.stale = YES;
+        entry.lastError = @"Persisted target belongs to another host/image";
+        return;
+    }
+
     if (entry.surface == FLEXHookSurfaceObjectiveC) {
         NSString *className = [entry.locator[@"class"] isKindOfClass:NSString.class]
             ? entry.locator[@"class"] : nil;
@@ -1019,14 +1105,18 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
             ? class_getClassMethod(targetClass, selector)
             : class_getInstanceMethod(targetClass, selector);
         NSString *encoding = method
-            ? [NSString stringWithUTF8String:method_getTypeEncoding(method) ?: ""] : nil;
+            ? [NSString stringWithUTF8String:method_getTypeEncoding(method) ?: ""]
+            : nil;
         NSString *saved = [entry.locator[@"encoding"] isKindOfClass:NSString.class]
             ? entry.locator[@"encoding"] : nil;
-        entry.available = method != NULL && (!saved.length || [saved isEqualToString:encoding]);
-        entry.hookable = entry.available && entry.abi != FLEXHookABIUnknown &&
-                         FLEXMSHookMessageProviderAvailable() &&
-                         FLEXFlag(@"engine.objc_ellekit");
+        entry.available = method != NULL &&
+            (!saved.length || [saved isEqualToString:encoding]);
+        entry.hookable = entry.available &&
+            entry.abi != FLEXHookABIUnknown &&
+            FLEXMSHookMessageProviderAvailable() &&
+            FLEXFlag(@"engine.objc_ellekit");
         entry.stale = !entry.available;
+        if (entry.available && entry.hookable) entry.lastError = nil;
         return;
     }
 
@@ -1042,7 +1132,8 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
         (entry.surface == FLEXHookSurfaceCImport ||
          entry.surface == FLEXHookSurfaceCInline)) {
         backend = [entry.locator[@"bindSlots"] unsignedIntegerValue] > 0
-            ? FLEXHookBackendFishhook : FLEXHookBackendInlineElleKit;
+            ? FLEXHookBackendFishhook
+            : FLEXHookBackendInlineElleKit;
     }
     switch (backend) {
         case FLEXHookBackendObjectiveCElleKit:
@@ -1065,9 +1156,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
             entry.effectiveEnabled = effective;
             [FLEXCHookEngine setEnabled:effective forEntry:entry];
         }
-        if (!engineEnabled && !entry.installed) {
-            entry.hookable = NO;
-        }
+        if (!engineEnabled && !entry.installed) entry.hookable = NO;
     }
     [self postChange:@"capabilities"];
 }
@@ -1085,11 +1174,8 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
                           object:self
                         userInfo:@{ @"reason": reason ?: @"update" }];
     };
-    if (NSThread.isMainThread) {
-        block();
-    } else {
-        dispatch_async(dispatch_get_main_queue(), block);
-    }
+    if (NSThread.isMainThread) block();
+    else dispatch_async(dispatch_get_main_queue(), block);
 }
 
 @end
