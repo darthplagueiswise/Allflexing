@@ -2,6 +2,7 @@
 
 #import "FLEXHookSettingsController.h"
 #import "FLEXHookToggles.h"
+#import "FLEXHookableObjCRuntimeViewController.h"
 #import "FLEXLiquidGlass.h"
 #import "FLEXRuntimeBrowserController.h"
 
@@ -31,9 +32,6 @@
     root.tabBarItem = tabBarItem;
     UINavigationController *navigationController =
         [[UINavigationController alloc] initWithRootViewController:root];
-    // UITabBarController owns these navigation controllers, not their roots.
-    // Assign the item to the actual child so the classic controller path keeps
-    // selection and containment synchronized on every supported iOS version.
     navigationController.tabBarItem = tabBarItem;
     navigationController.navigationBar.prefersLargeTitles = YES;
     [FLEXLiquidGlass styleNavigationController:navigationController];
@@ -46,11 +44,16 @@
 
 - (void)configureWorkspace {
     FLEXHookToggles *center = [FLEXHookToggles new];
-    FLEXRuntimeBrowserController *objectiveC =
-        [[FLEXRuntimeBrowserController alloc]
-            initWithKind:FLEXRuntimeBrowserKindObjectiveC];
-    FLEXRuntimeBrowserController *cRuntime =
-        [[FLEXRuntimeBrowserController alloc] initWithKind:FLEXRuntimeBrowserKindC];
+
+    // Objective-C discovery, tokenization, grouping, reflection metadata,
+    // previews and navigation remain owned by FLEX. AllFLEXing contributes only
+    // the hookability predicate and the hook controls on accepted metadata rows.
+    FLEXHookableObjCRuntimeViewController *objectiveC =
+        [FLEXHookableObjCRuntimeViewController new];
+
+    // FLEX does not provide a C symbol/import browser, so C remains the only
+    // custom runtime catalogue in this workspace.
+    FLEXRuntimeBrowserController *cRuntime = [FLEXRuntimeBrowserController new];
     FLEXHookSettingsController *settings = [FLEXHookSettingsController new];
 
     UINavigationController *centerNavigation =
@@ -69,16 +72,9 @@
         settingsNavigation,
     ];
 
-    // Use UIKit's direct child-controller contract. The previous lazy UITab
-    // provider path rendered the tab items on iOS 26 but could leave the same
-    // child visible after selection when this controller was presented inside
-    // FLEX's injected sheet hierarchy.
     [self setViewControllers:self.workspaceNavigationControllers animated:NO];
     self.selectedIndex = 0;
     if (@available(iOS 18.0, *)) {
-        // The mode remains adaptive, but ownership stays on the concrete child
-        // array above. Compact width gets a tab bar; regular width can expose
-        // the system sidebar without a lazy provider changing containment.
         self.mode = UITabBarControllerModeTabSidebar;
         self.customizationIdentifier = @"com.allflexing.runtime-workspace";
     }
@@ -106,8 +102,6 @@
         sheet.selectedDetentIdentifier = UISheetPresentationControllerDetentIdentifierLarge;
         sheet.prefersScrollingExpandsWhenScrolledToEdge = NO;
         sheet.prefersGrabberVisible = YES;
-        // This is a modal control surface. Keeping the default noninteractive
-        // dimming layer prevents taps outside/through it from reaching the host.
         sheet.largestUndimmedDetentIdentifier = nil;
     }
 }
