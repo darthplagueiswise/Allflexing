@@ -13,6 +13,9 @@ readonly PRODUCT_NAME="AllFLEXing"
 readonly RELEASE_DIR="$PROJECT_ROOT/release"
 readonly FLEX_UI_PATCH="$PROJECT_ROOT/patches/flex-uikit26-liquid-glass.patch"
 readonly FLEX_RUNTIME_FILTER_PATCH="$PROJECT_ROOT/patches/flex-hookable-runtime-filter.patch"
+# Retained as a source-level audit fixture; its behavior is consolidated into
+# FLEX_RUNTIME_FILTER_PATCH so only one atomic runtime patch is applied.
+readonly FLEX_RUNTIME_SEMANTIC_PATCH="$PROJECT_ROOT/patches/flex-semantic-runtime-search.patch"
 readonly FLEX_KEYCHAIN_SOURCE="$PROJECT_ROOT/libflex/FLEX/Classes/GlobalStateExplorers/Keychain/FLEXKeychainViewController.m"
 
 log() {
