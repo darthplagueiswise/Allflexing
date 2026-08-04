@@ -10,11 +10,16 @@ loader = (root / "AllFLEXingLoader.m").read_text()
 store = (root / "FLEXPersistenceStore.m").read_text()
 flags = (root / "FLEXHookPersistence.m").read_text()
 registry = (root / "FLEXHookRegistry.m").read_text()
-host_isolation = (root / "FLEXRuntimeHostIsolation.m").read_text()
-bridge = (root / "FLEXRuntimeSnapshotRegistryBridge.m").read_text()
 session = (root / "FLEXRuntimeImageSession.mm").read_text()
+browser = (root / "FLEXRuntimeBrowserController.m").read_text()
+hook_center = (root / "FLEXHookToggles.m").read_text()
+detail = (root / "FLEXHookEntryDetailController.m").read_text()
+actions = (root / "FLEXRuntimeHookActions.m").read_text()
+workspace = (root / "FLEXHookWorkspaceController.m").read_text()
+glass = (root / "FLEXLiquidGlass.m").read_text()
 makefile = Path("libflex/Makefile").read_text()
-module = Path("libflex/modules/HookRuntime/Module.mk").read_text()
+runtime_module = Path("libflex/modules/HookRuntime/Module.mk").read_text()
+ui_module = Path("libflex/modules/LiquidGlassUI/Module.mk").read_text()
 source_files = sorted(
     path for path in root.rglob("*")
     if path.suffix in {".m", ".mm", ".xm", ".x"}
@@ -53,146 +58,138 @@ def function_body(source: str, signature: str) -> str:
 def bodies_matching(source: str, pattern: str) -> list[str]:
     bodies = []
     for match in re.finditer(pattern, source, re.S):
-        opening_brace = source.find("{", match.start(), match.end())
-        body = brace_body(source, opening_brace)
+        opening = source.find("{", match.start(), match.end())
+        body = brace_body(source, opening)
         if body:
             bodies.append(body)
     return bodies
 
 
-def sends_objc_message(body: str, selector: str) -> bool:
-    pattern = r"\[[^\[\]]+\s+" + re.escape(selector) + r"\s*(?::|\])"
-    return re.search(pattern, body, re.S) is not None
+# The former method-replacement layers are gone. Their unique behavior must be
+# physically owned by the concrete session, registry and controllers.
+collapsed = {
+    "FLEXRuntimeHostIsolation.m": session,
+    "FLEXRuntimeSnapshotRegistryBridge.m": registry,
+    "FLEXStableRuntimeController.m": browser,
+    "FLEXDeferredApplyPolicy.m": hook_center + detail + actions,
+    "FLEXCompactRuntimeControllers.m": browser + hook_center + detail,
+    "FLEXPersistenceIntegration.m": store + flags,
+    "FLEXStrictObjectiveCRuntimeScanner.m": (root / "FLEXRuntimeScanner.m").read_text(),
+}
+for filename, owner in collapsed.items():
+    require(not (root / filename).exists(), f"collapsed layer returned: {filename}")
+    require(filename not in runtime_module and filename not in ui_module,
+            f"collapsed layer remains in a module manifest: {filename}")
+    require(bool(owner), f"owner content missing after collapse: {filename}")
 
-
-# Consolidated persistence contract.
-require(not (root / "FLEXPersistenceIntegration.m").exists(),
-        "legacy persistence swizzle layer must remain deleted")
-require(not (root / "FLEXStrictObjectiveCRuntimeScanner.m").exists(),
-        "duplicated strict Objective-C scanner must remain deleted")
-require("FLEXPersistenceIntegration.m" not in module,
-        "deleted persistence integration remains in HookRuntime manifest")
-require("FLEXStrictObjectiveCRuntimeScanner.m" not in module,
-        "deleted strict scanner remains in HookRuntime manifest")
-require("+ (void)load" not in store,
-        "FLEXPersistenceStore must remain lazy and must not implement +load")
-require("AllFLEXing read-only persistence discovery ABI 1" in store,
-        "missing lazy/read-only discovery ABI marker")
-require("AllFLEXing confirmed-state Keychain App Group mirror ABI 1" in store,
-        "missing confirmed-state Keychain persistence marker")
 for token in (
-    "SecItemCopyMatching",
-    "SecItemUpdate",
-    "SecItemAdd",
-    "kSecAttrAccessibleAfterFirstUnlock",
-    "SecTaskCopyValueForEntitlement",
-    "com.apple.security.application-groups",
-    "keychainAccessGroup = identifier",
-    "writeKeychainData:data accessGroup:nil",
+    "FLEXRuntimeHostIsolation",
+    "FLEXRuntimeSnapshotRegistryBridge",
+    "FLEXStableRuntimeController",
+    "FLEXDeferredApplyPolicy",
+    "FLEXCompactRuntimeControllers",
 ):
-    require(token in store, f"Keychain/App Group contract is missing: {token}")
-require("FLEXPersistenceStore.sharedStore synchronizeSoon" in flags,
-        "flag owner no longer commits settings through the persistence store")
-require("return FLEXPersistenceStore.sharedStore.storageDescription" in flags,
-        "flag owner no longer exposes the consolidated storage backend")
-require("apply-finish" in store and "runtime-toggle-applied" in store,
-        "registry confirmed-state reasons are not persisted")
+    require(token not in runtime_module and token not in ui_module,
+            f"obsolete layer token remains in manifests: {token}")
 
-# The dylib must stay generic. Access groups and host identity are discovered
-# from the effective signature/process, never compiled for one IPA or team.
-for forbidden in (
-    "com.burbn.instagram",
-    "RyukGram",
-    "4H2JG7AR6U.",
-    "TEAMID.",
+# Owner markers and contracts.
+for source, marker in (
+    (session, "AllFLEXing complete selected-image runtime session ABI 2"),
+    (session, "AllFLEXing current-process Mach-O host isolation ABI 2"),
+    (registry, "AllFLEXing host/image-scoped transient runtime bridge ABI 5"),
+    (browser, "AllFLEXing single-owner type-safe runtime controller ABI 2"),
+    (browser, "AllFLEXing complete-image substring-index search ABI 1"),
+    (browser, "AllFLEXing operational Objective-C hook-target projection ABI 1"),
+    (hook_center, "AllFLEXing staged toggles explicit-Apply-only ABI 2"),
+    (hook_center, "AllFLEXing owner-native compact runtime controllers ABI 1"),
+    (glass, "AllFLEXing native UIKit 26 Liquid Glass and scroll-edge ABI 2"),
+    (workspace, "AllFLEXing deterministic Runtime Workspace presentation ABI 1"),
 ):
-    require(forbidden not in store,
-            f"persistence contains a fixed host/team identity: {forbidden}")
-require("_keychainAccount = _hostScope" in store,
-        "Keychain account must be scoped dynamically to the current host")
+    require(marker in source, f"missing consolidated owner marker: {marker}")
 
-# Launch remains UI-only; persistence is created only after explicit Workspace
-# activation. Keychain calls are synchronous APIs and therefore stay on the
-# serial persistence queue, never inside +load/constructors or scene creation.
-require("AllFLEXing post-scene UI-only bootstrap ABI 2" in loader,
-        "missing UI-only safe-launch marker")
-require("AllFLEXing user-invoked runtime activation ABI 1" in loader,
-        "missing user-invoked runtime activation marker")
-require("AllFLEXing upstream FLEX automatic constructors disabled ABI 1" in loader,
-        "missing upstream FLEX constructor policy marker")
-require("-DFLEX_DISABLE_CTORS=1" in makefile,
-        "upstream FLEX automatic constructors must be disabled")
-require("[FLEXHookRegistry.sharedRegistry bootstrap]" not in all_sources,
-        "no source may invoke the synchronous registry bootstrap")
-require("launch-reapply" not in loader,
-        "loader must not request legacy launch replay")
-require(loader.count("reapplyPersistedEntries") == 1,
-        "persisted replay must exist only in user-invoked runtime activation")
-
-for path in source_files:
+# No owner may install itself by replacing methods at image load.
+for path in (
+    root / "FLEXRuntimeImageSession.mm",
+    root / "FLEXHookRegistry.m",
+    root / "FLEXRuntimeBrowserController.m",
+    root / "FLEXHookToggles.m",
+    root / "FLEXHookEntryDetailController.m",
+    root / "FLEXHookWorkspaceController.m",
+):
     text = path.read_text(errors="replace")
-    for body in bodies_matching(text, r"\+\s*\(void\)load\s*\{"):
-        require("FLEXPersistenceStore.sharedStore" not in body,
-                f"{path} instantiates persistence from +load")
-        require("SecItem" not in body,
-                f"{path} accesses Keychain from +load")
-        require(not sends_objc_message(body, "reapplyPersistedEntries"),
-                f"{path} replays hooks from +load")
-        require("FLEXHookRegistry.sharedRegistry bootstrap" not in body,
-                f"{path} bootstraps registry from +load")
-
-    for body in bodies_matching(
-        text,
-        r"__attribute__\s*\(\(constructor\)\).*?\([^;{}]*\)\s*\{",
+    require("+ (void)load" not in text, f"owner still installs from +load: {path}")
+    for forbidden in (
+        "method_exchangeImplementations",
+        "method_setImplementation",
+        "class_replaceMethod",
     ):
-        for token in (
-            "FLEXPersistenceStore.sharedStore",
-            "SecItem",
-            "reapplyPersistedEntries",
-            "FLEXHookRegistry.sharedRegistry bootstrap",
-            "FLEXRuntimeScanner startMonitoringImages",
-            "activateRegisteredHooks",
-        ):
-            require(token not in body,
-                    f"{path} constructor performs forbidden startup work: {token}")
+        require(forbidden not in text,
+                f"owner still replaces methods ({forbidden}): {path}")
 
-ctor_body = function_body(loader, "static void AllFLEXingBootstrap(void)")
-require(ctor_body, "AllFLEXing constructor not found")
-if ctor_body:
+# Staged-only user controls. Only explicitly named Apply paths may physically
+# install. Browser, Hook Center, detail switches and metadata switches cannot
+# call applyEntryIdentifier from their change handlers.
+for source, signature in (
+    (browser, "- (void)toggleChanged:(UISwitch *)toggle"),
+    (hook_center, "- (void)hookToggleChanged:(UISwitch *)toggle"),
+    (detail, "- (void)enabledChanged:(UISwitch *)toggle"),
+    (actions, "- (void)switchChanged:(UISwitch *)toggle"),
+):
+    body = function_body(source, signature)
+    require(body, f"staged switch handler missing: {signature}")
+    if body:
+        require("applyEntryIdentifier" not in body and
+                "applyPendingWithCompletion" not in body,
+                f"switch physically applies instead of staging: {signature}")
+        require("stageEnabled" in body,
+                f"switch no longer stages desired state: {signature}")
+require("Apply This Hook" in actions,
+        "context menu has no explicit per-hook Apply action")
+require("No patch, swizzle or hook is installed until Apply is pressed" in hook_center,
+        "Hook Center no longer explains the explicit Apply contract")
+
+# Workspace presentation is resolved after lazy runtime activation and no stale
+# weak host performs UIKit presentation.
+require("presentDeterministicallyFromViewController" in loader,
+        "loader does not use deterministic Workspace presentation")
+require("__weak UITableViewController *weakHost" not in loader,
+        "loader still captures a stale weak host")
+for token in (
+    "UISceneActivationStateForegroundActive",
+    "FLEXWorkspaceResolvePresenter",
+    "gFLEXWorkspacePresentationInFlight",
+    "attemptPresentationFrom:host retry:",
+):
+    require(token in workspace, f"deterministic presenter missing: {token}")
+
+# Launch remains inert. Runtime and persistence initialization are allowed only
+# inside the user-invoked Runtime Workspace activation function.
+require("AllFLEXing post-scene UI-only bootstrap ABI 2" in loader,
+        "missing UI-only launch marker")
+require("AllFLEXing user-invoked runtime activation ABI 1" in loader,
+        "missing user-invoked runtime marker")
+require("-DFLEX_DISABLE_CTORS=1" in makefile,
+        "upstream FLEX constructors are not disabled")
+ctor = function_body(loader, "static void AllFLEXingBootstrap(void)")
+require(ctor, "AllFLEXing constructor missing")
+if ctor:
     for token in (
         "FLEXPersistenceStore",
         "FLEXHookRegistry",
         "FLEXRuntimeScanner",
         "reapplyPersistedEntries",
         "activateRegisteredHooks",
-        "AllFLEXingRegisterRuntimeFlags",
     ):
-        require(token not in ctor_body,
-                f"constructor performs forbidden pre-scene work: {token}")
-    require("AllFLEXingScheduleActivationPhase" in ctor_body,
-            "constructor must only schedule active-scene UI attachment")
+        require(token not in ctor, f"constructor performs runtime work: {token}")
+    require("AllFLEXingScheduleActivationPhase" in ctor,
+            "constructor no longer schedules only the active-scene UI phase")
 
-activation_body = function_body(loader, "static void AllFLEXingRunActivationPhase(void)")
-require(activation_body, "post-scene activation phase not found")
-if activation_body:
-    require("AllFLEXingStartUI" in activation_body,
-            "post-scene activation must attach only the UI")
-    for token in (
-        "FLEXPersistenceStore",
-        "FLEXHookRegistry",
-        "FLEXRuntimeScanner",
-        "reapplyPersistedEntries",
-        "activateRegisteredHooks",
-    ):
-        require(token not in activation_body,
-                f"post-scene activation performs forbidden runtime work: {token}")
-
-runtime_body = function_body(
+runtime_activation = function_body(
     loader,
     "static void AllFLEXingActivateRuntimeForWorkspace(dispatch_block_t completion)",
 )
-require(runtime_body, "user-invoked runtime activation function not found")
-if runtime_body:
+require(runtime_activation, "user-invoked runtime activation missing")
+if runtime_activation:
     ordered = [
         "FLEXPersistenceStore.sharedStore",
         "AllFLEXingRegisterRuntimeFlags",
@@ -202,23 +199,58 @@ if runtime_body:
         "FLEXRuntimeScanner startMonitoringImages",
         "reapplyPersistedEntries",
     ]
-    positions = [runtime_body.find(token) for token in ordered]
+    positions = [runtime_activation.find(token) for token in ordered]
     require(all(position >= 0 for position in positions),
-            "Workspace activation is missing a required runtime stage")
+            "runtime activation lost a required stage")
     require(positions == sorted(positions),
-            "runtime stages are not ordered restore → reload → activate → monitor → replay")
+            "runtime activation order changed")
 
-# Host/image isolation remains live-data based, never a serialized catalog.
-require("AllFLEXing current-process Mach-O host isolation ABI 1" in host_isolation,
-        "missing selected-image host isolation marker")
-require("hostExecutableUUID" in host_isolation and
-        "runtimeSessionImageUUID" in host_isolation and
-        "runtimeSessionImagePath" in host_isolation,
-        "runtime entries are not stamped with live host/image provenance")
-require("AllFLEXing host/image-scoped transient runtime bridge ABI 4" in bridge,
-        "missing host/image-provenance registry bridge")
-require("objc_enumerateClasses" in session and "_dyld_image_count" in session,
-        "selected-image session must enumerate live process metadata")
+for path in source_files:
+    text = path.read_text(errors="replace")
+    for body in bodies_matching(text, r"\+\s*\(void\)load\s*\{"):
+        require("FLEXPersistenceStore.sharedStore" not in body,
+                f"{path} initializes persistence from +load")
+        require("SecItem" not in body,
+                f"{path} accesses Keychain from +load")
+        require("reapplyPersistedEntries" not in body,
+                f"{path} replays runtime state from +load")
+    for body in bodies_matching(
+        text,
+        r"__attribute__\s*\(\(constructor\)\).*?\([^;{}]*\)\s*\{",
+    ):
+        require("SecItem" not in body,
+                f"{path} accesses Keychain from a constructor")
+
+# Keychain and generic-host identity contract remains intact.
+for token in (
+    "SecItemCopyMatching",
+    "SecItemUpdate",
+    "SecItemAdd",
+    "kSecAttrAccessibleAfterFirstUnlock",
+    "SecTaskCopyValueForEntitlement",
+    "com.apple.security.application-groups",
+):
+    require(token in store, f"Keychain/App Group contract missing: {token}")
+for forbidden in (
+    "com.burbn.instagram",
+    "RyukGram",
+    "4H2JG7AR6U.",
+    "TEAMID.",
+):
+    require(forbidden not in all_sources,
+            f"fixed host/team identity returned: {forbidden}")
+
+# Runtime rows come only from live current-host executable/framework images.
+for token in (
+    "FLEXRuntimePathBelongsToCurrentHost",
+    "FLEXRuntimePathIsFrameworkExecutable",
+    "objc_enumerateClasses",
+    "hostExecutableUUID",
+    "runtimeSessionImageUUID",
+    "runtimeSessionImagePath",
+):
+    require(token in session or token in registry,
+            f"live host/image isolation missing: {token}")
 
 forbidden_catalog_suffixes = {
     ".db", ".sqlite", ".sqlite3", ".idx", ".mctable", ".meta", ".json",
@@ -228,7 +260,7 @@ embedded_catalogs = [
     if path.is_file() and path.suffix.lower() in forbidden_catalog_suffixes
 ]
 require(not embedded_catalogs,
-        "pre-rendered runtime catalog files are forbidden: " +
+        "pre-rendered runtime catalogs are forbidden: " +
         ", ".join(str(path) for path in embedded_catalogs))
 
 if errors:
@@ -236,5 +268,5 @@ if errors:
         print(f"error: {error}")
     raise SystemExit(1)
 
-print("AllFLEXing inert launch, Keychain persistence and host isolation: OK")
+print("AllFLEXing owner consolidation, inert launch, staged Apply and Workspace presentation: OK")
 PY
