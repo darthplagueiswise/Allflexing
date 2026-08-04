@@ -96,11 +96,11 @@ require_text "post-restore flag reload" \
 require_text "UI-only post-scene bootstrap" \
     "AllFLEXing post-scene UI-only bootstrap ABI 2" "$string_dump"
 require_text "user-invoked runtime activation" \
-    "AllFLEXing user-invoked runtime activation ABI 1" "$string_dump"
+    "AllFLEXing UI-first user-invoked runtime activation ABI 2" "$string_dump"
 require_text "upstream FLEX constructor suppression" \
     "AllFLEXing upstream FLEX automatic constructors disabled ABI 1" "$string_dump"
 require_text "workspace activation log" \
-    "runtime activation begins only after the workspace is opened" "$string_dump"
+    "runtime activation begins only after the workspace is visible" "$string_dump"
 require_text "staged-only toggle policy" \
     "AllFLEXing staged toggles explicit-Apply-only ABI 2" "$string_dump"
 require_text "staged-only user guidance" \
@@ -113,6 +113,8 @@ require_text "runtime browser crash guards" \
     "AllFLEXing runtime browser crash guards ABI 1" "$string_dump"
 require_text "selected-image runtime session" \
     "AllFLEXing complete selected-image runtime session ABI 2" "$string_dump"
+require_text "bounded Mach-O scanner" \
+    "AllFLEXing bounded LINKEDIT scanner and compact function-start ABI 1" "$string_dump"
 require_text "current-process host isolation" \
     "AllFLEXing current-process Mach-O host isolation ABI 2" "$string_dump"
 require_text "nonretaining Objective-C class enumeration" \
@@ -132,7 +134,7 @@ require_text "live Objective-C provider evidence" \
 require_text "native Liquid Glass" \
     "AllFLEXing native UIKit 26 Liquid Glass and scroll-edge ABI 2" "$string_dump"
 require_text "deterministic Runtime Workspace" \
-    "AllFLEXing deterministic Runtime Workspace presentation ABI 1" "$string_dump"
+    "AllFLEXing UI-first Runtime Workspace presentation ABI 2" "$string_dump"
 require_text "image-address C hook engine" \
     "AllFLEXing image-UUID executable-address C hook engine ABI 1" "$string_dump"
 require_text "ASLR-safe image offset rebase" \

@@ -9,6 +9,7 @@
 #import <mach/vm_prot.h>
 #import <objc/runtime.h>
 #import <stdatomic.h>
+#import <string.h>
 
 const char *FLEXRuntimeImageSessionABIVersion =
     "AllFLEXing complete selected-image runtime session ABI 2";
@@ -16,6 +17,8 @@ const char *FLEXRuntimeObjectiveCEnumerationABIVersion =
     "AllFLEXing image-scoped nonretaining Objective-C class enumeration ABI 1";
 const char *FLEXRuntimeHostIsolationABIVersion =
     "AllFLEXing current-process Mach-O host isolation ABI 2";
+const char *FLEXRuntimeBoundedMachOScannerABIVersion =
+    "AllFLEXing bounded LINKEDIT scanner and compact function-start ABI 1";
 
 static NSString *const FLEXRuntimeImageSessionErrorDomain =
     @"FLEXRuntimeImageSession";
@@ -326,6 +329,29 @@ static FLEXHookABI FLEXExactObjectiveCABI(Method method) {
     return FLEXHookABIUnknown;
 }
 
+static BOOL FLEXRuntimeFileRangeWithinLinkedit(
+    const struct segment_command_64 *linkedit,
+    uint64_t fileOffset,
+    uint64_t length
+) {
+    if (!linkedit || fileOffset < linkedit->fileoff) return NO;
+    uint64_t relative = fileOffset - linkedit->fileoff;
+    if (relative > linkedit->filesize) return NO;
+    return length <= linkedit->filesize - relative;
+}
+
+static NSString *FLEXRuntimeStringFromTable(const char *table,
+                                             uint32_t tableSize,
+                                             uint32_t index) {
+    if (!table || index >= tableSize) return nil;
+    size_t maximum = (size_t)tableSize - index;
+    size_t length = strnlen(table + index, maximum);
+    if (length == maximum) return nil;
+    return [[NSString alloc] initWithBytes:table + index
+                                   length:length
+                                 encoding:NSUTF8StringEncoding];
+}
+
 static NSString *FLEXNormalizedSymbol(NSString *symbol) {
     return [symbol hasPrefix:@"_"] ? [symbol substringFromIndex:1] : symbol;
 }
@@ -552,6 +578,7 @@ static void FLEXReportProgress(FLEXRuntimeImageProgress progress,
                         NSString *encoding = rawEncoding
                             ? [NSString stringWithUTF8String:rawEncoding] : @"";
                         FLEXHookABI abi = FLEXExactObjectiveCABI(method);
+                        if (abi == FLEXHookABIUnknown) continue;
 
                         FLEXHookEntry *entry = [FLEXHookEntry new];
                         entry.identifier = FLEXObjectiveCIdentifier(
@@ -669,12 +696,47 @@ static BOOL FLEXReadULEB128(const uint8_t **cursor,
 
     uint32_t globalSectionIndex = 1;
     const uint8_t *cursor = (const uint8_t *)(header + 1);
+    const uint8_t *commandsEnd = cursor + header->sizeofcmds;
     for (uint32_t commandIndex = 0; commandIndex < header->ncmds; commandIndex++) {
+        if (cursor > commandsEnd ||
+            (size_t)(commandsEnd - cursor) < sizeof(struct load_command)) {
+            if (error) *error = [NSError errorWithDomain:FLEXRuntimeImageSessionErrorDomain
+                                                     code:12
+                                                 userInfo:@{NSLocalizedDescriptionKey:
+                                                     @"Mach-O load-command table is truncated"}];
+            return nil;
+        }
         const struct load_command *command = (const struct load_command *)cursor;
-        if (command->cmdsize < sizeof(struct load_command)) break;
+        size_t remaining = (size_t)(commandsEnd - cursor);
+        if (command->cmdsize < sizeof(struct load_command) ||
+            command->cmdsize > remaining) {
+            if (error) *error = [NSError errorWithDomain:FLEXRuntimeImageSessionErrorDomain
+                                                     code:12
+                                                 userInfo:@{NSLocalizedDescriptionKey:
+                                                     @"Mach-O load command has an invalid size"}];
+            return nil;
+        }
         if (command->cmd == LC_SEGMENT_64) {
+            if (command->cmdsize < sizeof(struct segment_command_64)) {
+                if (error) *error = [NSError errorWithDomain:FLEXRuntimeImageSessionErrorDomain
+                                                         code:12
+                                                     userInfo:@{NSLocalizedDescriptionKey:
+                                                         @"Mach-O segment command is truncated"}];
+                return nil;
+            }
             const struct segment_command_64 *segment =
                 (const struct segment_command_64 *)command;
+            uint64_t sectionBytes = 0;
+            if (__builtin_mul_overflow((uint64_t)segment->nsects,
+                                       (uint64_t)sizeof(struct section_64),
+                                       &sectionBytes) ||
+                sectionBytes > command->cmdsize - sizeof(*segment)) {
+                if (error) *error = [NSError errorWithDomain:FLEXRuntimeImageSessionErrorDomain
+                                                         code:12
+                                                     userInfo:@{NSLocalizedDescriptionKey:
+                                                         @"Mach-O section table is truncated"}];
+                return nil;
+            }
             if (strcmp(segment->segname, SEG_LINKEDIT) == 0) linkedit = segment;
             if (strcmp(segment->segname, SEG_TEXT) == 0) textVMAddress = segment->vmaddr;
             BOOL executable = (segment->initprot & VM_PROT_EXECUTE) != 0;
@@ -715,13 +777,49 @@ static BOOL FLEXReadULEB128(const uint8_t **cursor,
         return nil;
     }
 
+    uint64_t symbolBytes = 0;
+    uint64_t indirectBytes = 0;
+    BOOL symbolOverflow = __builtin_mul_overflow(
+        (uint64_t)symtab->nsyms,
+        (uint64_t)sizeof(struct nlist_64),
+        &symbolBytes
+    );
+    BOOL indirectOverflow = __builtin_mul_overflow(
+        (uint64_t)dysymtab->nindirectsyms,
+        (uint64_t)sizeof(uint32_t),
+        &indirectBytes
+    );
+    if (symbolOverflow || indirectOverflow ||
+        !FLEXRuntimeFileRangeWithinLinkedit(linkedit, symtab->symoff, symbolBytes) ||
+        !FLEXRuntimeFileRangeWithinLinkedit(linkedit, symtab->stroff, symtab->strsize) ||
+        !FLEXRuntimeFileRangeWithinLinkedit(
+            linkedit,
+            dysymtab->indirectsymoff,
+            indirectBytes
+        )) {
+        if (error) *error = [NSError errorWithDomain:FLEXRuntimeImageSessionErrorDomain
+                                                 code:13
+                                             userInfo:@{NSLocalizedDescriptionKey:
+                                                 @"Mach-O symbol metadata falls outside __LINKEDIT"}];
+        return nil;
+    }
+    if (functionStarts &&
+        !FLEXRuntimeFileRangeWithinLinkedit(
+            linkedit,
+            functionStarts->dataoff,
+            functionStarts->datasize
+        )) {
+        functionStarts = NULL;
+    }
+
     uintptr_t linkeditBase = (uintptr_t)image.slide +
         (uintptr_t)linkedit->vmaddr - (uintptr_t)linkedit->fileoff;
     const struct nlist_64 *symbols = (const struct nlist_64 *)(
         linkeditBase + symtab->symoff);
     const char *strings = (const char *)(linkeditBase + symtab->stroff);
-    const uint32_t *indirect = (const uint32_t *)(
-        linkeditBase + dysymtab->indirectsymoff);
+    const uint32_t *indirect = dysymtab->nindirectsyms
+        ? (const uint32_t *)(linkeditBase + dysymtab->indirectsymoff)
+        : NULL;
 
     NSMutableDictionary<NSString *, FLEXHookEntry *> *imports =
         [NSMutableDictionary dictionary];
@@ -734,6 +832,13 @@ static BOOL FLEXReadULEB128(const uint8_t **cursor,
             ? MAX((uint32_t)1, record.section.reserved2)
             : sizeof(uintptr_t);
         NSUInteger itemCount = (NSUInteger)(record.section.size / stride);
+        if (!indirect || record.section.reserved1 >= dysymtab->nindirectsyms) {
+            continue;
+        }
+        itemCount = MIN(
+            itemCount,
+            (NSUInteger)dysymtab->nindirectsyms - record.section.reserved1
+        );
         for (NSUInteger item = 0; item < itemCount; item++) {
             uint64_t indirectIndex = (uint64_t)record.section.reserved1 + item;
             if (indirectIndex >= dysymtab->nindirectsyms) break;
@@ -746,7 +851,7 @@ static BOOL FLEXReadULEB128(const uint8_t **cursor,
             uint32_t stringIndex = symbols[symbolIndex].n_un.n_strx;
             if (!stringIndex || stringIndex >= symtab->strsize) continue;
             NSString *symbol = FLEXNormalizedSymbol(
-                [NSString stringWithUTF8String:strings + stringIndex]);
+            FLEXRuntimeStringFromTable(strings, symtab->strsize, stringIndex));
             if (!symbol.length) continue;
 
             NSString *identifier = FLEXCIdentifier(@"c-import", image.path, symbol);
@@ -810,7 +915,7 @@ static BOOL FLEXReadULEB128(const uint8_t **cursor,
         uint32_t stringIndex = symbolRecord->n_un.n_strx;
         if (!stringIndex || stringIndex >= symtab->strsize) continue;
         NSString *symbol = FLEXNormalizedSymbol(
-            [NSString stringWithUTF8String:strings + stringIndex]);
+            FLEXRuntimeStringFromTable(strings, symtab->strsize, stringIndex));
         if (!symbol.length) continue;
         uintptr_t address = (uintptr_t)(symbolRecord->n_value + image.slide);
         NSString *identity = [NSString stringWithFormat:@"0x%llx",
@@ -847,71 +952,51 @@ static BOOL FLEXReadULEB128(const uint8_t **cursor,
         }
     }
 
-    NSMutableArray<NSNumber *> *starts = [NSMutableArray array];
+    NSUInteger anonymous = 0;
+    NSUInteger functionStartCount = 0;
     if (functionStarts && functionStarts->datasize && textVMAddress) {
         const uint8_t *startCursor =
             (const uint8_t *)(linkeditBase + functionStarts->dataoff);
         const uint8_t *end = startCursor + functionStarts->datasize;
         uint64_t cumulative = 0;
+        uintptr_t previousAddress = 0;
         while (startCursor < end) {
             uint64_t delta = 0;
             if (!FLEXReadULEB128(&startCursor, end, &delta) || delta == 0) break;
             cumulative += delta;
-            [starts addObject:@((uintptr_t)(
+            uintptr_t address = (uintptr_t)(
                 textVMAddress + image.slide + cumulative
-            ))];
+            );
+            if (previousAddress) {
+                FLEXHookEntry *entry = functionsByAddress[@(previousAddress)];
+                NSUInteger size = address > previousAddress
+                    ? (NSUInteger)(address - previousAddress) : 0;
+                if (entry) {
+                    if (size) {
+                        NSMutableDictionary *locator = [entry.locator mutableCopy];
+                        locator[@"functionSize"] = @(size);
+                        entry.locator = locator.copy;
+                    }
+                } else {
+                    anonymous++;
+                }
+            }
+            previousAddress = address;
+            functionStartCount++;
+            if ((functionStartCount & 4095) == 0) {
+                FLEXReportProgress(progress,
+                                   @"Indexing compact function starts",
+                                   functionStartCount,
+                                   0);
+            }
         }
-    }
-    [starts sortUsingSelector:@selector(compare:)];
-
-    NSUInteger anonymous = 0;
-    for (NSUInteger index = 0; index < starts.count; index++) {
-        if (self.cancelled) return nil;
-        uintptr_t address = starts[index].unsignedLongLongValue;
-        FLEXHookEntry *entry = functionsByAddress[@(address)];
-        uintptr_t next = index + 1 < starts.count
-            ? starts[index + 1].unsignedLongLongValue : address;
-        NSUInteger size = next > address ? (NSUInteger)(next - address) : 0;
-        if (!entry) {
-            NSString *identity = [NSString stringWithFormat:@"0x%llx",
-                (unsigned long long)(address - image.headerAddress)];
-            entry = [FLEXHookEntry new];
-            entry.identifier = FLEXCIdentifier(@"c-inline", image.path, identity);
-            entry.title = [NSString stringWithFormat:@"sub_%llx",
-                (unsigned long long)(address - image.headerAddress)];
-            entry.imageName = image.displayName;
-            entry.surface = FLEXHookSurfaceCInline;
-            entry.backend = FLEXHookBackendInlineElleKit;
-            entry.abi = FLEXHookABIUnknown;
-            entry.available = FLEXMSHookFunctionProviderAvailable();
-            entry.hookable = NO;
-            entry.stale = NO;
-            entry.detail = @"Function start · ABI unresolved";
-            entry.locator = @{
-                @"source": @"LC_FUNCTION_STARTS",
-                @"symbol": entry.title,
-                @"image": image.path,
-                @"imageUUID": image.uuid ?: @"",
-                @"address": @(address),
-                @"offset": @(address - image.headerAddress),
-                @"functionSize": @(size),
-                @"backendEvidence": @"MSHookFunction-executable-address",
-                @"abiEvidence": @"unresolved",
-            };
-            functionsByAddress[@(address)] = entry;
-            [defined addObject:entry];
+        if (previousAddress && !functionsByAddress[@(previousAddress)]) {
             anonymous++;
-        } else if (size) {
-            NSMutableDictionary *locator = [entry.locator mutableCopy];
-            locator[@"functionSize"] = @(size);
-            entry.locator = locator.copy;
         }
-        if ((index & 1023) == 0 || index + 1 == starts.count) {
-            FLEXReportProgress(progress,
-                               @"Indexing function starts",
-                               index + 1,
-                               starts.count);
-        }
+        FLEXReportProgress(progress,
+                           @"Indexing compact function starts",
+                           functionStartCount,
+                           functionStartCount);
     }
 
     for (FLEXHookEntry *entry in imports.allValues) {
@@ -937,7 +1022,7 @@ static BOOL FLEXReadULEB128(const uint8_t **cursor,
     }];
 
     if (importCount) *importCount = imports.count;
-    if (definedCount) *definedCount = defined.count - anonymous;
+    if (definedCount) *definedCount = defined.count;
     if (anonymousCount) *anonymousCount = anonymous;
     return result.copy;
 }

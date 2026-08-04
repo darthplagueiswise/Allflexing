@@ -406,6 +406,7 @@ static NSArray<FLEXHookEntry *> *FLEXRuntimeQueryIndex(
 @property (nonatomic) FLEXRuntimeBrowserKind kind;
 @property (nonatomic) BOOL scanning;
 @property (nonatomic) BOOL indexing;
+@property (nonatomic) BOOL initialScanStarted;
 @property (nonatomic) UISearchController *searchController;
 @property (nonatomic, copy) NSArray<FLEXHookEntry *> *allEntries;
 @property (nonatomic, copy) NSArray<FLEXHookEntry *> *filteredEntries;
@@ -485,14 +486,24 @@ static NSArray<FLEXHookEntry *> *FLEXRuntimeQueryIndex(
              object:nil];
 
     [FLEXLiquidGlass applyToViewController:self];
-    if (self.selectedImage) [self reloadScan];
-    else [self updateUnavailableConfigurationWithError:nil];
+    [self updateUnavailableConfigurationWithError:nil];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self refreshCanonicalEntries];
     [FLEXLiquidGlass applyToViewController:self];
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    if (self.initialScanStarted || !self.selectedImage) return;
+    self.initialScanStarted = YES;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.viewIfLoaded.window && !self.scanning && !self.snapshot) {
+            [self reloadScan];
+        }
+    });
 }
 
 - (void)dealloc {
@@ -674,12 +685,16 @@ static NSArray<FLEXHookEntry *> *FLEXRuntimeQueryIndex(
         }
 
         self.snapshot = snapshot;
+        NSArray<FLEXHookEntry *> *projected =
+            FLEXRuntimeOperationalProjection(self.kind, snapshot.entries);
         NSMutableArray<FLEXHookEntry *> *entries =
-            [NSMutableArray arrayWithCapacity:snapshot.entries.count];
+            [NSMutableArray arrayWithCapacity:projected.count];
         FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
-        for (FLEXHookEntry *entry in snapshot.entries) {
-            FLEXHookEntry *resolved = [registry upsertDiscoveredEntry:entry];
-            [entries addObject:resolved ?: entry];
+        for (FLEXHookEntry *entry in projected) {
+            @autoreleasepool {
+                FLEXHookEntry *resolved = [registry upsertDiscoveredEntry:entry];
+                [entries addObject:resolved ?: entry];
+            }
         }
         [self buildSearchIndexForEntries:entries.copy];
     }];
@@ -690,8 +705,7 @@ static NSArray<FLEXHookEntry *> *FLEXRuntimeQueryIndex(
     FLEXRuntimeSearchRequest *request = [FLEXRuntimeSearchRequest new];
     self.searchRequest = request;
     NSUInteger generation = ++self.searchGeneration;
-    NSArray<FLEXHookEntry *> *projected =
-        FLEXRuntimeOperationalProjection(self.kind, entries);
+    NSArray<FLEXHookEntry *> *projected = entries.copy ?: @[];
 
     self.indexing = YES;
     self.progressPhase = [NSString stringWithUTF8String:FLEXRuntimeIndexPhase];

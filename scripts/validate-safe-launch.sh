@@ -103,7 +103,7 @@ for source, marker in (
     (hook_center, "AllFLEXing staged toggles explicit-Apply-only ABI 2"),
     (hook_center, "AllFLEXing owner-native compact runtime controllers ABI 1"),
     (glass, "AllFLEXing native UIKit 26 Liquid Glass and scroll-edge ABI 2"),
-    (workspace, "AllFLEXing deterministic Runtime Workspace presentation ABI 1"),
+    (workspace, "AllFLEXing UI-first Runtime Workspace presentation ABI 2"),
 ):
     require(marker in source, f"missing consolidated owner marker: {marker}")
 
@@ -150,7 +150,8 @@ require("No patch, swizzle or hook is installed until Apply is pressed" in hook_
 
 # Workspace presentation is resolved after lazy runtime activation and no stale
 # weak host performs UIKit presentation.
-require("presentDeterministicallyFromViewController" in loader,
+require("presentDeterministicallyFromViewController:origin" in loader and
+        "completion:" in loader,
         "loader does not use deterministic Workspace presentation")
 require("__weak UITableViewController *weakHost" not in loader,
         "loader still captures a stale weak host")
@@ -158,6 +159,7 @@ for token in (
     "UISceneActivationStateForegroundActive",
     "FLEXWorkspaceResolvePresenter",
     "gFLEXWorkspacePresentationInFlight",
+    "gFLEXWorkspaceOwnedWindow",
     "attemptPresentationFrom:host retry:",
 ):
     require(token in workspace, f"deterministic presenter missing: {token}")
@@ -166,7 +168,7 @@ for token in (
 # inside the user-invoked Runtime Workspace activation function.
 require("AllFLEXing post-scene UI-only bootstrap ABI 2" in loader,
         "missing UI-only launch marker")
-require("AllFLEXing user-invoked runtime activation ABI 1" in loader,
+require("AllFLEXing UI-first user-invoked runtime activation ABI 2" in loader,
         "missing user-invoked runtime marker")
 require("-DFLEX_DISABLE_CTORS=1" in makefile,
         "upstream FLEX constructors are not disabled")
@@ -196,7 +198,7 @@ if runtime_activation:
         "reloadPersistedValues",
         "activateRegisteredHooks",
         "FLEXHookRegistry.sharedRegistry",
-        "FLEXRuntimeScanner startMonitoringImages",
+        "[registry bootstrap]",
         "reapplyPersistedEntries",
     ]
     positions = [runtime_activation.find(token) for token in ordered]
@@ -241,6 +243,13 @@ for forbidden in (
             f"fixed host/team identity returned: {forbidden}")
 
 # Runtime rows come only from live current-host executable/framework images.
+require("AllFLEXing bounded LINKEDIT scanner and compact function-start ABI 1" in session,
+        "bounded Mach-O scanner marker is missing")
+require("stringWithUTF8String:strings + stringIndex" not in session,
+        "unbounded Mach-O string-table read returned")
+require("sub_%llx" not in session,
+        "anonymous LC_FUNCTION_STARTS entries are materialized again")
+
 for token in (
     "FLEXRuntimePathBelongsToCurrentHost",
     "FLEXRuntimePathIsFrameworkExecutable",

@@ -17,7 +17,7 @@ jobs:
     name: Standalone arm64 dylib and deb
     runs-on: macos-latest
     permissions:
-      contents: write
+      contents: read
     env:
       SDK_NAME: iPhoneOS26.2.sdk
       THEOS: ${{ github.workspace }}/theos
@@ -28,56 +28,6 @@ jobs:
         with:
           path: main
           submodules: recursive
-          fetch-depth: 0
-          ref: ${{ github.head_ref || github.ref_name }}
-
-      - name: Apply bounded runtime owner migration
-        if: ${{ hashFiles('main/scripts/apply-runtime-crash-fix.py') != '' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd main
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path("scripts/apply-runtime-crash-fix.py")
-          text = path.read_text()
-          old = '''unsafe_string = \'\'\'NSString *symbol = FLEXNormalizedSymbol(
-                      [NSString stringWithUTF8String:strings + stringIndex]);\'\'\'
-          safe_string = \'\'\'NSString *symbol = FLEXNormalizedSymbol(
-                      FLEXRuntimeStringFromTable(strings, symtab->strsize, stringIndex));\'\'\'
-          if session.count(unsafe_string) != 2:
-              raise SystemExit(f"symbol string conversion count changed: {session.count(unsafe_string)}")
-          session = session.replace(unsafe_string, safe_string)
-          '''
-          new = '''import re
-
-          unsafe_pattern = re.compile(
-              r"NSString \\*symbol = FLEXNormalizedSymbol\\(\\s*"
-              r"\\[NSString stringWithUTF8String:strings \\+ stringIndex\\]\\);"
-          )
-          session, replacements = unsafe_pattern.subn(
-              "NSString *symbol = FLEXNormalizedSymbol(\\n"
-              "            FLEXRuntimeStringFromTable(strings, symtab->strsize, stringIndex));",
-              session,
-          )
-          if replacements < 1:
-              raise SystemExit("no unsafe Mach-O string-table read was found")
-          '''
-          if old not in text:
-              raise SystemExit("string conversion migration block changed unexpectedly")
-          path.write_text(text.replace(old, new, 1))
-          PY
-          python3 scripts/apply-runtime-crash-fix.py
-          rm -f scripts/apply-runtime-crash-fix.py
-          rm -f .github/workflows/one-shot-runtime-crash-fix.yml
-          git show 568ff6f62c6326e65b2f07bc5e6a7de0155acb6c:.github/workflows/build-sdk26.yml > .github/workflows/build-sdk26.yml
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "Bound runtime scans and lazily initialize the browser"
-          branch="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-          git push origin "HEAD:${branch}"
 
       - name: Install build dependencies
         run: brew install ldid dpkg make
