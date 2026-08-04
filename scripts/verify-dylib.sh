@@ -102,19 +102,23 @@ require_text "upstream FLEX constructor suppression" \
 require_text "workspace activation log" \
     "runtime activation begins only after the workspace is opened" "$string_dump"
 require_text "staged-only toggle policy" \
-    "AllFLEXing staged toggles explicit-Apply-only ABI 1" "$string_dump"
+    "AllFLEXing staged toggles explicit-Apply-only ABI 2" "$string_dump"
 require_text "staged-only user guidance" \
     "No patch, swizzle or hook is installed until Apply is pressed" "$string_dump"
+require_text "owner-native compact controllers" \
+    "AllFLEXing owner-native compact runtime controllers ABI 1" "$string_dump"
+require_text "single-owner runtime browser" \
+    "AllFLEXing single-owner type-safe runtime controller ABI 2" "$string_dump"
 require_text "runtime browser crash guards" \
     "AllFLEXing runtime browser crash guards ABI 1" "$string_dump"
 require_text "selected-image runtime session" \
-    "AllFLEXing complete selected-image runtime session ABI 1" "$string_dump"
+    "AllFLEXing complete selected-image runtime session ABI 2" "$string_dump"
 require_text "current-process host isolation" \
-    "AllFLEXing current-process Mach-O host isolation ABI 1" "$string_dump"
+    "AllFLEXing current-process Mach-O host isolation ABI 2" "$string_dump"
 require_text "nonretaining Objective-C class enumeration" \
     "AllFLEXing image-scoped nonretaining Objective-C class enumeration ABI 1" "$string_dump"
-require_text "host/image-scoped transient bridge" \
-    "AllFLEXing host/image-scoped transient runtime bridge ABI 4" "$string_dump"
+require_text "host/image-scoped transient registry" \
+    "AllFLEXing host/image-scoped transient runtime bridge ABI 5" "$string_dump"
 require_text "complete-image substring search" \
     "AllFLEXing complete-image substring-index search ABI 1" "$string_dump"
 require_text "field-scoped compact-token search" \
@@ -125,6 +129,10 @@ require_text "operational Objective-C ABI evidence" \
     "objc-type-encoding-operational-profile" "$string_dump"
 require_text "live Objective-C provider evidence" \
     "MSHookMessageEx-live-provider" "$string_dump"
+require_text "native Liquid Glass" \
+    "AllFLEXing native UIKit 26 Liquid Glass and scroll-edge ABI 2" "$string_dump"
+require_text "deterministic Runtime Workspace" \
+    "AllFLEXing deterministic Runtime Workspace presentation ABI 1" "$string_dump"
 require_text "image-address C hook engine" \
     "AllFLEXing image-UUID executable-address C hook engine ABI 1" "$string_dump"
 require_text "ASLR-safe image offset rebase" \
@@ -157,9 +165,14 @@ require_text "FLEX menu entry" "AllFLEXing Runtime Workspace" "$string_dump"
 
 for forbidden in \
     FLEXGlassAutostyle \
+    FLEXGlassCellBackgroundView \
     FLEXCompactGroupBackgroundView \
     AllFLEXingCompactRuntimeCell \
     AllFLEXingCompactHookCenterCell \
+    "AllFLEXing staged toggles explicit-Apply-only ABI 1" \
+    "AllFLEXing complete selected-image runtime session ABI 1" \
+    "AllFLEXing current-process Mach-O host isolation ABI 1" \
+    "AllFLEXing host/image-scoped transient runtime bridge ABI 4" \
     "AllFLEXing tokenized AND search ABI 2" \
     "AllFLEXing full-snapshot async indexed cancellable search ABI 4" \
     "AllFLEXing selected-image transient-snapshot prefix-index search ABI 7" \
@@ -178,4 +191,4 @@ for forbidden in \
     fi
 done
 
-echo "AllFLEXing Mach-O verification: OK"
+echo "AllFLEXing consolidated Mach-O verification: OK"
