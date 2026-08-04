@@ -64,13 +64,16 @@ apply_pinned_flex_patch() {
 	local label="$2"
 	[ -f "$patch" ] || die "missing pinned FLEX patch: $patch"
 
-	if git -C "$PROJECT_ROOT/libflex/FLEX" apply --reverse --check "$patch" >/dev/null 2>&1; then
+	# --recount derives hunk sizes from the actual diff body. This keeps the
+	# pinned source transformation deterministic even after adjacent hunks are
+	# extended by the semantic-search patch.
+	if git -C "$PROJECT_ROOT/libflex/FLEX" apply --recount --reverse --check "$patch" >/dev/null 2>&1; then
 		log "$label is already applied"
 	else
-		if ! git -C "$PROJECT_ROOT/libflex/FLEX" apply --check "$patch"; then
+		if ! git -C "$PROJECT_ROOT/libflex/FLEX" apply --recount --check "$patch"; then
 			die "FLEX submodule does not match the pinned patch base: $label"
 		fi
-		git -C "$PROJECT_ROOT/libflex/FLEX" apply "$patch"
+		git -C "$PROJECT_ROOT/libflex/FLEX" apply --recount "$patch"
 		log "applied $label"
 	fi
 }
