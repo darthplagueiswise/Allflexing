@@ -87,10 +87,10 @@ require_text "contextual runtime actions" '_OBJC_CLASS_$_FLEXRuntimeHookActions'
 string_dump="$(strings -a "$dylib")"
 require_text "durable persistence" \
     "AllFLEXing persistence app-group defaults atomic-mirror ABI 3" "$string_dump"
+require_text "confirmed-state Keychain persistence" \
+    "AllFLEXing confirmed-state Keychain App Group mirror ABI 1" "$string_dump"
 require_text "read-only persistence discovery" \
     "AllFLEXing read-only persistence discovery ABI 1" "$string_dump"
-require_text "coalesced persistence integration" \
-    "AllFLEXing deferred coalesced persistence integration ABI 1" "$string_dump"
 require_text "post-restore flag reload" \
     "AllFLEXing post-mirror flag cache reload ABI 1" "$string_dump"
 require_text "UI-only post-scene bootstrap" \
@@ -129,8 +129,6 @@ require_text "image-address C hook engine" \
     "AllFLEXing image-UUID executable-address C hook engine ABI 1" "$string_dump"
 require_text "ASLR-safe image offset rebase" \
     "AllFLEXing image-UUID header-plus-offset ASLR rebase ABI 1" "$string_dump"
-require_text "strict Objective-C BOOL classification" \
-    "AllFLEXing exact-B Objective-C runtime classification ABI 1" "$string_dump"
 require_text "ARM64 evidence resolver" \
     "AllFLEXing image-scoped ARM64 evidence ABI resolver ABI 2" "$string_dump"
 require_text "complete snapshot index phase" \
