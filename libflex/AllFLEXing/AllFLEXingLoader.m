@@ -15,7 +15,7 @@
 const char *AllFLEXingSafeLaunchABIVersion =
     "AllFLEXing post-scene UI-only bootstrap ABI 2";
 const char *AllFLEXingUserInvokedRuntimeABIVersion =
-    "AllFLEXing user-invoked runtime activation ABI 1";
+    "AllFLEXing UI-first user-invoked runtime activation ABI 2";
 const char *AllFLEXingUpstreamCtorPolicyABIVersion =
     "AllFLEXing upstream FLEX automatic constructors disabled ABI 1";
 
@@ -210,17 +210,23 @@ static void AllFLEXingActivateRuntimeForWorkspace(dispatch_block_t completion) {
         static BOOL activated = NO;
         if (!activated) {
             @autoreleasepool {
-                // Persistence, scanner and replay initialize only after the
-                // user explicitly opens Runtime Workspace.
-                (void)FLEXPersistenceStore.sharedStore;
-                FLEXHookPersistence *flags = AllFLEXingRegisterRuntimeFlags();
-                [flags reloadPersistedValues];
-                [flags activateRegisteredHooks];
+                @try {
+                    // The Workspace is already visible before this path starts.
+                    // Persistence and restore can never suppress presentation.
+                    (void)FLEXPersistenceStore.sharedStore;
+                    FLEXHookPersistence *flags = AllFLEXingRegisterRuntimeFlags();
+                    [flags reloadPersistedValues];
+                    [flags activateRegisteredHooks];
 
-                FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
-                [FLEXRuntimeScanner startMonitoringImages];
-                [registry reapplyPersistedEntries];
-                activated = YES;
+                    FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
+                    [registry bootstrap];
+                    [registry reapplyPersistedEntries];
+                    activated = YES;
+                } @catch (NSException *exception) {
+                    NSLog(@"[AllFLEXing] runtime activation exception: %@ · %@",
+                        exception.name,
+                        exception.reason);
+                }
             }
         }
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -239,19 +245,27 @@ static void AllFLEXingStartUI(void) {
         [FLEXManager.sharedManager
             registerGlobalEntryWithName:@"AllFLEXing Runtime Workspace"
             action:^(__kindof UITableViewController *host) {
-                // Keep the original caller alive through lazy activation, then
-                // let the Workspace owner re-resolve the foreground scene and
-                // visible presenter. No stale weak host is used for presentation.
+                // UI comes first. Keychain, scanner, registry and persisted
+                // restore begin only after UIKit confirms that the Workspace is
+                // visible. A bad restore can no longer make the menu appear dead.
                 UIViewController *origin = host;
-                AllFLEXingActivateRuntimeForWorkspace(^{
-                    [FLEXHookWorkspaceController
-                        presentDeterministicallyFromViewController:origin];
-                });
+                [FLEXHookWorkspaceController
+                    presentDeterministicallyFromViewController:origin
+                    completion:^{
+                        dispatch_after(
+                            dispatch_time(DISPATCH_TIME_NOW,
+                                250 * NSEC_PER_MSEC),
+                            dispatch_get_main_queue(),
+                            ^{
+                                AllFLEXingActivateRuntimeForWorkspace(nil);
+                            }
+                        );
+                    }];
             }];
         [AllFLEXingReveal.shared start];
         [FLEXLiquidGlass refreshVisibleFLEXViewControllers];
 
-        NSLog(@"[AllFLEXing] UI initialized in %@; runtime activation begins only after the workspace is opened",
+        NSLog(@"[AllFLEXing] UI initialized in %@; runtime activation begins only after the workspace is visible",
             NSBundle.mainBundle.bundleIdentifier
                 ?: NSProcessInfo.processInfo.processName);
     });
