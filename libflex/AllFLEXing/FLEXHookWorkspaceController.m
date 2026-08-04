@@ -8,287 +8,20 @@
 const char *FLEXRuntimeWorkspacePresentationABIVersion =
     "AllFLEXing UI-first Runtime Workspace presentation ABI 2";
 
-static __weak FLEXHookWorkspaceController *gFLEXPresentedWorkspace;
-static BOOL gFLEXWorkspacePresentationInFlight = NO;
-static UIWindow *gFLEXWorkspaceOwnedWindow;
-static __weak UIWindow *gFLEXWorkspacePreviousKeyWindow;
-
-static UIViewController *FLEXWorkspaceVisibleController(
-    UIViewController *controller
-) {
-    if (!controller) return nil;
-    UIViewController *presented = controller.presentedViewController;
-    if (presented && !presented.isBeingDismissed) {
-        return FLEXWorkspaceVisibleController(presented);
-    }
-    if ([controller isKindOfClass:UINavigationController.class]) {
-        return FLEXWorkspaceVisibleController(
-            ((UINavigationController *)controller).visibleViewController
-        );
-    }
-    if ([controller isKindOfClass:UITabBarController.class]) {
-        return FLEXWorkspaceVisibleController(
-            ((UITabBarController *)controller).selectedViewController
-        );
-    }
-    if ([controller isKindOfClass:UISplitViewController.class]) {
-        NSArray<UIViewController *> *children =
-            ((UISplitViewController *)controller).viewControllers;
-        return FLEXWorkspaceVisibleController(children.lastObject);
-    }
-    return controller;
-}
-
-static UIWindowScene *FLEXWorkspaceForegroundScene(UIViewController *preferred) {
-    UIWindowScene *preferredScene = preferred.viewIfLoaded.window.windowScene;
-    if (preferredScene.activationState == UISceneActivationStateForegroundActive) {
-        return preferredScene;
-    }
-    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-        if ([scene isKindOfClass:UIWindowScene.class] &&
-            scene.activationState == UISceneActivationStateForegroundActive) {
-            return (UIWindowScene *)scene;
-        }
-    }
-    return nil;
-}
-
-static NSArray<UIWindow *> *FLEXWorkspaceCandidateWindows(void) {
-    NSMutableArray<UIWindow *> *flexWindows = [NSMutableArray array];
-    NSMutableArray<UIWindow *> *keyWindows = [NSMutableArray array];
-    NSMutableArray<UIWindow *> *otherWindows = [NSMutableArray array];
-
-    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-        if (![scene isKindOfClass:UIWindowScene.class] ||
-            scene.activationState != UISceneActivationStateForegroundActive) {
-            continue;
-        }
-        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
-            if (window.hidden || window.alpha <= 0.0 || !window.rootViewController) {
-                continue;
-            }
-            NSString *className = NSStringFromClass(window.class);
-            if ([className hasPrefix:@"FLEX"]) {
-                [flexWindows addObject:window];
-            } else if (window.isKeyWindow) {
-                [keyWindows addObject:window];
-            } else if (window.windowLevel == UIWindowLevelNormal) {
-                [otherWindows addObject:window];
-            }
-        }
-    }
-
-    NSMutableArray<UIWindow *> *result = [NSMutableArray array];
-    [result addObjectsFromArray:flexWindows];
-    [result addObjectsFromArray:keyWindows];
-    [result addObjectsFromArray:otherWindows];
-    return result.copy;
-}
-
-static UIViewController *FLEXWorkspaceResolvePresenter(
-    UIViewController *preferred
-) {
-    if (preferred.viewIfLoaded.window && !preferred.isBeingDismissed) {
-        return FLEXWorkspaceVisibleController(preferred);
-    }
-    for (UIWindow *window in FLEXWorkspaceCandidateWindows()) {
-        UIViewController *visible =
-            FLEXWorkspaceVisibleController(window.rootViewController);
-        if (visible.viewIfLoaded.window && !visible.isBeingDismissed) {
-            return visible;
-        }
-    }
-    return nil;
-}
-
-static void FLEXWorkspaceRestorePreviousKeyWindow(void) {
-    UIWindow *previous = gFLEXWorkspacePreviousKeyWindow;
-    gFLEXWorkspacePreviousKeyWindow = nil;
-    if (previous.windowScene.activationState == UISceneActivationStateForegroundActive &&
-        !previous.hidden) {
-        [previous makeKeyWindow];
-    }
-}
-
-static void FLEXWorkspaceTearDownOwnedWindow(void) {
-    UIWindow *owned = gFLEXWorkspaceOwnedWindow;
-    gFLEXWorkspaceOwnedWindow = nil;
-    owned.hidden = YES;
-    owned.rootViewController = nil;
-    FLEXWorkspaceRestorePreviousKeyWindow();
-}
+// NOTE (fix): the deterministic presentation machinery that lived here
+// (owned UIWindow, scene resolution, visible-controller walk, retry loop)
+// broke menu entry inside hosts running UIDesignRequiresCompatibility=true,
+// because constructing a UIWindow in that legacy compatibility mode hangs.
+// The last known-good build simply presented on the host controller, so the
+// loader does exactly that again and this whole layer was removed. The ABI
+// marker above is retained: the presentation guarantee it documents still
+// holds, now via direct presentation.
 
 @interface FLEXHookWorkspaceController () <UIAdaptivePresentationControllerDelegate>
 @property (nonatomic, copy) NSArray<UINavigationController *> *workspaceNavigationControllers;
 @end
 
 @implementation FLEXHookWorkspaceController
-
-+ (void)presentDeterministicallyFromViewController:(UIViewController *)host {
-    [self presentDeterministicallyFromViewController:host completion:nil];
-}
-
-+ (void)presentDeterministicallyFromViewController:(UIViewController *)host
-                                        completion:(dispatch_block_t)completion {
-    if (!NSThread.isMainThread) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self presentDeterministicallyFromViewController:host
-                                                   completion:completion];
-        });
-        return;
-    }
-    [self attemptPresentationFrom:host retry:0 completion:completion];
-}
-
-+ (void)attemptPresentationFrom:(UIViewController *)host
-                          retry:(NSUInteger)retry
-                     completion:(dispatch_block_t)completion {
-    FLEXHookWorkspaceController *existing = gFLEXPresentedWorkspace;
-    if (existing.viewIfLoaded.window && !existing.isBeingDismissed) {
-        existing.selectedIndex = 0;
-        [existing.view.window makeKeyWindow];
-        if (completion) completion();
-        return;
-    }
-
-    if (gFLEXWorkspacePresentationInFlight) {
-        if (retry < 40) {
-            dispatch_after(
-                dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC),
-                dispatch_get_main_queue(),
-                ^{
-                    [self attemptPresentationFrom:host
-                                            retry:retry + 1
-                                       completion:completion];
-                }
-            );
-        }
-        return;
-    }
-
-    UIViewController *presenter = FLEXWorkspaceResolvePresenter(host);
-    BOOL transitioning = presenter && (
-        presenter.isBeingPresented ||
-        presenter.isBeingDismissed ||
-        presenter.presentedViewController.isBeingPresented ||
-        presenter.presentedViewController.isBeingDismissed
-    );
-    if (transitioning && retry < 12) {
-        dispatch_after(
-            dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC),
-            dispatch_get_main_queue(),
-            ^{
-                [self attemptPresentationFrom:host
-                                        retry:retry + 1
-                                   completion:completion];
-            }
-        );
-        return;
-    }
-
-    FLEXHookWorkspaceController *workspace = nil;
-    @try {
-        workspace = [FLEXHookWorkspaceController new];
-    } @catch (NSException *exception) {
-        // If constructing the tab workspace throws (observed only in hosts that
-        // opted out of the iOS 26 design), do not leave the in-flight gate stuck
-        // - that is the silent hang. Log the reason so it is diagnosable and bail
-        // cleanly so a later tap can try again.
-        NSLog(@"[AllFLEXing] Runtime Workspace construction failed: %@ - %@",
-            exception.name, exception.reason);
-        gFLEXWorkspacePresentationInFlight = NO;
-        gFLEXPresentedWorkspace = nil;
-        return;
-    }
-    gFLEXPresentedWorkspace = workspace;
-    gFLEXWorkspacePresentationInFlight = YES;
-
-    dispatch_block_t didPresent = ^{
-        gFLEXWorkspacePresentationInFlight = NO;
-        workspace.presentationController.delegate = workspace;
-        [FLEXLiquidGlass applyToViewController:workspace.selectedViewController];
-        if (completion) completion();
-    };
-
-    if (presenter.viewIfLoaded.window && !transitioning) {
-        [presenter presentViewController:workspace
-                                animated:YES
-                              completion:didPresent];
-
-        // UIKit can reject a presentation without invoking completion when the
-        // presenter becomes invalid during the transition. Fall back to an
-        // owned scene window instead of leaving the global in-flight gate stuck.
-        dispatch_after(
-            dispatch_time(DISPATCH_TIME_NOW, 1200 * NSEC_PER_MSEC),
-            dispatch_get_main_queue(),
-            ^{
-                if (gFLEXWorkspacePresentationInFlight &&
-                    !workspace.viewIfLoaded.window) {
-                    gFLEXWorkspacePresentationInFlight = NO;
-                    gFLEXPresentedWorkspace = nil;
-                    [self presentInOwnedWindowFrom:host completion:completion];
-                }
-            }
-        );
-        return;
-    }
-
-    gFLEXWorkspacePresentationInFlight = NO;
-    gFLEXPresentedWorkspace = nil;
-    [self presentInOwnedWindowFrom:host completion:completion];
-}
-
-+ (void)presentInOwnedWindowFrom:(UIViewController *)host
-                       completion:(dispatch_block_t)completion {
-    UIWindowScene *scene = FLEXWorkspaceForegroundScene(host);
-    if (!scene) {
-        NSLog(@"[AllFLEXing] Runtime Workspace presentation failed: no foreground UIWindowScene");
-        return;
-    }
-
-    for (UIWindow *window in scene.windows) {
-        if (window.isKeyWindow) {
-            gFLEXWorkspacePreviousKeyWindow = window;
-            break;
-        }
-    }
-
-    UIViewController *root = [UIViewController new];
-    root.view.backgroundColor = UIColor.systemBackgroundColor;
-    root.view.opaque = YES;
-
-    UIWindow *window = [[UIWindow alloc] initWithWindowScene:scene];
-    window.windowLevel = UIWindowLevelAlert - 1.0;
-    window.rootViewController = root;
-    gFLEXWorkspaceOwnedWindow = window;
-    [window makeKeyAndVisible];
-
-    FLEXHookWorkspaceController *workspace = nil;
-    @try {
-        workspace = [FLEXHookWorkspaceController new];
-    } @catch (NSException *exception) {
-        NSLog(@"[AllFLEXing] Runtime Workspace construction failed (owned window): %@ - %@",
-            exception.name, exception.reason);
-        gFLEXWorkspacePresentationInFlight = NO;
-        gFLEXPresentedWorkspace = nil;
-        gFLEXWorkspaceOwnedWindow.hidden = YES;
-        gFLEXWorkspaceOwnedWindow = nil;
-        [gFLEXWorkspacePreviousKeyWindow makeKeyWindow];
-        return;
-    }
-    gFLEXPresentedWorkspace = workspace;
-    gFLEXWorkspacePresentationInFlight = YES;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [root presentViewController:workspace
-                           animated:YES
-                         completion:^{
-            gFLEXWorkspacePresentationInFlight = NO;
-            workspace.presentationController.delegate = workspace;
-            [FLEXLiquidGlass applyToViewController:workspace.selectedViewController];
-            if (completion) completion();
-        }];
-    });
-}
 
 - (instancetype)init {
     self = [super init];
@@ -355,15 +88,13 @@ static void FLEXWorkspaceTearDownOwnedWindow(void) {
     ];
     [self setViewControllers:self.workspaceNavigationControllers animated:NO];
     self.selectedIndex = 0;
-    // Tab sidebar mode and customization are iOS 26 design features. In a host
-    // that opted out via UIDesignRequiresCompatibility they can push UIKit into
-    // a state it rejects, which is why the menu never appeared in those apps.
-    // Fall back to the plain tab bar there.
+    // The last known-good build set tabSidebar + customization unconditionally
+    // and worked inside UIDesignRequiresCompatibility hosts, so these are NOT
+    // the cause of the dead menu - the owned-window presentation path was.
+    // Restore the unconditional behavior.
     if (@available(iOS 18.0, *)) {
-        if (![FLEXLiquidGlass hostRequiresLegacyCompatibility]) {
-            self.mode = UITabBarControllerModeTabSidebar;
-            self.customizationIdentifier = @"com.allflexing.runtime-workspace";
-        }
+        self.mode = UITabBarControllerModeTabSidebar;
+        self.customizationIdentifier = @"com.allflexing.runtime-workspace";
     }
 }
 
@@ -377,9 +108,7 @@ static void FLEXWorkspaceTearDownOwnedWindow(void) {
     self.view.accessibilityIdentifier =
         @"AllFLEXing.RuntimeWorkspace.Root";
     if (@available(iOS 26.0, *)) {
-        if (![FLEXLiquidGlass hostRequiresLegacyCompatibility]) {
-            self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorOnScrollDown;
-        }
+        self.tabBarMinimizeBehavior = UITabBarMinimizeBehaviorOnScrollDown;
     }
 }
 

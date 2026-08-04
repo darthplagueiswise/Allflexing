@@ -173,6 +173,83 @@ static void FLEXVoteForReturnUse(uint32_t instruction,
     }
 }
 
+/// Return-register CLASS from the callee's own body: does it produce its result
+/// in d0/s0 (floating-point) or via x8 indirect (struct-by-value)? Reads forward
+/// from the entry address to the first `ret`, bounded, and only looks at whether
+/// the LAST writer of the return path is an FP register or a store through x8.
+/// This is what tells double/float apart from a general GP (x0) return, which is
+/// exactly the distinction the call-site vote cannot make.
+typedef NS_ENUM(NSUInteger, FLEXReturnRegisterClass) {
+    FLEXReturnRegisterClassGP = 0,   // x0 - bool/int/pointer
+    FLEXReturnRegisterClassDouble,   // d0
+    FLEXReturnRegisterClassFloat,    // s0
+    FLEXReturnRegisterClassIndirect, // x8 sret - struct by value, not forceable
+};
+
+static FLEXReturnRegisterClass FLEXReturnClassForFunction(
+    const uint32_t *instructions,
+    NSUInteger count,
+    NSUInteger entryIndex,
+    BOOL *sawReturn
+) {
+    if (sawReturn) *sawReturn = NO;
+    BOOL lastWasDouble = NO, lastWasFloat = NO, usesX8 = NO;
+    NSUInteger limit = MIN(count, entryIndex + 512); // bounded scan
+    for (NSUInteger i = entryIndex; i < limit; i++) {
+        uint32_t inst = instructions[i];
+
+        // RET (0xD65F0000 mask). The class is decided by what last touched the
+        // return path before this point.
+        if ((inst & 0xFFFFFC1Fu) == 0xD65F0000u) {
+            if (sawReturn) *sawReturn = YES;
+            if (usesX8) return FLEXReturnRegisterClassIndirect;
+            if (lastWasDouble) return FLEXReturnRegisterClassDouble;
+            if (lastWasFloat) return FLEXReturnRegisterClassFloat;
+            return FLEXReturnRegisterClassGP;
+        }
+
+        // Any write to x8 as a destination pointer (struct sret) - ADRP/ADD/MOV
+        // into x8, or a store through it. Rd == 8.
+        unsigned rd = inst & 0x1f;
+        if (rd == 8) {
+            // ADR/ADRP x8, ADD x8, MOV x8, ... treat as sret setup.
+            if ((inst & 0x1F000000u) == 0x10000000u ||   // ADR/ADRP
+                (inst & 0x7F800000u) == 0x11000000u ||    // ADD imm
+                (inst & 0x7FE00000u) == 0x2A0003E0u) {    // MOV (ORR) into x8
+                usesX8 = YES;
+            }
+        }
+
+        // FMOV/FP producers writing d0/s0 (Rd == 0 in the FP register file).
+        // FMOV (register) 000: 0x1E604000 (double), 0x1E204000 (single).
+        // Also catch scalar FP ops and loads that land in d0/s0.
+        unsigned fpRd = inst & 0x1f;
+        if (fpRd == 0) {
+            uint32_t top = inst & 0xFF200000u;
+            // Double-precision scalar FP data-processing / fmov: ...01 11100 1x
+            if ((inst & 0xFF200000u) == 0x1E600000u) { lastWasDouble = YES; lastWasFloat = NO; }
+            // Single-precision scalar FP: ...00 11100 0x
+            else if ((inst & 0xFF200000u) == 0x1E200000u) { lastWasFloat = YES; lastWasDouble = NO; }
+            // LDR d0 (64-bit FP load): 1111 1101 01 ... -> 0xFD400000
+            else if ((inst & 0xFFC00000u) == 0xFD400000u) { lastWasDouble = YES; lastWasFloat = NO; }
+            // LDR s0 (32-bit FP load): 1011 1101 01 ... -> 0xBD400000
+            else if ((inst & 0xFFC00000u) == 0xBD400000u) { lastWasFloat = YES; lastWasDouble = NO; }
+            (void)top;
+        }
+        // A GP write to x0 after an FP write clears the FP hypothesis: the value
+        // being returned is the GP one.
+        if ((inst & 0x1f) == 0) {
+            BOOL isGPWrite =
+                (inst & 0x1F800000u) == 0x12800000u ||   // MOVZ/MOVN
+                (inst & 0x1F000000u) == 0x11000000u ||    // ADD/SUB imm
+                (inst & 0x7FE00000u) == 0x2A0003E0u ||    // MOV (ORR)
+                (inst & 0xBFC00000u) == 0xB9400000u;      // LDR w0/x0
+            if (isGPWrite) { lastWasDouble = NO; lastWasFloat = NO; }
+        }
+    }
+    return FLEXReturnRegisterClassGP; // no ret seen within budget: assume GP
+}
+
 static FLEXHookABI FLEXInferCABIFromCallSites(
     FLEXHookEntry *entry,
     NSMutableArray<NSString *> *evidence,
@@ -202,6 +279,67 @@ static FLEXHookABI FLEXInferCABIFromCallSites(
 
     NSUInteger calls = 0, boolVotes = 0, integerVotes = 0, pointerVotes = 0;
     NSUInteger maxArguments = 0, pointerArgumentVotes = 0;
+
+    // First, read the callee's own return-register class. This is the only
+    // signal that distinguishes a double/float return (d0/s0) from a general GP
+    // return, and it also rejects struct-by-value (x8 sret) targets, which are
+    // not forceable. Requires the function's own address.
+    FLEXReturnRegisterClass returnClass = FLEXReturnRegisterClassGP;
+    BOOL returnClassKnown = NO;
+    NSNumber *fnAddress = entry.locator[@"address"];
+    if ([fnAddress isKindOfClass:NSNumber.class] && fnAddress.unsignedLongLongValue) {
+        // Find the executable segment that contains the function address, then
+        // scan forward from it for the return-register class.
+        const uint8_t *scan = (const uint8_t *)(header + 1);
+        for (uint32_t ci = 0; ci < header->ncmds; ci++) {
+            const struct load_command *cmd = (const struct load_command *)scan;
+            if (cmd->cmdsize < sizeof(struct load_command)) break;
+            if (cmd->cmd == LC_SEGMENT_64) {
+                const struct segment_command_64 *seg =
+                    (const struct segment_command_64 *)cmd;
+                if ((seg->initprot & VM_PROT_EXECUTE) && seg->vmsize) {
+                    uintptr_t segStart = (uintptr_t)(seg->vmaddr + slide);
+                    uintptr_t segEnd = segStart + (uintptr_t)seg->vmsize;
+                    uintptr_t fn = (uintptr_t)fnAddress.unsignedLongLongValue;
+                    if (fn >= segStart && fn < segEnd) {
+                        const uint32_t *segInsts = (const uint32_t *)segStart;
+                        NSUInteger segCount =
+                            (NSUInteger)(seg->vmsize / sizeof(uint32_t));
+                        NSUInteger fnIndex =
+                            (NSUInteger)((fn - segStart) / sizeof(uint32_t));
+                        BOOL sawReturn = NO;
+                        returnClass = FLEXReturnClassForFunction(
+                            segInsts, segCount, fnIndex, &sawReturn);
+                        returnClassKnown = sawReturn;
+                        break;
+                    }
+                }
+            }
+            scan += cmd->cmdsize;
+        }
+    }
+
+    if (returnClassKnown) {
+        if (returnClass == FLEXReturnRegisterClassIndirect) {
+            [evidence addObject:
+                @"Callee returns a struct by value (x8 indirect); not forceable."];
+            *confidence = FLEXABIResolutionConfidenceStrong;
+            return FLEXHookABIUnknown;
+        }
+        if (returnClass == FLEXReturnRegisterClassDouble) {
+            [evidence addObject:
+                @"Callee return path writes d0: double(void) floating-point return."];
+            *confidence = FLEXABIResolutionConfidenceStrong;
+            return FLEXHookABICDoubleNoArguments;
+        }
+        if (returnClass == FLEXReturnRegisterClassFloat) {
+            [evidence addObject:
+                @"Callee return path writes s0: float(void) floating-point return."];
+            *confidence = FLEXABIResolutionConfidenceStrong;
+            return FLEXHookABICFloatNoArguments;
+        }
+    }
+
     const uint8_t *cursor = (const uint8_t *)(header + 1);
     for (uint32_t commandIndex = 0; commandIndex < header->ncmds; commandIndex++) {
         const struct load_command *command = (const struct load_command *)cursor;
@@ -367,7 +505,7 @@ static FLEXHookABI FLEXInferCABIFromCallSites(
             backendAvailable &&
             result.confidence >= FLEXABIResolutionConfidenceStrong;
         result.evidence = evidence.copy;
-        result.summary = [NSString stringWithFormat:@"%@ · %@ · %@",
+        result.summary = [NSString stringWithFormat:@"%@ - %@ - %@",
             [self confidenceName:result.confidence],
             FLEXHookABIName(result.abi),
             FLEXHookBackendName(result.backend)];

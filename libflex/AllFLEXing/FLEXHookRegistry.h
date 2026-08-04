@@ -31,6 +31,13 @@ typedef NS_ENUM(NSInteger, FLEXHookABI) {
     FLEXHookABICBoolPointerArgument,
     FLEXHookABICInt64NoArguments,
     FLEXHookABICPointerNoArguments,
+    // Secondary scope: non-bool GP and FP returns. All GP returns (bool, int,
+    // pointer) leave in x0; double/float leave in d0/s0. The typed replacement
+    // stubs return the matching C type so the compiler emits the correct
+    // return-register move (including fmov for the FP profiles) - no hand-written
+    // machine code is patched into the target.
+    FLEXHookABICDoubleNoArguments,
+    FLEXHookABICFloatNoArguments,
 };
 
 FOUNDATION_EXPORT NSString *FLEXHookSurfaceName(FLEXHookSurface surface);
@@ -56,6 +63,12 @@ FOUNDATION_EXPORT NSString *FLEXHookABIName(FLEXHookABI abi);
 @property (nonatomic) BOOL installed;
 @property (atomic) BOOL effectiveEnabled;
 @property (atomic) BOOL forceValue;
+// Secondary-scope typed force value. forceRawValue holds the raw bit pattern the
+// hook returns for non-bool profiles: a signed/unsigned integer, a pointer, or
+// the IEEE-754 bits of a double/float. forceValue stays the source of truth for
+// the bool profiles; the two are kept consistent by the registry so bool hooks
+// keep working unchanged.
+@property (atomic) uint64_t forceRawValue;
 @property (nonatomic) BOOL requiresRestart;
 @property (nonatomic) BOOL stale;
 @property (nonatomic, copy, nullable) NSString *lastError;
@@ -98,6 +111,7 @@ typedef void (^FLEXHookApplyCompletion)(NSArray<FLEXHookEntry *> *applied,
 
 - (void)stageEnabled:(BOOL)enabled forEntryIdentifier:(NSString *)identifier;
 - (void)stageForceValue:(BOOL)forceValue forEntryIdentifier:(NSString *)identifier;
+- (void)stageForceRawValue:(uint64_t)rawValue forEntryIdentifier:(NSString *)identifier;
 - (void)configureEntryIdentifier:(NSString *)identifier
                               abi:(FLEXHookABI)abi
                           backend:(FLEXHookBackend)backend;

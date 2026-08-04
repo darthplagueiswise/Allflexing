@@ -148,21 +148,19 @@ require("Apply This Hook" in actions,
 require("No patch, swizzle or hook is installed until Apply is pressed" in hook_center,
         "Hook Center no longer explains the explicit Apply contract")
 
-# Workspace presentation is resolved after lazy runtime activation and no stale
-# weak host performs UIKit presentation.
-require("presentDeterministicallyFromViewController:origin" in loader and
+# Workspace presentation happens directly on the host FLEX controller — the
+# known-good path that also works inside UIDesignRequiresCompatibility hosts.
+# The owned-UIWindow / scene-resolution / retry machinery was removed because
+# constructing a UIWindow in that legacy compatibility mode hung the menu.
+require("host presentViewController:workspace" in loader and
         "completion:" in loader,
-        "loader does not use deterministic Workspace presentation")
+        "loader does not present the Workspace directly on the host")
 require("__weak UITableViewController *weakHost" not in loader,
         "loader still captures a stale weak host")
-for token in (
-    "UISceneActivationStateForegroundActive",
-    "FLEXWorkspaceResolvePresenter",
-    "gFLEXWorkspacePresentationInFlight",
-    "gFLEXWorkspaceOwnedWindow",
-    "attemptPresentationFrom:host retry:",
-):
-    require(token in workspace, f"deterministic presenter missing: {token}")
+# Runtime activation must still be deferred until the sheet is visible (inside
+# the presentation completion), never at launch.
+require("AllFLEXingActivateRuntimeForWorkspace" in loader,
+        "loader does not defer runtime activation to the presentation completion")
 
 # Launch remains inert. Runtime and persistence initialization are allowed only
 # inside the user-invoked Runtime Workspace activation function.
@@ -175,6 +173,9 @@ require("-DFLEX_DISABLE_CTORS=1" in makefile,
 ctor = function_body(loader, "static void AllFLEXingBootstrap(void)")
 require(ctor, "AllFLEXing constructor missing")
 if ctor:
+    # The constructor itself must not do runtime work inline; it may only
+    # schedule the UI phase and delegate confirmed-hook re-arming to the
+    # dedicated launch re-arm function (validated separately below).
     for token in (
         "FLEXPersistenceStore",
         "FLEXHookRegistry",
@@ -182,9 +183,30 @@ if ctor:
         "reapplyPersistedEntries",
         "activateRegisteredHooks",
     ):
-        require(token not in ctor, f"constructor performs runtime work: {token}")
+        require(token not in ctor, f"constructor performs runtime work inline: {token}")
     require("AllFLEXingScheduleActivationPhase" in ctor,
-            "constructor no longer schedules only the active-scene UI phase")
+            "constructor no longer schedules the active-scene UI phase")
+    require("AllFLEXingReArmConfirmedHooksAtLaunch" in ctor,
+            "constructor no longer re-arms confirmed hooks at launch")
+
+# Launch re-arm restores ONLY previously-confirmed hooks and is gated on a cheap
+# probe so a first run with nothing confirmed stays fully inert (no registry, no
+# persistence store, no scanner built at launch).
+launch_rearm = function_body(
+    loader,
+    "static void AllFLEXingReArmConfirmedHooksAtLaunch(void)",
+)
+require(launch_rearm, "launch re-arm function missing")
+if launch_rearm:
+    require("hasPersistedConfirmedEntries" in launch_rearm,
+            "launch re-arm does not gate on the confirmed-entries probe")
+    require("reapplyPersistedEntries" in launch_rearm,
+            "launch re-arm does not replay confirmed hooks")
+    # The probe must be checked before any store/registry is touched, so the
+    # inert first-run path builds nothing.
+    require(launch_rearm.find("hasPersistedConfirmedEntries")
+                < launch_rearm.find("FLEXPersistenceStore.sharedStore"),
+            "launch re-arm builds persistence before probing for confirmed entries")
 
 runtime_activation = function_body(
     loader,

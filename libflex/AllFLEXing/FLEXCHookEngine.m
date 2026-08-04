@@ -13,7 +13,7 @@
 #import <stdint.h>
 #import <string.h>
 
-#define FLEX_C_SLOT_COUNT 32
+#define FLEX_C_SLOT_COUNT 48
 #define FLEX_C_SLOTS_PER_ABI 8
 
 typedef struct {
@@ -22,6 +22,10 @@ typedef struct {
     atomic_bool forceBool;
     atomic_llong forceInt64;
     atomic_uintptr_t forcePointer;
+    // Raw bit pattern for the secondary-scope typed profiles. For the double and
+    // float profiles this holds the IEEE-754 bits; the stub reinterprets it with
+    // memcpy so the compiler materializes the value into d0/s0 via a real fmov.
+    atomic_ullong forceRaw;
     atomic_ullong hits;
     atomic_ullong overrideHits;
     void *original;
@@ -207,10 +211,45 @@ static void *FLEXCallPointerNoArgs(NSUInteger index) {
     return original ? original() : NULL;
 }
 
+static double FLEXCallDoubleNoArgs(NSUInteger index) {
+    FLEXCHookSlot *slot = &gFLEXCHookSlots[index];
+    BOOL enabled = atomic_load_explicit(&slot->enabled, memory_order_acquire);
+    FLEXCHookRecordHit(slot, enabled);
+    if (enabled) {
+        // Reinterpret the stored bits as a double. Returning a double makes the
+        // compiler emit the AAPCS64 FP return: the value lands in d0 via fmov.
+        uint64_t bits = atomic_load_explicit(&slot->forceRaw, memory_order_relaxed);
+        double value = 0;
+        memcpy(&value, &bits, sizeof(value));
+        return value;
+    }
+    double (*original)(void) = (double (*)(void))slot->original;
+    return original ? original() : 0;
+}
+
+static float FLEXCallFloatNoArgs(NSUInteger index) {
+    FLEXCHookSlot *slot = &gFLEXCHookSlots[index];
+    BOOL enabled = atomic_load_explicit(&slot->enabled, memory_order_acquire);
+    FLEXCHookRecordHit(slot, enabled);
+    if (enabled) {
+        // Low 32 bits hold the float pattern; returning a float emits the s0
+        // return move (fmov s0, wN).
+        uint64_t bits = atomic_load_explicit(&slot->forceRaw, memory_order_relaxed);
+        uint32_t narrow = (uint32_t)bits;
+        float value = 0;
+        memcpy(&value, &narrow, sizeof(value));
+        return value;
+    }
+    float (*original)(void) = (float (*)(void))slot->original;
+    return original ? original() : 0;
+}
+
 #define FLEX_BOOL0_STUB(N, INDEX) static bool FLEXCBool0_##N(void) { return FLEXCallBool0(INDEX); }
 #define FLEX_BOOLPTR_STUB(N, INDEX) static bool FLEXCBoolPointer_##N(void *arg) { return FLEXCallBoolPointer(INDEX, arg); }
 #define FLEX_INT64_STUB(N, INDEX) static int64_t FLEXCInt64_##N(void) { return FLEXCallInt64NoArgs(INDEX); }
 #define FLEX_POINTER_STUB(N, INDEX) static void *FLEXCPointer_##N(void) { return FLEXCallPointerNoArgs(INDEX); }
+#define FLEX_DOUBLE_STUB(N, INDEX) static double FLEXCDouble_##N(void) { return FLEXCallDoubleNoArgs(INDEX); }
+#define FLEX_FLOAT_STUB(N, INDEX) static float FLEXCFloat_##N(void) { return FLEXCallFloatNoArgs(INDEX); }
 
 FLEX_BOOL0_STUB(0, 0) FLEX_BOOL0_STUB(1, 1) FLEX_BOOL0_STUB(2, 2) FLEX_BOOL0_STUB(3, 3)
 FLEX_BOOL0_STUB(4, 4) FLEX_BOOL0_STUB(5, 5) FLEX_BOOL0_STUB(6, 6) FLEX_BOOL0_STUB(7, 7)
@@ -220,6 +259,10 @@ FLEX_INT64_STUB(0, 16) FLEX_INT64_STUB(1, 17) FLEX_INT64_STUB(2, 18) FLEX_INT64_
 FLEX_INT64_STUB(4, 20) FLEX_INT64_STUB(5, 21) FLEX_INT64_STUB(6, 22) FLEX_INT64_STUB(7, 23)
 FLEX_POINTER_STUB(0, 24) FLEX_POINTER_STUB(1, 25) FLEX_POINTER_STUB(2, 26) FLEX_POINTER_STUB(3, 27)
 FLEX_POINTER_STUB(4, 28) FLEX_POINTER_STUB(5, 29) FLEX_POINTER_STUB(6, 30) FLEX_POINTER_STUB(7, 31)
+FLEX_DOUBLE_STUB(0, 32) FLEX_DOUBLE_STUB(1, 33) FLEX_DOUBLE_STUB(2, 34) FLEX_DOUBLE_STUB(3, 35)
+FLEX_DOUBLE_STUB(4, 36) FLEX_DOUBLE_STUB(5, 37) FLEX_DOUBLE_STUB(6, 38) FLEX_DOUBLE_STUB(7, 39)
+FLEX_FLOAT_STUB(0, 40) FLEX_FLOAT_STUB(1, 41) FLEX_FLOAT_STUB(2, 42) FLEX_FLOAT_STUB(3, 43)
+FLEX_FLOAT_STUB(4, 44) FLEX_FLOAT_STUB(5, 45) FLEX_FLOAT_STUB(6, 46) FLEX_FLOAT_STUB(7, 47)
 
 static void *const gFLEXBool0Replacements[FLEX_C_SLOTS_PER_ABI] = {
     (void *)FLEXCBool0_0, (void *)FLEXCBool0_1, (void *)FLEXCBool0_2, (void *)FLEXCBool0_3,
@@ -239,6 +282,14 @@ static void *const gFLEXPointerReplacements[FLEX_C_SLOTS_PER_ABI] = {
     (void *)FLEXCPointer_0, (void *)FLEXCPointer_1, (void *)FLEXCPointer_2, (void *)FLEXCPointer_3,
     (void *)FLEXCPointer_4, (void *)FLEXCPointer_5, (void *)FLEXCPointer_6, (void *)FLEXCPointer_7,
 };
+static void *const gFLEXDoubleReplacements[FLEX_C_SLOTS_PER_ABI] = {
+    (void *)FLEXCDouble_0, (void *)FLEXCDouble_1, (void *)FLEXCDouble_2, (void *)FLEXCDouble_3,
+    (void *)FLEXCDouble_4, (void *)FLEXCDouble_5, (void *)FLEXCDouble_6, (void *)FLEXCDouble_7,
+};
+static void *const gFLEXFloatReplacements[FLEX_C_SLOTS_PER_ABI] = {
+    (void *)FLEXCFloat_0, (void *)FLEXCFloat_1, (void *)FLEXCFloat_2, (void *)FLEXCFloat_3,
+    (void *)FLEXCFloat_4, (void *)FLEXCFloat_5, (void *)FLEXCFloat_6, (void *)FLEXCFloat_7,
+};
 
 static NSRange FLEXSlotRangeForABI(FLEXHookABI abi) {
     switch (abi) {
@@ -246,6 +297,8 @@ static NSRange FLEXSlotRangeForABI(FLEXHookABI abi) {
         case FLEXHookABICBoolPointerArgument: return NSMakeRange(8, FLEX_C_SLOTS_PER_ABI);
         case FLEXHookABICInt64NoArguments: return NSMakeRange(16, FLEX_C_SLOTS_PER_ABI);
         case FLEXHookABICPointerNoArguments: return NSMakeRange(24, FLEX_C_SLOTS_PER_ABI);
+        case FLEXHookABICDoubleNoArguments: return NSMakeRange(32, FLEX_C_SLOTS_PER_ABI);
+        case FLEXHookABICFloatNoArguments: return NSMakeRange(40, FLEX_C_SLOTS_PER_ABI);
         default: return NSMakeRange(NSNotFound, 0);
     }
 }
@@ -261,6 +314,8 @@ static void *FLEXReplacementForSlot(NSUInteger slotIndex, FLEXHookABI abi) {
         case FLEXHookABICBoolPointerArgument: return gFLEXBoolPointerReplacements[local];
         case FLEXHookABICInt64NoArguments: return gFLEXInt64Replacements[local];
         case FLEXHookABICPointerNoArguments: return gFLEXPointerReplacements[local];
+        case FLEXHookABICDoubleNoArguments: return gFLEXDoubleReplacements[local];
+        case FLEXHookABICFloatNoArguments: return gFLEXFloatReplacements[local];
         default: return NULL;
     }
 }
@@ -296,8 +351,9 @@ static NSInteger FLEXReserveSlot(FLEXHookEntry *entry) {
             strlcpy(slot->identifier, entry.identifier.UTF8String, sizeof(slot->identifier));
             atomic_init(&slot->enabled, false);
             atomic_init(&slot->forceBool, entry.forceValue);
-            atomic_init(&slot->forceInt64, entry.forceValue ? 1 : 0);
-            atomic_init(&slot->forcePointer, 0);
+            atomic_init(&slot->forceInt64, (long long)entry.forceRawValue);
+            atomic_init(&slot->forcePointer, (uintptr_t)entry.forceRawValue);
+            atomic_init(&slot->forceRaw, entry.forceRawValue);
             atomic_init(&slot->hits, 0);
             atomic_init(&slot->overrideHits, 0);
             atomic_store_explicit(&slot->allocated, true, memory_order_release);
@@ -427,11 +483,33 @@ static NSInteger FLEXReserveSlot(FLEXHookEntry *entry) {
         return;
     }
     FLEXCHookSlot *slot = &gFLEXCHookSlots[entry.runtimeSlot];
+    // Bool profiles keep using forceValue; the typed profiles read forceRawValue
+    // (signed/unsigned int, pointer bits, or IEEE-754 double/float bits). All are
+    // published before enabling so the stub never reads a stale value.
     atomic_store_explicit(&slot->forceBool, entry.forceValue, memory_order_relaxed);
-    atomic_store_explicit(&slot->forceInt64, entry.forceValue ? 1 : 0, memory_order_relaxed);
-    // Returning address 0x1 for a generic pointer target is never safe. Until
-    // typed value storage exists, pointer overrides can only return NULL.
-    atomic_store_explicit(&slot->forcePointer, 0, memory_order_relaxed);
+    switch (entry.abi) {
+        case FLEXHookABICInt64NoArguments:
+            atomic_store_explicit(&slot->forceInt64,
+                (long long)entry.forceRawValue, memory_order_relaxed);
+            break;
+        case FLEXHookABICPointerNoArguments:
+            atomic_store_explicit(&slot->forcePointer,
+                (uintptr_t)entry.forceRawValue, memory_order_relaxed);
+            break;
+        case FLEXHookABICDoubleNoArguments:
+        case FLEXHookABICFloatNoArguments:
+            atomic_store_explicit(&slot->forceRaw,
+                entry.forceRawValue, memory_order_relaxed);
+            break;
+        default:
+            // Bool profiles: mirror the bool into the int64 lane for callers that
+            // read it, and keep the pointer lane at NULL (never a fabricated
+            // address).
+            atomic_store_explicit(&slot->forceInt64,
+                entry.forceValue ? 1 : 0, memory_order_relaxed);
+            atomic_store_explicit(&slot->forcePointer, 0, memory_order_relaxed);
+            break;
+    }
     atomic_store_explicit(&slot->enabled, enabled, memory_order_release);
 }
 

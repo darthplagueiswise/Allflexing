@@ -334,6 +334,8 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
         case FLEXHookABICBoolPointerArgument: return @"bool(void *)";
         case FLEXHookABICInt64NoArguments: return @"int64_t(void)";
         case FLEXHookABICPointerNoArguments: return @"void *(void)";
+        case FLEXHookABICDoubleNoArguments: return @"double(void)";
+        case FLEXHookABICFloatNoArguments: return @"float(void)";
     }
     return @"Unknown ABI";
 }
@@ -356,6 +358,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
         _abi = FLEXHookABIUnknown;
         _runtimeSlot = NSNotFound;
         _forceValue = YES;
+        _forceRawValue = 1;
         atomic_init(&_runtimeEnabled, false);
         atomic_init(&_runtimeHits, 0);
         atomic_init(&_runtimeOverrideHits, 0);
@@ -431,6 +434,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     entry.installed = self.installed;
     entry.effectiveEnabled = self.effectiveEnabled;
     entry.forceValue = self.forceValue;
+    entry.forceRawValue = self.forceRawValue;
     entry.requiresRestart = self.requiresRestart;
     entry.stale = self.stale;
     entry.lastError = self.lastError;
@@ -452,6 +456,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
         @"locator": self.locator ?: @{},
         @"desiredEnabled": @(self.desiredEnabled),
         @"forceValue": @(self.forceValue),
+        @"forceRawValue": [@(self.forceRawValue) stringValue],
         @"userConfigured": @(self.userConfigured),
     };
 }
@@ -480,6 +485,9 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     entry.pendingEnabled = entry.desiredEnabled;
     entry.forceValue = dictionary[@"forceValue"]
         ? [dictionary[@"forceValue"] boolValue] : YES;
+    entry.forceRawValue = [dictionary[@"forceRawValue"] isKindOfClass:NSString.class]
+        ? (uint64_t)strtoull([dictionary[@"forceRawValue"] UTF8String], NULL, 10)
+        : (entry.forceValue ? 1 : 0);
     entry.userConfigured = [dictionary[@"userConfigured"] boolValue];
     entry.available = NO;
     entry.hookable = NO;
@@ -502,7 +510,7 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     if (self.installed) {
         if (!self.effectiveEnabled) {
             return [NSString stringWithFormat:
-                @"Installed · forwarding original · %lu calls",
+                @"Installed - forwarding original - %lu calls",
                 (unsigned long)self.hitCount];
         }
         NSString *forced = self.abi == FLEXHookABICPointerNoArguments
@@ -512,10 +520,10 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
                 : (self.forceValue ? @"Force TRUE" : @"Force FALSE"));
         if (self.overrideHitCount == 0) {
             return [NSString stringWithFormat:
-                @"Armed · %@ · waiting for first call", forced];
+                @"Armed - %@ - waiting for first call", forced];
         }
         return [NSString stringWithFormat:
-            @"Observed · %@ · %lu overridden calls",
+            @"Observed - %@ - %lu overridden calls",
             forced,
             (unsigned long)self.overrideHitCount];
     }
@@ -618,6 +626,28 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     dispatch_async(self.queue, ^{
         [self refreshCapabilities];
     });
+}
+
+/// Cheap launch-time probe: is there at least one confirmed (desiredEnabled)
+/// persisted entry? Reads only the defaults payload and instantiates nothing -
+/// so a first run with nothing confirmed stays fully inert and never builds the
+/// registry, the persistence store, or the scanner at launch.
++ (BOOL)hasPersistedConfirmedEntries {
+    NSDictionary *payload = [NSUserDefaults.standardUserDefaults
+        objectForKey:kFLEXHookRegistryStorageKey];
+    if (![payload isKindOfClass:NSDictionary.class] ||
+        [payload[@"schema"] integerValue] != kFLEXHookRegistrySchema) {
+        return NO;
+    }
+    NSArray *records = [payload[@"entries"] isKindOfClass:NSArray.class]
+        ? payload[@"entries"] : @[];
+    for (NSDictionary *record in records) {
+        if ([record isKindOfClass:NSDictionary.class] &&
+            [record[@"desiredEnabled"] boolValue]) {
+            return YES;
+        }
+    }
+    return NO;
 }
 
 - (void)loadPersistedEntries {
@@ -807,7 +837,26 @@ NSString *FLEXHookABIName(FLEXHookABI abi) {
     FLEXHookEntry *entry = [self entryForIdentifier:identifier];
     if (!entry) entry = [self promoteTransientIdentifier:identifier];
     if (!entry) return;
-    entry.forceValue = entry.abi == FLEXHookABICPointerNoArguments ? NO : value;
+    BOOL resolved = entry.abi == FLEXHookABICPointerNoArguments ? NO : value;
+    entry.forceValue = resolved;
+    // Keep the typed raw value in step for the bool profiles so the engine's
+    // secondary lanes never read a stale value (bool true -> raw 1).
+    entry.forceRawValue = resolved ? 1 : 0;
+    entry.userConfigured = YES;
+    [self persistEntries];
+    [self postChange:@"force"];
+}
+
+/// Secondary-scope typed force value. rawValue carries the bits to return: a
+/// signed/unsigned integer, a pointer, or the IEEE-754 bits of a double/float.
+- (void)stageForceRawValue:(uint64_t)rawValue
+         forEntryIdentifier:(NSString *)identifier {
+    FLEXHookEntry *entry = [self entryForIdentifier:identifier];
+    if (!entry) entry = [self promoteTransientIdentifier:identifier];
+    if (!entry) return;
+    entry.forceRawValue = rawValue;
+    // Mirror into the bool flag so mixed reads stay coherent (non-zero -> true).
+    entry.forceValue = rawValue != 0;
     entry.userConfigured = YES;
     [self persistEntries];
     [self postChange:@"force"];

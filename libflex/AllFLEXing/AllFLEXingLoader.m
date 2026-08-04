@@ -223,7 +223,7 @@ static void AllFLEXingActivateRuntimeForWorkspace(dispatch_block_t completion) {
                     [registry reapplyPersistedEntries];
                     activated = YES;
                 } @catch (NSException *exception) {
-                    NSLog(@"[AllFLEXing] runtime activation exception: %@ · %@",
+                    NSLog(@"[AllFLEXing] runtime activation exception: %@ - %@",
                         exception.name,
                         exception.reason);
                 }
@@ -232,6 +232,45 @@ static void AllFLEXingActivateRuntimeForWorkspace(dispatch_block_t completion) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (completion) completion();
         });
+    });
+}
+
+// Launch-time re-arm of ALREADY-CONFIRMED hooks. This is distinct from the
+// user-invoked activation above: it neither presents UI nor discovers new
+// targets - it only restores hooks the user previously confirmed with Apply and
+// that persistence recorded. Gate checks like +[...isInternalBuild] are read
+// once, early in launch, long before the user could open the menu; arming only
+// at Apply time therefore always missed them ("armed but never observed"). Re-
+// arming confirmed entries here, synchronously in the constructor, is the same
+// pattern used elsewhere: a hook the user already approved is reinstalled before
+// the host reads it. Nothing the user has not confirmed is touched.
+static void AllFLEXingReArmConfirmedHooksAtLaunch(void) {
+    dispatch_async(AllFLEXingRuntimeActivationQueue(), ^{
+        static BOOL reArmed = NO;
+        if (reArmed) return;
+        @autoreleasepool {
+            @try {
+                if (!FLEXHookRegistry.hasPersistedConfirmedEntries) {
+                    // Nothing was ever confirmed - stay fully inert, exactly like
+                    // a first run. No persistence store is even created.
+                    reArmed = YES;
+                    return;
+                }
+                (void)FLEXPersistenceStore.sharedStore;
+                FLEXHookPersistence *flags = AllFLEXingRegisterRuntimeFlags();
+                [flags reloadPersistedValues];
+                [flags activateRegisteredHooks];
+
+                FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
+                [registry bootstrap];
+                [registry reapplyPersistedEntries];
+                reArmed = YES;
+                NSLog(@"[AllFLEXing] re-armed confirmed hooks at launch before host gate reads");
+            } @catch (NSException *exception) {
+                NSLog(@"[AllFLEXing] launch re-arm exception: %@ - %@",
+                    exception.name, exception.reason);
+            }
+        }
     });
 }
 
@@ -245,22 +284,30 @@ static void AllFLEXingStartUI(void) {
         [FLEXManager.sharedManager
             registerGlobalEntryWithName:@"AllFLEXing Runtime Workspace"
             action:^(__kindof UITableViewController *host) {
-                // UI comes first. Keychain, scanner, registry and persisted
-                // restore begin only after UIKit confirms that the Workspace is
-                // visible. A bad restore can no longer make the menu appear dead.
-                UIViewController *origin = host;
-                [FLEXHookWorkspaceController
-                    presentDeterministicallyFromViewController:origin
-                    completion:^{
-                        dispatch_after(
-                            dispatch_time(DISPATCH_TIME_NOW,
-                                250 * NSEC_PER_MSEC),
-                            dispatch_get_main_queue(),
-                            ^{
-                                AllFLEXingActivateRuntimeForWorkspace(nil);
-                            }
-                        );
-                    }];
+                // Present exactly the way the last known-good build did: create
+                // the workspace and present it directly on the host FLEX menu
+                // controller, which is already visible. The later "deterministic"
+                // machinery (owned UIWindow, scene resolution, retry loop) broke
+                // entry inside hosts running UIDesignRequiresCompatibility=true -
+                // constructing a new UIWindow in that legacy compatibility mode
+                // is where the tap hung. Direct presentation has no such path.
+                //
+                // Runtime activation (Keychain, scanner, registry, restore) is
+                // still deferred until UIKit confirms the sheet is visible, so a
+                // bad restore cannot make the menu appear dead.
+                FLEXHookWorkspaceController *workspace =
+                    [FLEXHookWorkspaceController new];
+                [host presentViewController:workspace
+                                   animated:YES
+                                 completion:^{
+                    dispatch_after(
+                        dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC),
+                        dispatch_get_main_queue(),
+                        ^{
+                            AllFLEXingActivateRuntimeForWorkspace(nil);
+                        }
+                    );
+                }];
             }];
         [AllFLEXingReveal.shared start];
         [FLEXLiquidGlass refreshVisibleFLEXViewControllers];
@@ -305,6 +352,11 @@ __attribute__((constructor))
 static void AllFLEXingBootstrap(void) {
     @autoreleasepool {
         if (!AllFLEXingIsUIApplicationProcess()) return;
+        // Re-arm previously-confirmed hooks first, so gate checks the host reads
+        // early in launch are already intercepted. This does not present UI and
+        // only touches entries the user confirmed in a prior session; a first run
+        // with nothing persisted stays completely inert.
+        AllFLEXingReArmConfirmedHooksAtLaunch();
         AllFLEXingScheduleActivationPhase();
     }
 }
