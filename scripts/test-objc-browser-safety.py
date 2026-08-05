@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Source contract for the crash-safe direct Objective-C hook browser."""
+"""Source contract for the crash-safe compact Objective-C hook browser."""
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -33,6 +34,17 @@ def selector_is_structurally_safe(selector: str, runtime_argument_count: int) ->
     return selector.count(":") == runtime_argument_count - 2
 
 
+def body_for_void_method(text: str, selector: str) -> str:
+    match = re.search(
+        rf"- \(void\){re.escape(selector)}:\([^)]*\)[^{{]*\{{(.*?)\n\}}",
+        text,
+        re.S,
+    )
+    if not match:
+        raise AssertionError(f"method body not found: {selector}:")
+    return match.group(1)
+
+
 def main() -> None:
     resolver = RESOLVER.read_text(encoding="utf-8")
     header = HEADER.read_text(encoding="utf-8")
@@ -53,9 +65,15 @@ def main() -> None:
         "method.signature.numberOfArguments < argumentCount",
         "FLEXHookSelectorArgumentCount(method.selectorString) != explicitArguments",
         "method_getArgumentType(runtimeMethod, index",
+        "method_getImplementation(runtimeMethod) != NULL",
+        "FLEXHookMethodResolvesInClass",
+        "method_getImplementation(resolved)",
+        "strcmp(sourceEncoding, resolvedEncoding) == 0",
         "FLEXHookABIForFLEXMethod",
+        "entry.available = executableNow",
+        "entry.hookable = executableNow",
     ]:
-        require(resolver, marker, "resolver safety contract")
+        require(resolver, marker, "resolver safety and executable-target contract")
 
     for marker in [
         "UITableViewController",
@@ -66,15 +84,32 @@ def main() -> None:
 
     for marker in [
         "Objective-C Functions",
-        "Resolving eligible methods and Objective-C ABIs",
         "FLEXObjCEntryEncoding",
         "FLEXHookABIName(entry.abi)",
         "entryForMethod:method",
-        "entryAtIndexPath:",
+        "entry.available && entry.hookable",
+        "FLEXObjCHookGroup",
+        "viewForHeaderInSection",
         "ABI resolved:",
-        "applyEntryIdentifier:identifier",
+        "UINavigationItemLargeTitleDisplayModeNever",
+        "estimatedRowHeight = 54.0",
+        "com.allflexing.flex-objc-search-index",
+        "delay = immediate ? 0.0 : 0.18",
+        "stageEnabled:requestedState",
+        "applyPendingWithCompletion",
+        "hasPersistedConfirmedEntries",
+        "synchronizeNow",
     ]:
-        require(controller, marker, "direct browser contract")
+        require(controller, marker, "compact grouped browser contract")
+
+    search_body = body_for_void_method(controller, "updateSearchResultsForSearchController")
+    require(search_body, "scheduleFilterForQuery", "off-main indexed filter scheduling")
+    forbid(search_body, "reloadData", "synchronous per-keystroke table rebuild")
+
+    toggle_body = body_for_void_method(controller, "toggleChanged")
+    require(toggle_body, "stageEnabled:requestedState", "staged toggle")
+    forbid(toggle_body, "applyEntryIdentifier", "immediate toggle install")
+    forbid(toggle_body, "applyPendingWithCompletion", "immediate toggle batch install")
 
     forbid(controller, "method.description", "FLEX pretty-printer during discovery or filtering")
     forbid(controller, "FLEXMetadataSection", "crash-prone metadata renderer")
@@ -95,8 +130,8 @@ def main() -> None:
     forbid(build, "apply-flex-runtime-extension-v2.py", "native runtime-browser transformer")
 
     print(
-        "Objective-C structural filter, direct ABI-resolved list, stable per-ID actions, "
-        "and FLEX fail-closed rendering: OK"
+        "Objective-C structural and dispatch-lane validation, compact grouped UI, "
+        "off-main search, staged Apply, and persisted launch re-arm contract: OK"
     )
 
 
