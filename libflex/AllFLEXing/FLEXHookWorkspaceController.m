@@ -45,15 +45,15 @@
 - (void)configureWorkspace {
     FLEXHookToggles *center = [FLEXHookToggles new];
 
-    // Objective-C discovery, tokenization, grouping, reflection metadata,
-    // previews and navigation remain owned by FLEX. AllFLEXing contributes only
-    // the hookability predicate and the hook controls on accepted metadata rows.
+    // FLEX supplies the optimized Objective-C discovery/reflection backend.
+    // AllFLEXing owns the product UI: a direct list of eligible methods with
+    // concrete resolved Objective-C ABIs and shared registry controls.
     FLEXHookableObjCRuntimeViewController *objectiveC =
         [FLEXHookableObjCRuntimeViewController new];
 
-    // FLEX does not provide a C symbol/import browser, so C remains the only
-    // custom runtime catalogue in this workspace.
-    FLEXRuntimeBrowserController *cRuntime = [FLEXRuntimeBrowserController new];
+    // C has no universal runtime type encoding. Its dedicated patcher lists
+    // imports/symbols and keeps exact ABI selection explicit in the detail UI.
+    FLEXRuntimeBrowserController *cSymbolPatcher = [FLEXRuntimeBrowserController new];
     FLEXHookSettingsController *settings = [FLEXHookSettingsController new];
 
     UINavigationController *centerNavigation =
@@ -61,7 +61,9 @@
     UINavigationController *objectiveCNavigation =
         [self navigationControllerWithRoot:objectiveC title:@"Objective-C" symbol:@"curlybraces"];
     UINavigationController *cNavigation =
-        [self navigationControllerWithRoot:cRuntime title:@"C Runtime" symbol:@"function"];
+        [self navigationControllerWithRoot:cSymbolPatcher
+                                     title:@"C Patcher"
+                                    symbol:@"function"];
     UINavigationController *settingsNavigation =
         [self navigationControllerWithRoot:settings title:@"Settings" symbol:@"gearshape.fill"];
 
