@@ -32,10 +32,13 @@ grep -q 'prepare_flex_ui' build.sh
 grep -q 'flex-uikit26-liquid-glass.patch' build.sh
 grep -q 'flex-hookable-runtime-filter.patch' build.sh
 grep -q 'flex-semantic-runtime-search.patch' build.sh
+grep -q 'apply-flex-method-rendering-safety.py' build.sh
 
 test -f patches/flex-uikit26-liquid-glass.patch
 test -f patches/flex-hookable-runtime-filter.patch
 test -f patches/flex-semantic-runtime-search.patch
+test -f scripts/apply-flex-method-rendering-safety.py
+test -f scripts/test-objc-browser-safety.py
 grep -q 'FLEXScopeCarousel.m' patches/flex-uikit26-liquid-glass.patch
 grep -q 'FLEXExplorerToolbar.m' patches/flex-uikit26-liquid-glass.patch
 grep -q 'FLEXNavigationController.m' patches/flex-uikit26-liquid-glass.patch
@@ -51,7 +54,7 @@ if grep -q '^+.*largestUndimmedDetentIdentifier = UISheetPresentationControllerD
     exit 1
 fi
 
-# Objective-C discovery and search must remain inside FLEX.
+# Objective-C discovery and root semantic search remain inside FLEX.
 grep -q 'runtimeBrowserShouldIncludeMethod' patches/flex-hookable-runtime-filter.patch
 grep -q 'FLEXRuntimeController' patches/flex-hookable-runtime-filter.patch
 grep -q 'runtimeBrowserSearchPlainTextQuery' patches/flex-semantic-runtime-search.patch
@@ -68,9 +71,41 @@ grep -q 'fbconfigmanager' "$src/FLEXHookableObjCRuntimeViewController.m"
 grep -q 'employee enable' "$src/FLEXHookableObjCRuntimeViewController.m"
 grep -q 'Sintaxe FLEX avançada' "$src/FLEXHookableObjCRuntimeViewController.m"
 grep -q 'FLEXHookableObjCRuntimeViewController' "$src/FLEXHookWorkspaceController.m"
-grep -q 'FLEXMetadataSection' "$src/FLEXHookableObjectExplorerViewController.m"
+
+# Malformed selector/type metadata must be rejected before any hook row is
+# created. The grouped explorer renders stable FLEXHookEntry data instead of
+# asking FLEXMetadataSection to pretty-print the unsafe method again.
+grep -q 'FLEXHookMethodMetadataIsStructurallySafe' "$src/FLEXObjCHookResolver.m"
+grep -q 'FLEXHookSelectorArgumentCount' "$src/FLEXObjCHookResolver.m"
+grep -q 'method.signature.numberOfArguments < argumentCount' "$src/FLEXObjCHookResolver.m"
+grep -q 'method_getArgumentType(runtimeMethod, index' "$src/FLEXObjCHookResolver.m"
 grep -q 'method.objc_method' "$src/FLEXObjCHookResolver.m"
 grep -q "\*returnCode != 'B'" "$src/FLEXObjCHookResolver.m"
+
+grep -q 'FLEXHookableGroupSection' "$src/FLEXHookableObjectExplorerViewController.m"
+grep -q 'FLEXHookableEntryListController' "$src/FLEXHookableObjectExplorerViewController.m"
+grep -q 'Instance properties' "$src/FLEXHookableObjectExplorerViewController.m"
+grep -q 'Class properties' "$src/FLEXHookableObjectExplorerViewController.m"
+grep -q 'Instance methods' "$src/FLEXHookableObjectExplorerViewController.m"
+grep -q 'Class methods' "$src/FLEXHookableObjectExplorerViewController.m"
+grep -q 'FLEXHookableEntryMatches' "$src/FLEXHookableObjectExplorerViewController.m"
+grep -q 'allflexing_goBack:' "$src/FLEXHookableObjectExplorerViewController.m"
+grep -q 'setNavigationBarHidden:NO' "$src/FLEXHookableObjectExplorerViewController.m"
+if grep -q 'FLEXMetadataSection' "$src/FLEXHookableObjectExplorerViewController.m"; then
+    echo "error: grouped Objective-C explorer must not restore crash-prone FLEX metadata rows" >&2
+    exit 1
+fi
+if grep -q 'method\.description' "$src/FLEXHookableObjectExplorerViewController.m"; then
+    echo "error: Objective-C list/search must not invoke the unsafe pretty-printer" >&2
+    exit 1
+fi
+
+grep -q 'AllFLEXing malformed selector/type-encoding rendering guard' \
+    scripts/apply-flex-method-rendering-safety.py
+grep -q 'selectorComponents.count < explicitArguments' \
+    scripts/apply-flex-method-rendering-safety.py
+grep -q '@catch (__unused NSException \*exception)' \
+    scripts/apply-flex-method-rendering-safety.py
 
 # The custom scanner is C/Mach-O only. Reintroducing a parallel Objective-C
 # catalogue is a build failure.
@@ -191,4 +226,4 @@ if grep -q 'GENERATOR[[:space:]]*:=[[:space:]]*internal' libflex/Makefile; then
     exit 1
 fi
 
-echo "SDK 26.2, FLEX-native filtered semantic Objective-C browser, C scanner, explicit Apply, Liquid Glass, and provider contract: OK"
+echo "SDK 26.2, crash-safe grouped semantic Objective-C browser, C scanner, explicit Apply, Liquid Glass, and provider contract: OK"
