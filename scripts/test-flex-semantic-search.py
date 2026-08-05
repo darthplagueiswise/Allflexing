@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""Executable contract tests for the compact indexed Objective-C hook browser."""
+"""Executable contract tests for the FLEX-reusing Objective-C browser.
+
+Architecture under test: the browser reuses FLEX's own table/search
+infrastructure and cached runtime data layer, and replaces only FLEX's
+key-path grammar (* + - and Bundle.Class.-method) with operator-free
+natural-text semantic matching.
+"""
 
 from __future__ import annotations
 
-import re
 import sys
 import unicodedata
 from pathlib import Path
@@ -11,6 +16,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 HEADER = ROOT / "libflex/AllFLEXing/FLEXHookableObjCRuntimeViewController.h"
 CONTROLLER = ROOT / "libflex/AllFLEXing/FLEXHookableObjCRuntimeViewController.m"
+SEARCH = ROOT / "libflex/AllFLEXing/FLEXHookableObjCSearchController.m"
+EXPLORER = ROOT / "libflex/AllFLEXing/FLEXHookableObjectExplorerViewController.m"
 C_PATCHER = ROOT / "libflex/AllFLEXing/FLEXRuntimeBrowserController.m"
 SCANNER = ROOT / "libflex/AllFLEXing/FLEXRuntimeScanner.m"
 BUILD = ROOT / "build.sh"
@@ -27,8 +34,9 @@ def normalize(value: str) -> str:
                 output.append(" ")
             continue
 
+        is_upper = character.isupper()
         boundary = False
-        if index > 0 and character.isupper():
+        if index > 0 and is_upper:
             previous = value[index - 1]
             next_is_lower = index + 1 < len(value) and value[index + 1].islower()
             boundary = previous.islower() or previous.isdigit() or (
@@ -72,23 +80,6 @@ def forbid(text: str, marker: str, label: str) -> None:
         raise AssertionError(f"forbidden {label}: {marker}")
 
 
-def method_body(text: str, selector: str) -> str:
-    match = re.search(
-        rf"- \(void\){re.escape(selector)}:\([^)]*\)[^{{]*\{{(.*?)\n\}}",
-        text,
-        re.S,
-    )
-    if not match:
-        raise AssertionError(f"method body not found: {selector}:")
-    return match.group(1)
-
-
-def executable_code(text: str) -> str:
-    """Remove comments before checking whether a forbidden call is executable."""
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
-    return re.sub(r"//[^\n]*", "", text)
-
-
 def main() -> None:
     fields = [
         "FBConfigManager",
@@ -120,47 +111,47 @@ def main() -> None:
 
     header = HEADER.read_text(encoding="utf-8")
     controller = CONTROLLER.read_text(encoding="utf-8")
+    search = SEARCH.read_text(encoding="utf-8")
+    explorer = EXPLORER.read_text(encoding="utf-8")
     c_patcher = C_PATCHER.read_text(encoding="utf-8")
     scanner = SCANNER.read_text(encoding="utf-8")
     build = BUILD.read_text(encoding="utf-8")
 
+    # The search controller replaces FLEX's key-path grammar but reuses FLEX's
+    # cached runtime data layer and its background-filter-then-reload pattern.
     for marker in [
         "FLEXRuntimeClient.runtime",
         "classesForToken:FLEXSearchToken.any",
         "methodsForToken:FLEXSearchToken.any",
-        "entryForMethod:method",
-        "entry.available && entry.hookable",
-        "entry.abi != FLEXHookABIUnknown",
-        "mergeDiscoveredEntries:discovered",
-        "surface:FLEXHookSurfaceObjectiveC",
-        "FLEXObjCBuildSearchFields",
-        "normalizedSearchFields",
-        "compactSearchFields",
-        "com.allflexing.flex-objc-search-index",
-        "delay = immediate ? 0.0 : 0.18",
-        "FLEXObjCHookGroup",
-        "group.className",
-        "ABI resolved:",
-        "Class, selector, ABI or image",
-        "stageEnabled:requestedState",
-        "applyPendingWithCompletion",
-        "Apply and close app",
-        "UINavigationItemLargeTitleDisplayModeNever",
-        "estimatedRowHeight = 54.0",
+        "canRepresentMethod:method",
+        "FLEXHookableNormalize",
+        "FLEXHookableCompact",
+        "FLEXHookableTerms",
+        "searchGeneration",
+        "dispatch_get_main_queue",
     ]:
-        require(controller, marker, "indexed grouped Objective-C browser contract")
+        require(search, marker, "semantic search contract")
 
-    search_body = executable_code(
-        method_body(controller, "updateSearchResultsForSearchController")
-    )
-    require(search_body, "scheduleFilterForQuery", "debounced search dispatch")
-    forbid(search_body, "reloadData", "main-thread full-list filtering")
-    forbid(search_body, "FLEXObjCRowMatchesTerms", "main-thread row scan")
+    # The browser itself reuses FLEX's search bar infrastructure.
+    for marker in [
+        "showsSearchBar",
+        "FLEXHookableObjCSearchController",
+        "hookableSearchDidSelectClass:",
+    ]:
+        require(controller, marker, "FLEX search-infrastructure reuse")
 
-    toggle_body = executable_code(method_body(controller, "toggleChanged"))
-    require(toggle_body, "stageEnabled:requestedState", "staged row state")
-    forbid(toggle_body, "applyEntryIdentifier", "immediate row apply")
-    forbid(toggle_body, "applyPendingWithCompletion", "immediate batch apply")
+    # The explorer reuses FLEX's own sections and adds the hook layer on top.
+    for marker in [
+        "makeSections",
+        "FLEXMetadataSection",
+        "excludedMetadata",
+        "FLEXMutableListSection",
+        "entryForMethod:method",
+        "surface:FLEXHookSurfaceObjectiveC",
+        "applyEntryIdentifier:identifier",
+        "FLEXHookABIName(display.abi)",
+    ]:
+        require(explorer, marker, "hook-aware explorer contract")
 
     for marker in [
         "C Symbol Patcher",
@@ -171,11 +162,12 @@ def main() -> None:
     ]:
         require(c_patcher, marker, "C ABI patcher contract")
 
-    forbid(header, "FLEXObjcRuntimeViewController", "native FLEX browser inheritance")
-    forbid(controller, "didSelectClass:", "class-drilldown presentation")
-    forbid(controller, "FLEXHookableObjectExplorerViewController", "obsolete class explorer")
-    forbid(controller, "runtimeBrowserSearchPlainTextQuery", "patched FLEX presentation bridge")
-    forbid(controller, "Sintaxe FLEX avançada", "native key-path grammar UI")
+    # The key-path grammar must not come back: no FLEXKeyPathSearchController,
+    # no tokenizer, no operator toolbar anywhere in the browser surface.
+    for text, label in ((controller, "browser"), (search, "search controller")):
+        forbid(text, "FLEXKeyPathSearchController", f"key-path grammar in {label}")
+        forbid(text, "FLEXRuntimeKeyPathTokenizer", f"key-path tokenizer in {label}")
+        forbid(text, "FLEXRuntimeBrowserToolbar", f"operator toolbar in {label}")
     forbid(build, "apply-flex-runtime-extension-v2.py", "native runtime presentation transformer")
 
     for forbidden in [
@@ -187,8 +179,9 @@ def main() -> None:
         forbid(scanner, forbidden, "parallel Objective-C scanner")
 
     print(
-        "FLEX-backed indexed Objective-C discovery, off-main debounced search, "
-        "class/image grouping, staged Apply, and C Symbol Patcher ABI contract: OK"
+        "FLEX search/data-layer reuse, operator-free semantic AND matching, "
+        "hook-aware explorer over FLEX sections, and explicit C Symbol Patcher "
+        "ABI contract: OK"
     )
 
 

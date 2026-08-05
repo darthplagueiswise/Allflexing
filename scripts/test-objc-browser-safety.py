@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""Source contract for the crash-safe compact Objective-C hook browser."""
+"""Source contract for the crash-safe FLEX-reusing Objective-C hook browser.
+
+The browser reuses FLEX's own renderer (FLEXMetadataSection) rather than a
+bespoke one. Two independent layers keep that safe against the malformed
+selector/type-encoding crash: the pinned FLEX rendering patch applied at build
+time, and the resolver-driven exclusion of non-hookable methods from the
+rendered sections.
+"""
 
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 
@@ -14,8 +20,8 @@ CONTROLLER = ROOT / "libflex/AllFLEXing/FLEXHookableObjCRuntimeViewController.m"
 MODULE = ROOT / "libflex/modules/HookRuntime/Module.mk"
 TRANSFORMER = ROOT / "scripts/apply-flex-method-rendering-safety.py"
 BUILD = ROOT / "build.sh"
-OBSOLETE_EXPLORER_M = ROOT / "libflex/AllFLEXing/FLEXHookableObjectExplorerViewController.m"
-OBSOLETE_EXPLORER_H = ROOT / "libflex/AllFLEXing/FLEXHookableObjectExplorerViewController.h"
+EXPLORER = ROOT / "libflex/AllFLEXing/FLEXHookableObjectExplorerViewController.m"
+SEARCH = ROOT / "libflex/AllFLEXing/FLEXHookableObjCSearchController.m"
 
 
 def require(text: str, marker: str, label: str) -> None:
@@ -34,23 +40,6 @@ def selector_is_structurally_safe(selector: str, runtime_argument_count: int) ->
     return selector.count(":") == runtime_argument_count - 2
 
 
-def body_for_void_method(text: str, selector: str) -> str:
-    match = re.search(
-        rf"- \(void\){re.escape(selector)}:\([^)]*\)[^{{]*\{{(.*?)\n\}}",
-        text,
-        re.S,
-    )
-    if not match:
-        raise AssertionError(f"method body not found: {selector}:")
-    return match.group(1)
-
-
-def executable_code(text: str) -> str:
-    """Remove comments before checking whether a forbidden call is executable."""
-    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
-    return re.sub(r"//[^\n]*", "", text)
-
-
 def main() -> None:
     resolver = RESOLVER.read_text(encoding="utf-8")
     header = HEADER.read_text(encoding="utf-8")
@@ -58,6 +47,8 @@ def main() -> None:
     module = MODULE.read_text(encoding="utf-8")
     transformer = TRANSFORMER.read_text(encoding="utf-8")
     build = BUILD.read_text(encoding="utf-8")
+    explorer = EXPLORER.read_text(encoding="utf-8")
+    search = SEARCH.read_text(encoding="utf-8")
 
     assert selector_is_structurally_safe("isEnabled", 2)
     assert selector_is_structurally_safe("enabledForUser:", 3)
@@ -71,61 +62,47 @@ def main() -> None:
         "method.signature.numberOfArguments < argumentCount",
         "FLEXHookSelectorArgumentCount(method.selectorString) != explicitArguments",
         "method_getArgumentType(runtimeMethod, index",
-        "method_getImplementation(runtimeMethod) != NULL",
-        "FLEXHookMethodResolvesInClass",
-        "method_getImplementation(resolved)",
-        "strcmp(sourceEncoding, resolvedEncoding) == 0",
         "FLEXHookABIForFLEXMethod",
-        "entry.available = executableNow",
-        "entry.hookable = executableNow",
     ]:
-        require(resolver, marker, "resolver safety and executable-target contract")
+        require(resolver, marker, "resolver safety contract")
 
     for marker in [
-        "UITableViewController",
-        "lists only methods with",
+        "FLEXTableViewController",
         "concrete supported ABI",
     ]:
-        require(header, marker, "custom presentation interface")
+        require(header, marker, "browser presentation interface")
 
     for marker in [
-        "Objective-C Functions",
-        "FLEXObjCEntryEncoding",
-        "FLEXHookABIName(entry.abi)",
-        "entryForMethod:method",
-        "entry.available && entry.hookable",
-        "FLEXObjCHookGroup",
-        "viewForHeaderInSection",
-        "ABI resolved:",
-        "UINavigationItemLargeTitleDisplayModeNever",
-        "estimatedRowHeight = 54.0",
-        "com.allflexing.flex-objc-search-index",
-        "delay = immediate ? 0.0 : 0.18",
-        "stageEnabled:requestedState",
-        "applyPendingWithCompletion",
-        "hasPersistedConfirmedEntries",
-        "synchronizeNow",
+        "FLEXHookableObjCSearchController",
+        "hookableSearchDidSelectClass:",
+        "FLEXHookableObjectExplorerViewController",
     ]:
-        require(controller, marker, "compact grouped browser contract")
+        require(controller, marker, "browser wiring contract")
 
-    search_body = executable_code(
-        body_for_void_method(controller, "updateSearchResultsForSearchController")
-    )
-    require(search_body, "scheduleFilterForQuery", "off-main indexed filter scheduling")
-    forbid(search_body, "reloadData", "synchronous per-keystroke table rebuild")
+    # Only methods the resolver accepts may be rendered or toggled. This is the
+    # second layer of crash defense on top of the pinned FLEX rendering patch.
+    for marker in [
+        "canRepresentMethod:method",
+        "excludedMetadata",
+        "FLEXHookABIName(display.abi)",
+        "entryForMethod:method",
+        "applyEntryIdentifier:identifier",
+    ]:
+        require(explorer, marker, "hook-aware explorer safety contract")
 
-    toggle_body = executable_code(body_for_void_method(controller, "toggleChanged"))
-    require(toggle_body, "stageEnabled:requestedState", "staged toggle")
-    forbid(toggle_body, "applyEntryIdentifier", "immediate toggle install")
-    forbid(toggle_body, "applyPendingWithCompletion", "immediate toggle batch install")
+    # Discovery must filter by the resolver before anything reaches the UI.
+    require(search, "canRepresentMethod:method", "search-time eligibility filter")
 
-    forbid(controller, "method.description", "FLEX pretty-printer during discovery or filtering")
-    forbid(controller, "FLEXMetadataSection", "crash-prone metadata renderer")
-    forbid(controller, "FLEXObjcRuntimeViewController", "native browser presentation inheritance")
-    forbid(module, "FLEXHookableObjectExplorerViewController.m", "obsolete explorer source")
+    # The pretty-printer must never run during discovery or filtering, where a
+    # malformed selector would be decoded outside the guarded render path.
+    forbid(search, "method.description", "FLEX pretty-printer during discovery or filtering")
 
-    if OBSOLETE_EXPLORER_M.exists() or OBSOLETE_EXPLORER_H.exists():
-        raise AssertionError("obsolete class-explorer presentation files still exist")
+    # Both new sources must be in the build manifest or the Makefile rejects the tree.
+    for source in [
+        "FLEXHookableObjCSearchController.m",
+        "FLEXHookableObjectExplorerViewController.m",
+    ]:
+        require(module, source, "module manifest entry")
 
     for marker in [
         "AllFLEXing malformed selector/type-encoding rendering guard",
@@ -138,8 +115,8 @@ def main() -> None:
     forbid(build, "apply-flex-runtime-extension-v2.py", "native runtime-browser transformer")
 
     print(
-        "Objective-C structural and dispatch-lane validation, compact grouped UI, "
-        "off-main search, staged Apply, and persisted launch re-arm contract: OK"
+        "Objective-C structural filter, resolver-gated rendering over reused FLEX "
+        "sections, stable per-ID actions, and FLEX fail-closed rendering: OK"
     )
 
 

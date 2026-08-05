@@ -61,29 +61,35 @@ fi
 test -f "$src/FLEXObjCHookResolver.m"
 test -f "$src/FLEXHookableObjCRuntimeViewController.h"
 test -f "$src/FLEXHookableObjCRuntimeViewController.m"
-test ! -e "$src/FLEXHookableObjectExplorerViewController.h"
-test ! -e "$src/FLEXHookableObjectExplorerViewController.m"
-grep -q 'UITableViewController' "$src/FLEXHookableObjCRuntimeViewController.h"
-grep -q 'FLEXRuntimeClient' "$src/FLEXHookableObjCRuntimeViewController.m"
-grep -q 'classesForToken:FLEXSearchToken.any' "$src/FLEXHookableObjCRuntimeViewController.m"
-grep -q 'methodsForToken:FLEXSearchToken.any' "$src/FLEXHookableObjCRuntimeViewController.m"
-grep -q 'entryForMethod:method' "$src/FLEXHookableObjCRuntimeViewController.m"
-grep -q 'entry.abi != FLEXHookABIUnknown' "$src/FLEXHookableObjCRuntimeViewController.m"
-grep -q 'mergeDiscoveredEntries:discovered' "$src/FLEXHookableObjCRuntimeViewController.m"
-grep -q 'surface:FLEXHookSurfaceObjectiveC' "$src/FLEXHookableObjCRuntimeViewController.m"
-grep -q 'ABI resolved:' "$src/FLEXHookableObjCRuntimeViewController.m"
-grep -q 'Class, selector, ABI or image' "$src/FLEXHookableObjCRuntimeViewController.m"
-grep -q 'applyEntryIdentifier:identifier' "$src/FLEXHookableObjCRuntimeViewController.m"
-grep -q 'FLEXObjCSemanticCompactText' "$src/FLEXHookableObjCRuntimeViewController.m"
-grep -q 'method.objc_method' "$src/FLEXObjCHookResolver.m"
-grep -q "\*returnCode != 'B'" "$src/FLEXObjCHookResolver.m"
-if grep -Eq 'FLEXObjcRuntimeViewController|runtimeBrowserSearchPlainTextQuery|didSelectClass:|FLEXHookableObjectExplorerViewController' \
-    "$src/FLEXHookableObjCRuntimeViewController.h" \
-    "$src/FLEXHookableObjCRuntimeViewController.m"; then
-    echo "error: native FLEX browser presentation leaked back into the Objective-C product UI" >&2
+test -f "$src/FLEXHookableObjCSearchController.h"
+test -f "$src/FLEXHookableObjCSearchController.m"
+test -f "$src/FLEXHookableObjectExplorerViewController.h"
+test -f "$src/FLEXHookableObjectExplorerViewController.m"
+# The browser reuses FLEX's table/search infrastructure and pushes the
+# hook-aware explorer; discovery and matching live in the search controller.
+grep -q 'FLEXTableViewController' "$src/FLEXHookableObjCRuntimeViewController.h"
+grep -q 'showsSearchBar' "$src/FLEXHookableObjCRuntimeViewController.m"
+grep -q 'FLEXHookableObjCSearchController' "$src/FLEXHookableObjCRuntimeViewController.m"
+grep -q 'FLEXHookableObjectExplorerViewController' "$src/FLEXHookableObjCRuntimeViewController.m"
+grep -q 'FLEXRuntimeClient' "$src/FLEXHookableObjCSearchController.m"
+grep -q 'classesForToken:FLEXSearchToken.any' "$src/FLEXHookableObjCSearchController.m"
+grep -q 'methodsForToken:FLEXSearchToken.any' "$src/FLEXHookableObjCSearchController.m"
+grep -q 'canRepresentMethod:method' "$src/FLEXHookableObjCSearchController.m"
+grep -q 'FLEXHookableNormalize' "$src/FLEXHookableObjCSearchController.m"
+# The key-path grammar must not return anywhere in the browser surface.
+if grep -Eq 'FLEXKeyPathSearchController|FLEXRuntimeKeyPathTokenizer|FLEXRuntimeBrowserToolbar' \
+    "$src/FLEXHookableObjCRuntimeViewController.m" \
+    "$src/FLEXHookableObjCSearchController.m"; then
+    echo "error: FLEX key-path search grammar leaked back into the Objective-C browser" >&2
     exit 1
 fi
-if grep -q 'method.description' "$src/FLEXHookableObjCRuntimeViewController.m"; then
+grep -q 'entryForMethod:method' "$src/FLEXHookableObjectExplorerViewController.m"
+grep -q 'excludedMetadata' "$src/FLEXHookableObjectExplorerViewController.m"
+grep -q 'surface:FLEXHookSurfaceObjectiveC' "$src/FLEXHookableObjectExplorerViewController.m"
+grep -q 'applyEntryIdentifier:identifier' "$src/FLEXHookableObjectExplorerViewController.m"
+grep -q 'method.objc_method' "$src/FLEXObjCHookResolver.m"
+grep -q "\*returnCode != 'B'" "$src/FLEXObjCHookResolver.m"
+if grep -q 'method.description' "$src/FLEXHookableObjCSearchController.m"; then
     echo "error: Objective-C list must not invoke FLEX pretty rendering during scan/filter" >&2
     exit 1
 fi
@@ -115,7 +121,7 @@ fi
 # Row controls stage and apply exactly their own stable registry identifier.
 grep -q 'Apply This Hook' "$src/FLEXRuntimeHookActions.m"
 grep -q 'stageEnabled' "$src/FLEXRuntimeHookActions.m"
-grep -q 'applyEntryIdentifier:identifier' "$src/FLEXHookableObjCRuntimeViewController.m"
+grep -q 'applyEntryIdentifier:identifier' "$src/FLEXHookableObjectExplorerViewController.m"
 grep -q 'applyEntryIdentifier:identifier' "$src/FLEXRuntimeBrowserController.m"
 python3 - "$src/FLEXRuntimeHookActions.m" <<'PY'
 from pathlib import Path
@@ -140,10 +146,8 @@ grep -q 'FLEX_UPSTREAM_FISHHOOK_SOURCE' libflex/Makefile
 grep -q 'LOGOS_DEFAULT_GENERATOR := MobileSubstrate' libflex/Makefile
 grep -Fq '$(TWEAK_NAME)_USE_MODULES := 0' libflex/Makefile
 grep -Eq '\$\(TWEAK_NAME\)_LIBRARIES[[:space:]]*:=[^#]*substrate' libflex/Makefile
-if grep -q 'FLEXHookableObjectExplorerViewController.m' libflex/modules/HookRuntime/Module.mk; then
-    echo "error: obsolete class-explorer presentation remains in HookRuntime manifest" >&2
-    exit 1
-fi
+grep -q 'FLEXHookableObjCSearchController.m' libflex/modules/HookRuntime/Module.mk
+grep -q 'FLEXHookableObjectExplorerViewController.m' libflex/modules/HookRuntime/Module.mk
 
 test -f "$src/FLEXLiquidGlass.m"
 grep -q "UIGlassEffect" "$src/FLEXLiquidGlass.m"
@@ -177,7 +181,6 @@ grep -q 'sheet.largestUndimmedDetentIdentifier = nil' "$src/FLEXHookWorkspaceCon
 grep -q 'setContentScrollView' "$src/FLEXHookToggles.m"
 grep -q 'menu:\[self scopeMenu\]' "$src/FLEXRuntimeBrowserController.m"
 grep -q 'UIContentUnavailableConfiguration' "$src/FLEXRuntimeBrowserController.m"
-grep -q 'UIContentUnavailableConfiguration' "$src/FLEXHookableObjCRuntimeViewController.m"
 grep -q 'UIListContentConfiguration' "$src/FLEXHookToggles.m"
 grep -q '#import <substrate.h>' "$src/FLEXHooking.m"
 grep -q 'MSHookMessageEx' "$src/FLEXHooking.m"
