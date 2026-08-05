@@ -6,8 +6,9 @@ NS_ASSUME_NONNULL_BEGIN
 @class FLEXMethod;
 @class FLEXProperty;
 
-/// Converts metadata already produced by FLEX into an AllFLEXing hook entry.
-/// This class never enumerates classes or builds a parallel Objective-C index.
+/// Converts reflection metadata produced by FLEX into an AllFLEXing registry
+/// entry with a concrete supported Objective-C ABI. FLEX owns discovery and
+/// reflection; AllFLEXing owns eligibility, ABI validation and presentation.
 @interface FLEXObjCHookResolver : NSObject
 
 + (BOOL)canRepresentMethod:(FLEXMethod *)method
