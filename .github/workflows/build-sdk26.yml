@@ -68,7 +68,7 @@ jobs:
           path: ${{ env.THEOS }}/sdks
           key: iphoneos-26.2-sdk-v1
 
-      - name: Test FLEX semantic and grouped Objective-C search
+      - name: Test FLEX-backed eligible Objective-C functions
         run: |
           cd main
           python3 scripts/test-flex-semantic-search.py
