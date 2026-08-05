@@ -30,15 +30,16 @@ test -f build.sh
 grep -q 'make package FINALPACKAGE=1' build.sh
 grep -q 'prepare_flex_ui' build.sh
 grep -q 'flex-uikit26-liquid-glass.patch' build.sh
-grep -q 'flex-hookable-runtime-filter.patch' build.sh
-grep -q 'flex-semantic-runtime-search.patch' build.sh
 grep -q 'apply-flex-method-rendering-safety.py' build.sh
+if grep -q 'apply-flex-runtime-extension-v2.py' build.sh; then
+    echo "error: native FLEX Runtime Browser presentation transformer returned" >&2
+    exit 1
+fi
 
 test -f patches/flex-uikit26-liquid-glass.patch
-test -f patches/flex-hookable-runtime-filter.patch
-test -f patches/flex-semantic-runtime-search.patch
-test -f scripts/apply-flex-method-rendering-safety.py
-test -f scripts/test-objc-browser-safety.py
+test ! -e patches/flex-hookable-runtime-filter.patch
+test ! -e patches/flex-semantic-runtime-search.patch
+test ! -e scripts/apply-flex-runtime-extension-v2.py
 grep -q 'FLEXScopeCarousel.m' patches/flex-uikit26-liquid-glass.patch
 grep -q 'FLEXExplorerToolbar.m' patches/flex-uikit26-liquid-glass.patch
 grep -q 'FLEXNavigationController.m' patches/flex-uikit26-liquid-glass.patch
@@ -54,58 +55,47 @@ if grep -q '^+.*largestUndimmedDetentIdentifier = UISheetPresentationControllerD
     exit 1
 fi
 
-# Objective-C discovery and root semantic search remain inside FLEX.
-grep -q 'runtimeBrowserShouldIncludeMethod' patches/flex-hookable-runtime-filter.patch
-grep -q 'FLEXRuntimeController' patches/flex-hookable-runtime-filter.patch
-grep -q 'runtimeBrowserSearchPlainTextQuery' patches/flex-semantic-runtime-search.patch
-grep -q 'plainTextMode' patches/flex-semantic-runtime-search.patch
-
+# FLEX supplies the optimized Objective-C discovery/reflection backend. The
+# product UI is an AllFLEXing-owned direct list of eligible methods and resolved
+# Objective-C ABIs, not FLEX's class/key-path browser presentation.
 test -f "$src/FLEXObjCHookResolver.m"
+test -f "$src/FLEXHookableObjCRuntimeViewController.h"
 test -f "$src/FLEXHookableObjCRuntimeViewController.m"
-test -f "$src/FLEXHookableObjectExplorerViewController.m"
+test ! -e "$src/FLEXHookableObjectExplorerViewController.h"
+test ! -e "$src/FLEXHookableObjectExplorerViewController.m"
+grep -q 'UITableViewController' "$src/FLEXHookableObjCRuntimeViewController.h"
 grep -q 'FLEXRuntimeClient' "$src/FLEXHookableObjCRuntimeViewController.m"
 grep -q 'classesForToken:FLEXSearchToken.any' "$src/FLEXHookableObjCRuntimeViewController.m"
 grep -q 'methodsForToken:FLEXSearchToken.any' "$src/FLEXHookableObjCRuntimeViewController.m"
-grep -q 'FLEXSemanticCompactText' "$src/FLEXHookableObjCRuntimeViewController.m"
-grep -q 'fbconfigmanager' "$src/FLEXHookableObjCRuntimeViewController.m"
-grep -q 'employee enable' "$src/FLEXHookableObjCRuntimeViewController.m"
-grep -q 'Sintaxe FLEX avançada' "$src/FLEXHookableObjCRuntimeViewController.m"
-grep -q 'FLEXHookableObjCRuntimeViewController' "$src/FLEXHookWorkspaceController.m"
-
-# Malformed selector/type metadata must be rejected before any hook row is
-# created. The grouped explorer renders stable FLEXHookEntry data instead of
-# asking FLEXMetadataSection to pretty-print the unsafe method again.
-grep -q 'FLEXHookMethodMetadataIsStructurallySafe' "$src/FLEXObjCHookResolver.m"
-grep -q 'FLEXHookSelectorArgumentCount' "$src/FLEXObjCHookResolver.m"
-grep -q 'method.signature.numberOfArguments < argumentCount' "$src/FLEXObjCHookResolver.m"
-grep -q 'method_getArgumentType(runtimeMethod, index' "$src/FLEXObjCHookResolver.m"
+grep -q 'entryForMethod:method' "$src/FLEXHookableObjCRuntimeViewController.m"
+grep -q 'entry.abi != FLEXHookABIUnknown' "$src/FLEXHookableObjCRuntimeViewController.m"
+grep -q 'mergeDiscoveredEntries:discovered' "$src/FLEXHookableObjCRuntimeViewController.m"
+grep -q 'surface:FLEXHookSurfaceObjectiveC' "$src/FLEXHookableObjCRuntimeViewController.m"
+grep -q 'ABI resolved:' "$src/FLEXHookableObjCRuntimeViewController.m"
+grep -q 'Class, selector, ABI or image' "$src/FLEXHookableObjCRuntimeViewController.m"
+grep -q 'applyEntryIdentifier:identifier' "$src/FLEXHookableObjCRuntimeViewController.m"
+grep -q 'FLEXObjCSemanticCompactText' "$src/FLEXHookableObjCRuntimeViewController.m"
 grep -q 'method.objc_method' "$src/FLEXObjCHookResolver.m"
 grep -q "\*returnCode != 'B'" "$src/FLEXObjCHookResolver.m"
-
-grep -q 'FLEXHookableGroupSection' "$src/FLEXHookableObjectExplorerViewController.m"
-grep -q 'FLEXHookableEntryListController' "$src/FLEXHookableObjectExplorerViewController.m"
-grep -q 'Instance properties' "$src/FLEXHookableObjectExplorerViewController.m"
-grep -q 'Class properties' "$src/FLEXHookableObjectExplorerViewController.m"
-grep -q 'Instance methods' "$src/FLEXHookableObjectExplorerViewController.m"
-grep -q 'Class methods' "$src/FLEXHookableObjectExplorerViewController.m"
-grep -q 'FLEXHookableEntryMatches' "$src/FLEXHookableObjectExplorerViewController.m"
-grep -q 'allflexing_goBack:' "$src/FLEXHookableObjectExplorerViewController.m"
-grep -q 'setNavigationBarHidden:NO' "$src/FLEXHookableObjectExplorerViewController.m"
-if grep -q 'FLEXMetadataSection' "$src/FLEXHookableObjectExplorerViewController.m"; then
-    echo "error: grouped Objective-C explorer must not restore crash-prone FLEX metadata rows" >&2
+if grep -Eq 'FLEXObjcRuntimeViewController|runtimeBrowserSearchPlainTextQuery|didSelectClass:|FLEXHookableObjectExplorerViewController' \
+    "$src/FLEXHookableObjCRuntimeViewController.h" \
+    "$src/FLEXHookableObjCRuntimeViewController.m"; then
+    echo "error: native FLEX browser presentation leaked back into the Objective-C product UI" >&2
     exit 1
 fi
-if grep -q 'method\.description' "$src/FLEXHookableObjectExplorerViewController.m"; then
-    echo "error: Objective-C list/search must not invoke the unsafe pretty-printer" >&2
+if grep -q 'method.description' "$src/FLEXHookableObjCRuntimeViewController.m"; then
+    echo "error: Objective-C list must not invoke FLEX pretty rendering during scan/filter" >&2
     exit 1
 fi
 
-grep -q 'AllFLEXing malformed selector/type-encoding rendering guard' \
-    scripts/apply-flex-method-rendering-safety.py
-grep -q 'selectorComponents.count < explicitArguments' \
-    scripts/apply-flex-method-rendering-safety.py
-grep -q '@catch (__unused NSException \*exception)' \
-    scripts/apply-flex-method-rendering-safety.py
+# C ABI selection belongs to the dedicated symbol patcher because C signatures
+# cannot be inferred from a symbol name.
+grep -q 'C Symbol Patcher' "$src/FLEXRuntimeBrowserController.m"
+grep -q 'Symbol, image or ABI' "$src/FLEXRuntimeBrowserController.m"
+grep -q 'C signatures are not inferable' "$src/FLEXRuntimeBrowserController.m"
+grep -q 'FLEXHookABIName(entry.abi)' "$src/FLEXRuntimeBrowserController.m"
+grep -q 'choose the exact ABI' "$src/FLEXRuntimeBrowserController.m"
+grep -q 'title:@"C Patcher"' "$src/FLEXHookWorkspaceController.m"
 
 # The custom scanner is C/Mach-O only. Reintroducing a parallel Objective-C
 # catalogue is a build failure.
@@ -118,13 +108,15 @@ if grep -Eq 'objc_copyClassList|scanObjectiveCRuntime|objectiveCEntryForClass|cl
 fi
 if grep -Eq 'FLEXRuntimeBrowserKindObjectiveC|scanObjectiveCRuntime' \
     "$src/FLEXRuntimeBrowserController.m" "$src/FLEXRuntimeBrowserController.h"; then
-    echo "error: custom runtime browser must remain C-only" >&2
+    echo "error: C Symbol Patcher must remain C-only" >&2
     exit 1
 fi
 
-# Row controls stage state only. Apply is the sole physical commit point.
+# Row controls stage and apply exactly their own stable registry identifier.
 grep -q 'Apply This Hook' "$src/FLEXRuntimeHookActions.m"
 grep -q 'stageEnabled' "$src/FLEXRuntimeHookActions.m"
+grep -q 'applyEntryIdentifier:identifier' "$src/FLEXHookableObjCRuntimeViewController.m"
+grep -q 'applyEntryIdentifier:identifier' "$src/FLEXRuntimeBrowserController.m"
 python3 - "$src/FLEXRuntimeHookActions.m" <<'PY'
 from pathlib import Path
 import re, sys
@@ -133,8 +125,8 @@ match = re.search(r'- \(void\)switchChanged:\(UISwitch \*\)toggle \{(.*?)\n\}', 
 if not match:
     raise SystemExit('switchChanged implementation not found')
 body = match.group(1)
-if 'applyEntryIdentifier' in body or 'applyPending' in body:
-    raise SystemExit('runtime row switch still installs a hook immediately')
+if 'applyPending' in body:
+    raise SystemExit('runtime row switch still applies unrelated pending entries')
 if 'Reapply This Hook' in text:
     raise SystemExit('legacy immediate/reapply wording remains')
 PY
@@ -148,6 +140,10 @@ grep -q 'FLEX_UPSTREAM_FISHHOOK_SOURCE' libflex/Makefile
 grep -q 'LOGOS_DEFAULT_GENERATOR := MobileSubstrate' libflex/Makefile
 grep -Fq '$(TWEAK_NAME)_USE_MODULES := 0' libflex/Makefile
 grep -Eq '\$\(TWEAK_NAME\)_LIBRARIES[[:space:]]*:=[^#]*substrate' libflex/Makefile
+if grep -q 'FLEXHookableObjectExplorerViewController.m' libflex/modules/HookRuntime/Module.mk; then
+    echo "error: obsolete class-explorer presentation remains in HookRuntime manifest" >&2
+    exit 1
+fi
 
 test -f "$src/FLEXLiquidGlass.m"
 grep -q "UIGlassEffect" "$src/FLEXLiquidGlass.m"
@@ -181,6 +177,7 @@ grep -q 'sheet.largestUndimmedDetentIdentifier = nil' "$src/FLEXHookWorkspaceCon
 grep -q 'setContentScrollView' "$src/FLEXHookToggles.m"
 grep -q 'menu:\[self scopeMenu\]' "$src/FLEXRuntimeBrowserController.m"
 grep -q 'UIContentUnavailableConfiguration' "$src/FLEXRuntimeBrowserController.m"
+grep -q 'UIContentUnavailableConfiguration' "$src/FLEXHookableObjCRuntimeViewController.m"
 grep -q 'UIListContentConfiguration' "$src/FLEXHookToggles.m"
 grep -q '#import <substrate.h>' "$src/FLEXHooking.m"
 grep -q 'MSHookMessageEx' "$src/FLEXHooking.m"
@@ -226,4 +223,4 @@ if grep -q 'GENERATOR[[:space:]]*:=[[:space:]]*internal' libflex/Makefile; then
     exit 1
 fi
 
-echo "SDK 26.2, crash-safe grouped semantic Objective-C browser, C scanner, explicit Apply, Liquid Glass, and provider contract: OK"
+echo "SDK 26.2, FLEX-backed direct ABI-resolved Objective-C functions, explicit C Symbol Patcher, per-target Apply, Liquid Glass, and provider contract: OK"
