@@ -33,9 +33,68 @@ static BOOL FLEXHookSelectorIsSafeCandidate(SEL selector) {
            strcmp(name, "respondsToSelector:") != 0;
 }
 
+static NSUInteger FLEXHookSelectorArgumentCount(NSString *selectorName) {
+    NSUInteger count = 0;
+    for (NSUInteger index = 0; index < selectorName.length; index++) {
+        if ([selectorName characterAtIndex:index] == ':') {
+            count++;
+        }
+    }
+    return count;
+}
+
+/// FLEX renders method rows by pairing selector components with the argument
+/// count supplied by the Objective-C runtime. Some runtime-generated or
+/// malformed methods expose a selector and type encoding that disagree. Those
+/// methods are valid enough to exist in the runtime, but not safe to render or
+/// hook through FLEX's metadata UI. Reject them before they enter the browser.
+static BOOL FLEXHookMethodMetadataIsStructurallySafe(FLEXMethod *method) {
+    Method runtimeMethod = method.objc_method;
+    if (!runtimeMethod || !method.selector || method.selectorString.length == 0) {
+        return NO;
+    }
+
+    const char *encoding = method_getTypeEncoding(runtimeMethod);
+    if (!encoding || !*encoding || !method.signature) {
+        return NO;
+    }
+
+    unsigned int argumentCount = method_getNumberOfArguments(runtimeMethod);
+    if (argumentCount < 2 || method.signature.numberOfArguments < argumentCount) {
+        return NO;
+    }
+
+    NSUInteger explicitArguments = argumentCount - 2;
+    if (FLEXHookSelectorArgumentCount(method.selectorString) != explicitArguments) {
+        return NO;
+    }
+
+    // Validate every runtime argument through the C runtime only. This avoids
+    // invoking FLEX's pretty-printer while deciding whether a row is safe.
+    for (unsigned int index = 0; index < argumentCount; index++) {
+        char argumentType[128] = {0};
+        method_getArgumentType(runtimeMethod, index, argumentType, sizeof(argumentType));
+        if (!*FLEXHookSkipObjCQualifiers(argumentType)) {
+            return NO;
+        }
+    }
+
+    char selfType[16] = {0};
+    char commandType[16] = {0};
+    method_getArgumentType(runtimeMethod, 0, selfType, sizeof(selfType));
+    method_getArgumentType(runtimeMethod, 1, commandType, sizeof(commandType));
+    const char *selfCode = FLEXHookSkipObjCQualifiers(selfType);
+    const char *commandCode = FLEXHookSkipObjCQualifiers(commandType);
+    if ((*selfCode != '@' && *selfCode != '#') || *commandCode != ':') {
+        return NO;
+    }
+
+    return YES;
+}
+
 static FLEXHookABI FLEXHookABIForFLEXMethod(FLEXMethod *method) {
     Method runtimeMethod = method.objc_method;
-    if (!runtimeMethod) {
+    if (!runtimeMethod || !FLEXHookMethodMetadataIsStructurallySafe(method)) {
         return FLEXHookABIUnknown;
     }
 
@@ -88,7 +147,8 @@ static NSString *FLEXHookStableObjectiveCIdentifier(NSString *image,
     if (!targetClass || ![method isKindOfClass:FLEXMethod.class]) {
         return NO;
     }
-    if (!FLEXHookSelectorIsSafeCandidate(method.selector) ||
+    if (!FLEXHookMethodMetadataIsStructurallySafe(method) ||
+        !FLEXHookSelectorIsSafeCandidate(method.selector) ||
         FLEXHookABIForFLEXMethod(method) == FLEXHookABIUnknown) {
         return NO;
     }
