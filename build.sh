@@ -13,6 +13,7 @@ readonly PRODUCT_NAME="AllFLEXing"
 readonly RELEASE_DIR="$PROJECT_ROOT/release"
 readonly FLEX_UI_PATCH="$PROJECT_ROOT/patches/flex-uikit26-liquid-glass.patch"
 readonly FLEX_RUNTIME_TRANSFORMER="$PROJECT_ROOT/scripts/apply-flex-runtime-extension-v2.py"
+readonly FLEX_METHOD_SAFETY_TRANSFORMER="$PROJECT_ROOT/scripts/apply-flex-method-rendering-safety.py"
 # Audit provenance retained while the transformer replaces the fragile diffs:
 # patches/flex-hookable-runtime-filter.patch
 # patches/flex-semantic-runtime-search.patch
@@ -80,8 +81,10 @@ apply_pinned_flex_patch() {
 prepare_flex_ui() {
 	[ -d "$PROJECT_ROOT/libflex/FLEX" ] || die "FLEX submodule is missing"
 	[ -f "$FLEX_RUNTIME_TRANSFORMER" ] || die "missing FLEX runtime transformer"
+	[ -f "$FLEX_METHOD_SAFETY_TRANSFORMER" ] || die "missing FLEX method safety transformer"
 	apply_pinned_flex_patch "$FLEX_UI_PATCH" "pinned FLEX UIKit 26 presentation patch"
 	python3 "$FLEX_RUNTIME_TRANSFORMER"
+	python3 "$FLEX_METHOD_SAFETY_TRANSFORMER"
 	sanitize_flex_upstream_examples
 }
 
