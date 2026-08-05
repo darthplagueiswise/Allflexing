@@ -83,6 +83,12 @@ def method_body(text: str, selector: str) -> str:
     return match.group(1)
 
 
+def executable_code(text: str) -> str:
+    """Remove comments before checking whether a forbidden call is executable."""
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    return re.sub(r"//[^\n]*", "", text)
+
+
 def main() -> None:
     fields = [
         "FBConfigManager",
@@ -144,12 +150,14 @@ def main() -> None:
     ]:
         require(controller, marker, "indexed grouped Objective-C browser contract")
 
-    search_body = method_body(controller, "updateSearchResultsForSearchController")
+    search_body = executable_code(
+        method_body(controller, "updateSearchResultsForSearchController")
+    )
     require(search_body, "scheduleFilterForQuery", "debounced search dispatch")
     forbid(search_body, "reloadData", "main-thread full-list filtering")
     forbid(search_body, "FLEXObjCRowMatchesTerms", "main-thread row scan")
 
-    toggle_body = method_body(controller, "toggleChanged")
+    toggle_body = executable_code(method_body(controller, "toggleChanged"))
     require(toggle_body, "stageEnabled:requestedState", "staged row state")
     forbid(toggle_body, "applyEntryIdentifier", "immediate row apply")
     forbid(toggle_body, "applyPendingWithCompletion", "immediate batch apply")
