@@ -5,12 +5,14 @@
 #import "FLEXLiquidGlass.h"
 #import "FLEXMethod.h"
 #import "FLEXObjCHookResolver.h"
+#import "FLEXPersistenceStore.h"
 #import "FLEXRuntimeClient.h"
 #import "FLEXRuntimeHostIdentity.h"
 #import "FLEXRuntimeScanner.h"
 #import "FLEXSearchToken.h"
 
 #import <objc/runtime.h>
+#import <stdlib.h>
 
 static const void *kFLEXObjCBrowserEntryIDKey = &kFLEXObjCBrowserEntryIDKey;
 
@@ -50,7 +52,7 @@ static NSString *FLEXObjCSemanticNormalizedText(NSString *input) {
     NSCharacterSet *digits = NSCharacterSet.decimalDigitCharacterSet;
     NSCharacterSet *uppercase = NSCharacterSet.uppercaseLetterCharacterSet;
     NSCharacterSet *lowercase = NSCharacterSet.lowercaseLetterCharacterSet;
-    NSMutableString *result = [NSMutableString string];
+    NSMutableString *result = [NSMutableString stringWithCapacity:input.length + 8];
 
     for (NSUInteger index = 0; index < input.length; index++) {
         unichar character = [input characterAtIndex:index];
@@ -63,18 +65,14 @@ static NSString *FLEXObjCSemanticNormalizedText(NSString *input) {
             continue;
         }
 
-        BOOL isUpper = [uppercase characterIsMember:character];
         BOOL boundary = NO;
-        if (index > 0 && isUpper) {
+        if (index > 0 && [uppercase characterIsMember:character]) {
             unichar previous = [input characterAtIndex:index - 1];
             BOOL previousLower = [lowercase characterIsMember:previous];
             BOOL previousDigit = [digits characterIsMember:previous];
             BOOL previousUpper = [uppercase characterIsMember:previous];
-            BOOL nextLower = NO;
-            if (index + 1 < input.length) {
-                nextLower = [lowercase characterIsMember:
-                    [input characterAtIndex:index + 1]];
-            }
+            BOOL nextLower = index + 1 < input.length &&
+                [lowercase characterIsMember:[input characterAtIndex:index + 1]];
             boundary = previousLower || previousDigit || (previousUpper && nextLower);
         }
         if (boundary && result.length && ![result hasSuffix:@" "]) {
@@ -87,7 +85,7 @@ static NSString *FLEXObjCSemanticNormalizedText(NSString *input) {
 
     NSArray<NSString *> *parts = [result componentsSeparatedByCharactersInSet:
         NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    NSMutableArray<NSString *> *nonempty = [NSMutableArray array];
+    NSMutableArray<NSString *> *nonempty = [NSMutableArray arrayWithCapacity:parts.count];
     for (NSString *part in parts) {
         if (part.length) {
             [nonempty addObject:part];
@@ -116,42 +114,103 @@ static NSArray<NSString *> *FLEXObjCSemanticQueryTerms(NSString *query) {
     return terms.array;
 }
 
-static BOOL FLEXObjCEntryMatchesTerms(FLEXHookEntry *entry,
-                                      NSArray<NSString *> *terms) {
-    if (terms.count == 0) {
-        return YES;
-    }
+@interface FLEXObjCHookRow : NSObject
+@property (nonatomic) FLEXHookEntry *entry;
+@property (nonatomic, copy) NSString *className;
+@property (nonatomic, copy) NSString *selectorName;
+@property (nonatomic, copy) NSString *encoding;
+@property (nonatomic, copy) NSString *imagePath;
+@property (nonatomic, copy) NSString *imageName;
+@property (nonatomic) BOOL classMethod;
+@property (nonatomic, copy) NSArray<NSString *> *normalizedSearchFields;
+@property (nonatomic, copy) NSArray<NSString *> *compactSearchFields;
+@end
 
-    NSArray<NSString *> *fields = @[
+@implementation FLEXObjCHookRow
+@end
+
+@interface FLEXObjCHookGroup : NSObject
+@property (nonatomic, copy) NSString *identifier;
+@property (nonatomic, copy) NSString *className;
+@property (nonatomic, copy) NSString *imageName;
+@property (nonatomic, copy) NSArray<FLEXObjCHookRow *> *rows;
+@end
+
+@implementation FLEXObjCHookGroup
+@end
+
+static NSArray<NSString *> *FLEXObjCBuildSearchFields(FLEXHookEntry *entry,
+                                                       NSString *className,
+                                                       NSString *selectorName,
+                                                       NSString *encoding,
+                                                       NSString *imageName,
+                                                       BOOL classMethod) {
+    return @[
         entry.title ?: @"",
         entry.detail ?: @"",
-        entry.imageName ?: @"",
-        FLEXObjCEntryClassName(entry),
-        FLEXObjCEntrySelector(entry),
-        FLEXObjCEntryEncoding(entry),
+        className ?: @"",
+        selectorName ?: @"",
+        encoding ?: @"",
+        imageName ?: @"",
         FLEXHookABIName(entry.abi),
         FLEXHookBackendName(entry.backend),
-        entry.statusSummary ?: @"",
-        entry.lastError ?: @"",
-        FLEXObjCEntryIsClassMethod(entry) ? @"class method +" : @"instance method -",
+        classMethod ? @"class method +" : @"instance method -",
     ];
+}
 
-    NSMutableArray<NSString *> *normalizedFields =
+static FLEXObjCHookRow *FLEXObjCRowForEntry(FLEXHookEntry *entry) {
+    if (!entry || !entry.available || !entry.hookable ||
+        entry.abi == FLEXHookABIUnknown || entry.identifier.length == 0) {
+        return nil;
+    }
+
+    FLEXObjCHookRow *row = [FLEXObjCHookRow new];
+    row.entry = entry;
+    row.className = FLEXObjCEntryClassName(entry);
+    row.selectorName = FLEXObjCEntrySelector(entry);
+    row.encoding = FLEXObjCEntryEncoding(entry);
+    row.imagePath = FLEXObjCEntryImagePath(entry);
+    row.imageName = entry.imageName.length
+        ? entry.imageName
+        : (row.imagePath.lastPathComponent ?: @"Unknown image");
+    row.classMethod = FLEXObjCEntryIsClassMethod(entry);
+
+    NSArray<NSString *> *fields = FLEXObjCBuildSearchFields(
+        entry,
+        row.className,
+        row.selectorName,
+        row.encoding,
+        row.imageName,
+        row.classMethod
+    );
+    NSMutableArray<NSString *> *normalized =
         [NSMutableArray arrayWithCapacity:fields.count];
-    NSMutableArray<NSString *> *compactFields =
+    NSMutableArray<NSString *> *compact =
         [NSMutableArray arrayWithCapacity:fields.count];
     for (NSString *field in fields) {
-        [normalizedFields addObject:FLEXObjCSemanticNormalizedText(field)];
-        [compactFields addObject:FLEXObjCSemanticCompactText(field)];
+        [normalized addObject:FLEXObjCSemanticNormalizedText(field)];
+        [compact addObject:FLEXObjCSemanticCompactText(field)];
+    }
+    row.normalizedSearchFields = normalized.copy;
+    row.compactSearchFields = compact.copy;
+    return row;
+}
+
+static BOOL FLEXObjCRowMatchesTerms(FLEXObjCHookRow *row,
+                                    NSArray<NSString *> *terms) {
+    if (terms.count == 0) {
+        return YES;
     }
 
     for (NSString *term in terms) {
         NSString *compactTerm = FLEXObjCSemanticCompactText(term);
         BOOL matched = NO;
-        for (NSUInteger index = 0; index < normalizedFields.count; index++) {
-            if ([normalizedFields[index] rangeOfString:term].location != NSNotFound ||
+        NSUInteger fieldCount = MIN(row.normalizedSearchFields.count,
+                                    row.compactSearchFields.count);
+        for (NSUInteger index = 0; index < fieldCount; index++) {
+            if ([row.normalizedSearchFields[index] rangeOfString:term].location != NSNotFound ||
                 (compactTerm.length &&
-                 [compactFields[index] rangeOfString:compactTerm].location != NSNotFound)) {
+                 [row.compactSearchFields[index] rangeOfString:compactTerm].location != NSNotFound)) {
                 matched = YES;
                 break;
             }
@@ -163,31 +222,36 @@ static BOOL FLEXObjCEntryMatchesTerms(FLEXHookEntry *entry,
     return YES;
 }
 
-static NSComparisonResult FLEXCompareObjCEntries(FLEXHookEntry *left,
-                                                  FLEXHookEntry *right) {
-    NSComparisonResult classResult = [FLEXObjCEntryClassName(left)
-        localizedCaseInsensitiveCompare:FLEXObjCEntryClassName(right)];
+static NSComparisonResult FLEXCompareObjCRows(FLEXObjCHookRow *left,
+                                               FLEXObjCHookRow *right) {
+    NSComparisonResult imageResult = [left.imageName
+        localizedCaseInsensitiveCompare:right.imageName];
+    if (imageResult != NSOrderedSame) {
+        return imageResult;
+    }
+    NSComparisonResult classResult = [left.className
+        localizedCaseInsensitiveCompare:right.className];
     if (classResult != NSOrderedSame) {
         return classResult;
     }
-    BOOL leftClassMethod = FLEXObjCEntryIsClassMethod(left);
-    BOOL rightClassMethod = FLEXObjCEntryIsClassMethod(right);
-    if (leftClassMethod != rightClassMethod) {
-        return leftClassMethod ? NSOrderedDescending : NSOrderedAscending;
+    if (left.classMethod != right.classMethod) {
+        return left.classMethod ? NSOrderedDescending : NSOrderedAscending;
     }
-    return [FLEXObjCEntrySelector(left)
-        localizedCaseInsensitiveCompare:FLEXObjCEntrySelector(right)];
+    return [left.selectorName localizedCaseInsensitiveCompare:right.selectorName];
 }
 
 @interface FLEXHookableObjCRuntimeViewController () <UISearchResultsUpdating>
 @property (nonatomic) dispatch_queue_t discoveryQueue;
+@property (nonatomic) dispatch_queue_t filterQueue;
 @property (nonatomic) BOOL scanning;
 @property (nonatomic) NSUInteger discoveryGeneration;
+@property (nonatomic) NSUInteger filterGeneration;
+@property (nonatomic) NSUInteger imageReloadGeneration;
 @property (nonatomic) UISearchController *searchController;
-@property (nonatomic) UIBarButtonItem *reloadItem;
-@property (nonatomic, copy) NSArray<FLEXHookEntry *> *catalogEntries;
-@property (nonatomic, copy) NSArray<NSString *> *sectionKeys;
-@property (nonatomic, copy) NSDictionary<NSString *, NSArray<FLEXHookEntry *> *> *entriesBySection;
+@property (nonatomic) UIBarButtonItem *applyItem;
+@property (nonatomic) UIBarButtonItem *moreItem;
+@property (nonatomic, copy) NSArray<FLEXObjCHookRow *> *allRows;
+@property (nonatomic, copy) NSArray<FLEXObjCHookGroup *> *visibleGroups;
 @end
 
 @implementation FLEXHookableObjCRuntimeViewController
@@ -199,9 +263,12 @@ static NSComparisonResult FLEXCompareObjCEntries(FLEXHookEntry *left,
             "com.allflexing.flex-objc-eligible-discovery",
             DISPATCH_QUEUE_SERIAL
         );
-        _catalogEntries = @[];
-        _sectionKeys = @[];
-        _entriesBySection = @{};
+        _filterQueue = dispatch_queue_create(
+            "com.allflexing.flex-objc-search-index",
+            DISPATCH_QUEUE_SERIAL
+        );
+        _allRows = @[];
+        _visibleGroups = @[];
     }
     return self;
 }
@@ -209,8 +276,10 @@ static NSComparisonResult FLEXCompareObjCEntries(FLEXHookEntry *left,
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.title = @"Objective-C Functions";
+    self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
     self.tableView.rowHeight = UITableViewAutomaticDimension;
-    self.tableView.estimatedRowHeight = 82.0;
+    self.tableView.estimatedRowHeight = 54.0;
+    self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
 
     self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
     self.searchController.obscuresBackgroundDuringPresentation = NO;
@@ -220,11 +289,20 @@ static NSComparisonResult FLEXCompareObjCEntries(FLEXHookEntry *left,
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;
 
-    self.reloadItem = [[UIBarButtonItem alloc]
-        initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh
-                             target:self
-                             action:@selector(reloadEligibleMethods)];
-    self.navigationItem.rightBarButtonItem = self.reloadItem;
+    self.applyItem = [[UIBarButtonItem alloc]
+        initWithTitle:@"Apply"
+                style:UIBarButtonItemStyleDone
+               target:self
+               action:@selector(applyPending)];
+    if (@available(iOS 26.0, *)) {
+        self.applyItem.style = UIBarButtonItemStyleProminent;
+    }
+
+    self.moreItem = [[UIBarButtonItem alloc]
+        initWithImage:[UIImage systemImageNamed:@"ellipsis.circle"]
+                 menu:[UIMenu menuWithChildren:@[]]];
+    self.moreItem.accessibilityLabel = @"Objective-C function actions";
+    self.navigationItem.rightBarButtonItems = @[self.applyItem, self.moreItem];
 
     [self setContentScrollView:self.tableView
                       forEdge:(NSDirectionalRectEdgeTop | NSDirectionalRectEdgeBottom)];
@@ -241,13 +319,16 @@ static NSComparisonResult FLEXCompareObjCEntries(FLEXHookEntry *left,
                name:FLEXRuntimeImagesDidChangeNotification
              object:nil];
 
+    [self updateNavigationActions];
     [self reloadEligibleMethods];
     [FLEXLiquidGlass applyToViewController:self];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    [self refreshCatalogStateFromRegistry];
+    self.navigationController.navigationBar.prefersLargeTitles = NO;
+    [self.tableView reloadData];
+    [self updateNavigationActions];
     [FLEXLiquidGlass applyToViewController:self];
 }
 
@@ -255,22 +336,24 @@ static NSComparisonResult FLEXCompareObjCEntries(FLEXHookEntry *left,
     [NSNotificationCenter.defaultCenter removeObserver:self];
 }
 
-- (void)registryChanged:(NSNotification *)notification {
-    (void)notification;
-    if (!NSThread.isMainThread) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [self refreshCatalogStateFromRegistry];
-        });
-        return;
-    }
-    [self refreshCatalogStateFromRegistry];
-}
+#pragma mark - Runtime discovery
 
 - (void)runtimeImagesChanged:(NSNotification *)notification {
     (void)notification;
-    if (self.viewIfLoaded.window && !self.scanning) {
-        [self reloadEligibleMethods];
+    if (!self.viewIfLoaded.window) {
+        return;
     }
+
+    NSUInteger generation = ++self.imageReloadGeneration;
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self || generation != self.imageReloadGeneration || self.scanning) {
+            return;
+        }
+        [self reloadEligibleMethods];
+    });
 }
 
 - (void)reloadEligibleMethods {
@@ -279,9 +362,8 @@ static NSComparisonResult FLEXCompareObjCEntries(FLEXHookEntry *left,
     }
 
     self.scanning = YES;
-    self.reloadItem.enabled = NO;
     NSUInteger generation = ++self.discoveryGeneration;
-    [self updateNavigationStatus];
+    [self updateNavigationActions];
     [self updateUnavailableConfiguration];
 
     __weak typeof(self) weakSelf = self;
@@ -306,7 +388,7 @@ static NSComparisonResult FLEXCompareObjCEntries(FLEXHookEntry *left,
                 instance:nil
                 inClasses:classes];
 
-            NSMutableDictionary<NSString *, FLEXHookEntry *> *entriesByIdentifier =
+            NSMutableDictionary<NSString *, FLEXHookEntry *> *discoveredByIdentifier =
                 [NSMutableDictionary dictionary];
             NSUInteger count = MIN(classes.count, methodLists.count);
             for (NSUInteger classIndex = 0; classIndex < count; classIndex++) {
@@ -316,152 +398,384 @@ static NSComparisonResult FLEXCompareObjCEntries(FLEXHookEntry *left,
                     if (!targetClass) {
                         continue;
                     }
+
                     for (FLEXMethod *method in methodLists[classIndex]) {
                         FLEXHookEntry *entry = [FLEXObjCHookResolver
                             entryForMethod:method
                               targetClass:targetClass];
-                        if (entry && entry.abi != FLEXHookABIUnknown &&
+                        if (entry && entry.available && entry.hookable &&
+                            entry.abi != FLEXHookABIUnknown &&
                             entry.identifier.length) {
-                            entriesByIdentifier[entry.identifier] = entry;
+                            discoveredByIdentifier[entry.identifier] = entry;
                         }
                     }
                 }
             }
 
-            NSArray<FLEXHookEntry *> *discovered = [entriesByIdentifier.allValues
-                sortedArrayUsingComparator:^NSComparisonResult(FLEXHookEntry *left,
-                                                                FLEXHookEntry *right) {
-                    NSComparisonResult imageResult = [FLEXObjCEntryImagePath(left)
-                        localizedCaseInsensitiveCompare:FLEXObjCEntryImagePath(right)];
-                    return imageResult == NSOrderedSame
-                        ? FLEXCompareObjCEntries(left, right)
-                        : imageResult;
-                }];
+            NSArray<FLEXHookEntry *> *discovered =
+                discoveredByIdentifier.allValues.copy;
+            FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
+            [registry mergeDiscoveredEntries:discovered
+                                      surface:FLEXHookSurfaceObjectiveC];
+
+            NSMutableArray<FLEXObjCHookRow *> *rows =
+                [NSMutableArray arrayWithCapacity:discovered.count];
+            for (FLEXHookEntry *candidate in discovered) {
+                FLEXHookEntry *current = [registry entryForIdentifier:candidate.identifier];
+                FLEXObjCHookRow *row = FLEXObjCRowForEntry(current);
+                if (row) {
+                    [rows addObject:row];
+                }
+            }
+            [rows sortUsingComparator:^NSComparisonResult(FLEXObjCHookRow *left,
+                                                           FLEXObjCHookRow *right) {
+                return FLEXCompareObjCRows(left, right);
+            }];
 
             dispatch_async(dispatch_get_main_queue(), ^{
                 __strong typeof(weakSelf) self = weakSelf;
                 if (!self || generation != self.discoveryGeneration) {
                     return;
                 }
-
-                FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
-                [registry mergeDiscoveredEntries:discovered
-                                          surface:FLEXHookSurfaceObjectiveC];
-
-                NSMutableArray<FLEXHookEntry *> *resolved =
-                    [NSMutableArray arrayWithCapacity:discovered.count];
-                for (FLEXHookEntry *entry in discovered) {
-                    FLEXHookEntry *current = [registry entryForIdentifier:entry.identifier];
-                    if (current) {
-                        [resolved addObject:current];
-                    }
-                }
-
-                self.catalogEntries = resolved.copy;
+                self.allRows = rows.copy;
                 self.scanning = NO;
-                self.reloadItem.enabled = YES;
-                [self rebuildSections];
+                [self scheduleFilterForQuery:self.searchController.searchBar.text ?: @""
+                                    immediate:YES];
+                [self updateNavigationActions];
             });
         }
     });
 }
 
-- (void)refreshCatalogStateFromRegistry {
-    if (self.catalogEntries.count == 0) {
-        [self rebuildSections];
-        return;
-    }
+#pragma mark - Indexed search and grouping
 
-    FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
-    NSMutableArray<FLEXHookEntry *> *updated =
-        [NSMutableArray arrayWithCapacity:self.catalogEntries.count];
-    for (FLEXHookEntry *entry in self.catalogEntries) {
-        FLEXHookEntry *current = [registry entryForIdentifier:entry.identifier];
-        if (current) {
-            [updated addObject:current];
+- (void)scheduleFilterForQuery:(NSString *)query immediate:(BOOL)immediate {
+    NSString *queryCopy = query.copy ?: @"";
+    NSArray<FLEXObjCHookRow *> *rows = self.allRows.copy;
+    NSUInteger generation = ++self.filterGeneration;
+    NSTimeInterval delay = immediate ? 0.0 : 0.18;
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                   self.filterQueue, ^{
+        @autoreleasepool {
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self || generation != self.filterGeneration) {
+                return;
+            }
+
+            NSArray<NSString *> *terms = FLEXObjCSemanticQueryTerms(queryCopy);
+            NSMutableArray<NSString *> *orderedKeys = [NSMutableArray array];
+            NSMutableDictionary<NSString *, NSMutableArray<FLEXObjCHookRow *> *> *groups =
+                [NSMutableDictionary dictionary];
+            NSMutableDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *metadata =
+                [NSMutableDictionary dictionary];
+
+            for (FLEXObjCHookRow *row in rows) {
+                if (!FLEXObjCRowMatchesTerms(row, terms)) {
+                    continue;
+                }
+                NSString *key = [NSString stringWithFormat:@"%@\n%@",
+                    row.imagePath ?: @"",
+                    row.className ?: @""];
+                NSMutableArray<FLEXObjCHookRow *> *bucket = groups[key];
+                if (!bucket) {
+                    bucket = [NSMutableArray array];
+                    groups[key] = bucket;
+                    metadata[key] = @{
+                        @"class": row.className.length ? row.className : @"Unknown class",
+                        @"image": row.imageName.length ? row.imageName : @"Unknown image",
+                    };
+                    [orderedKeys addObject:key];
+                }
+                [bucket addObject:row];
+            }
+
+            NSMutableArray<FLEXObjCHookGroup *> *result =
+                [NSMutableArray arrayWithCapacity:orderedKeys.count];
+            for (NSString *key in orderedKeys) {
+                FLEXObjCHookGroup *group = [FLEXObjCHookGroup new];
+                group.identifier = key;
+                group.className = metadata[key][@"class"];
+                group.imageName = metadata[key][@"image"];
+                group.rows = groups[key].copy;
+                [result addObject:group];
+            }
+
+            dispatch_async(dispatch_get_main_queue(), ^{
+                __strong typeof(weakSelf) self = weakSelf;
+                if (!self || generation != self.filterGeneration) {
+                    return;
+                }
+                self.visibleGroups = result.copy;
+                [self.tableView reloadData];
+                [self updateNavigationActions];
+                [self updateUnavailableConfiguration];
+            });
         }
-    }
-    self.catalogEntries = updated.copy;
-    [self rebuildSections];
-}
-
-- (void)rebuildSections {
-    NSArray<NSString *> *terms = FLEXObjCSemanticQueryTerms(
-        self.searchController.searchBar.text ?: @""
-    );
-    NSMutableDictionary<NSString *, NSMutableArray<FLEXHookEntry *> *> *groups =
-        [NSMutableDictionary dictionary];
-
-    for (FLEXHookEntry *entry in self.catalogEntries) {
-        if (!FLEXObjCEntryMatchesTerms(entry, terms)) {
-            continue;
-        }
-        NSString *imagePath = FLEXObjCEntryImagePath(entry);
-        NSString *sectionKey = imagePath.length
-            ? imagePath
-            : (entry.imageName.length ? entry.imageName : @"Unknown image");
-        NSMutableArray<FLEXHookEntry *> *group = groups[sectionKey];
-        if (!group) {
-            group = [NSMutableArray array];
-            groups[sectionKey] = group;
-        }
-        [group addObject:entry];
-    }
-
-    NSMutableDictionary<NSString *, NSArray<FLEXHookEntry *> *> *immutableGroups =
-        [NSMutableDictionary dictionaryWithCapacity:groups.count];
-    for (NSString *key in groups) {
-        immutableGroups[key] = [groups[key]
-            sortedArrayUsingComparator:^NSComparisonResult(FLEXHookEntry *left,
-                                                            FLEXHookEntry *right) {
-                return FLEXCompareObjCEntries(left, right);
-            }];
-    }
-
-    self.sectionKeys = [groups.allKeys sortedArrayUsingComparator:^NSComparisonResult(
-        NSString *left, NSString *right
-    ) {
-        NSComparisonResult shortResult = [left.lastPathComponent
-            localizedCaseInsensitiveCompare:right.lastPathComponent];
-        return shortResult == NSOrderedSame
-            ? [left localizedCaseInsensitiveCompare:right]
-            : shortResult;
-    }];
-    self.entriesBySection = immutableGroups.copy;
-    [self.tableView reloadData];
-    [self updateNavigationStatus];
-    [self updateUnavailableConfiguration];
-}
-
-- (FLEXHookEntry *)entryAtIndexPath:(NSIndexPath *)indexPath {
-    if (indexPath.section < 0 ||
-        indexPath.section >= (NSInteger)self.sectionKeys.count) {
-        return nil;
-    }
-    NSString *key = self.sectionKeys[(NSUInteger)indexPath.section];
-    NSArray<FLEXHookEntry *> *entries = self.entriesBySection[key] ?: @[];
-    if (indexPath.row < 0 || indexPath.row >= (NSInteger)entries.count) {
-        return nil;
-    }
-    return entries[(NSUInteger)indexPath.row];
+    });
 }
 
 - (NSUInteger)visibleEntryCount {
     NSUInteger count = 0;
-    for (NSString *key in self.sectionKeys) {
-        count += self.entriesBySection[key].count;
+    for (FLEXObjCHookGroup *group in self.visibleGroups) {
+        count += group.rows.count;
     }
     return count;
 }
 
-- (void)updateNavigationStatus {
-    NSString *status = self.scanning
-        ? @"Resolving eligible methods and Objective-C ABIs…"
-        : [NSString stringWithFormat:@"%lu eligible method%@ · ABI resolved",
-            (unsigned long)self.visibleEntryCount,
-            self.visibleEntryCount == 1 ? @"" : @"s"];
+- (FLEXObjCHookRow *)rowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section < 0 ||
+        indexPath.section >= (NSInteger)self.visibleGroups.count) {
+        return nil;
+    }
+    FLEXObjCHookGroup *group = self.visibleGroups[(NSUInteger)indexPath.section];
+    if (indexPath.row < 0 || indexPath.row >= (NSInteger)group.rows.count) {
+        return nil;
+    }
+    return group.rows[(NSUInteger)indexPath.row];
+}
+
+#pragma mark - Registry staging and apply
+
+- (void)registryChanged:(NSNotification *)notification {
+    (void)notification;
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self registryChanged:notification];
+        });
+        return;
+    }
+    [self.tableView reloadData];
+    [self updateNavigationActions];
+}
+
+- (void)toggleChanged:(UISwitch *)toggle {
+    NSString *identifier = objc_getAssociatedObject(toggle, kFLEXObjCBrowserEntryIDKey);
+    FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
+    FLEXHookEntry *entry = [registry entryForIdentifier:identifier];
+    BOOL requestedState = toggle.isOn;
+
+    if (!entry || (requestedState && (!entry.available || !entry.hookable))) {
+        toggle.on = entry ? entry.pendingEnabled : NO;
+        UINotificationFeedbackGenerator *feedback = [UINotificationFeedbackGenerator new];
+        [feedback notificationOccurred:UINotificationFeedbackTypeError];
+        return;
+    }
+
+    if (requestedState && !entry.userConfigured) {
+        [registry stageForceValue:YES forEntryIdentifier:identifier];
+    }
+    [registry stageEnabled:requestedState forEntryIdentifier:identifier];
+
+    FLEXHookEntry *staged = [registry entryForIdentifier:identifier];
+    BOOL accepted = staged && staged.pendingEnabled == requestedState;
+    [toggle setOn:staged ? staged.pendingEnabled : NO animated:YES];
+    toggle.enabled = staged &&
+        (((staged.available && staged.hookable) || staged.pendingEnabled) &&
+         !registry.isApplying);
+
+    if (accepted) {
+        UISelectionFeedbackGenerator *feedback = [UISelectionFeedbackGenerator new];
+        [feedback selectionChanged];
+    } else {
+        UINotificationFeedbackGenerator *feedback = [UINotificationFeedbackGenerator new];
+        [feedback notificationOccurred:UINotificationFeedbackTypeError];
+    }
+    [self updateNavigationActions];
+
+    // Row switches stage only. The existing Apply control commits the batch;
+    // applyEntryIdentifier:identifier is intentionally not called here.
+}
+
+- (void)applyPending {
+    FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
+    if (!registry.hasPendingChanges || registry.isApplying) {
+        return;
+    }
+
+    [self updateNavigationActions];
+    __weak typeof(self) weakSelf = self;
+    [registry applyPendingWithCompletion:^(NSArray<FLEXHookEntry *> *applied,
+                                           NSArray<FLEXHookEntry *> *failed) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self) {
+            return;
+        }
+        [self presentApplyResultApplied:applied failed:failed restartAfter:NO];
+    }];
+}
+
+- (void)applyAndCloseApp {
+    FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
+    if (registry.isApplying) {
+        return;
+    }
+    if (!registry.hasPendingChanges) {
+        [self confirmCloseAfterSuccessfulApply];
+        return;
+    }
+
+    __weak typeof(self) weakSelf = self;
+    [registry applyPendingWithCompletion:^(NSArray<FLEXHookEntry *> *applied,
+                                           NSArray<FLEXHookEntry *> *failed) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self) {
+            return;
+        }
+        [self presentApplyResultApplied:applied failed:failed restartAfter:YES];
+    }];
+}
+
+- (void)presentApplyResultApplied:(NSArray<FLEXHookEntry *> *)applied
+                           failed:(NSArray<FLEXHookEntry *> *)failed
+                     restartAfter:(BOOL)restartAfter {
+    [self.tableView reloadData];
+    [self updateNavigationActions];
+
+    if (failed.count) {
+        NSMutableArray<NSString *> *lines = [NSMutableArray array];
+        for (FLEXHookEntry *entry in failed) {
+            [lines addObject:[NSString stringWithFormat:@"%@ — %@",
+                entry.title ?: entry.identifier,
+                entry.lastError ?: @"Unknown apply error"]];
+            if (lines.count == 6) {
+                break;
+            }
+        }
+        NSString *message = [lines componentsJoinedByString:@"\n\n"];
+        UIAlertController *alert = [UIAlertController
+            alertControllerWithTitle:@"Apply failed"
+                             message:message
+                      preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+                                                  style:UIAlertActionStyleDefault
+                                                handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+        UINotificationFeedbackGenerator *feedback = [UINotificationFeedbackGenerator new];
+        [feedback notificationOccurred:UINotificationFeedbackTypeError];
+        return;
+    }
+
+    BOOL enabledWasApplied = NO;
+    for (FLEXHookEntry *entry in applied) {
+        if (entry.desiredEnabled) {
+            enabledWasApplied = YES;
+            break;
+        }
+    }
+    if (enabledWasApplied && !FLEXHookRegistry.hasPersistedConfirmedEntries) {
+        UIAlertController *alert = [UIAlertController
+            alertControllerWithTitle:@"Persistence failed"
+                             message:@"The hook was installed in this process, but its Apply-confirmed state was not readable from the host-scoped store. The app was not closed."
+                      preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+                                                  style:UIAlertActionStyleDefault
+                                                handler:nil]];
+        [self presentViewController:alert animated:YES completion:nil];
+        return;
+    }
+
+    UINotificationFeedbackGenerator *feedback = [UINotificationFeedbackGenerator new];
+    [feedback notificationOccurred:UINotificationFeedbackTypeSuccess];
+    if (restartAfter) {
+        [self confirmCloseAfterSuccessfulApply];
+    }
+}
+
+- (void)confirmCloseAfterSuccessfulApply {
+    BOOL synchronized = [FLEXPersistenceStore.sharedStore synchronizeNow];
+    if (!synchronized) {
+        NSString *message = FLEXPersistenceStore.sharedStore.lastError.length
+            ? FLEXPersistenceStore.sharedStore.lastError
+            : @"The host-scoped persistence store could not be synchronized.";
+        UIAlertController *error = [UIAlertController
+            alertControllerWithTitle:@"Could not save before closing"
+                             message:message
+                      preferredStyle:UIAlertControllerStyleAlert];
+        [error addAction:[UIAlertAction actionWithTitle:@"OK"
+                                                  style:UIAlertActionStyleDefault
+                                                handler:nil]];
+        [self presentViewController:error animated:YES completion:nil];
+        return;
+    }
+
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:@"Apply & Close"
+                         message:@"The confirmed hooks were synchronized. The app will close; open it again manually so launch re-arm can run."
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Close App"
+                                              style:UIAlertActionStyleDestructive
+                                            handler:^(__unused UIAlertAction *action) {
+        [NSUserDefaults.standardUserDefaults synchronize];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.35 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            exit(0);
+        });
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)discardPendingChanges {
+    [FLEXHookRegistry.sharedRegistry discardPendingChanges];
+    [self.tableView reloadData];
+    [self updateNavigationActions];
+}
+
+- (void)updateNavigationActions {
+    FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
+    BOOL applying = registry.isApplying;
+    BOOL hasPending = registry.hasPendingChanges;
+    self.applyItem.enabled = hasPending && !applying;
+    self.applyItem.title = applying ? @"Applying…" : @"Apply";
+
+    __weak typeof(self) weakSelf = self;
+    UIAction *reload = [UIAction
+        actionWithTitle:@"Reload eligible methods"
+                  image:[UIImage systemImageNamed:@"arrow.clockwise"]
+             identifier:nil
+                handler:^(__unused UIAction *action) {
+        [weakSelf reloadEligibleMethods];
+    }];
+    if (self.scanning || applying) {
+        reload.attributes = UIMenuElementAttributesDisabled;
+    }
+
+    UIAction *discard = [UIAction
+        actionWithTitle:@"Discard pending changes"
+                  image:[UIImage systemImageNamed:@"arrow.uturn.backward"]
+             identifier:nil
+                handler:^(__unused UIAction *action) {
+        [weakSelf discardPendingChanges];
+    }];
+    if (!hasPending || applying) {
+        discard.attributes = UIMenuElementAttributesDisabled;
+    }
+
+    UIAction *restart = [UIAction
+        actionWithTitle:@"Apply and close app"
+                  image:[UIImage systemImageNamed:@"arrow.clockwise.circle"]
+             identifier:nil
+                handler:^(__unused UIAction *action) {
+        [weakSelf applyAndCloseApp];
+    }];
+    if (applying) {
+        restart.attributes = UIMenuElementAttributesDisabled;
+    }
+
+    self.moreItem.menu = [UIMenu menuWithTitle:@"Objective-C functions"
+                                     children:@[reload, discard, restart]];
+
     if (@available(iOS 26.0, *)) {
-        self.navigationItem.subtitle = status;
+        self.navigationItem.subtitle = self.scanning
+            ? @"Resolving eligible methods…"
+            : [NSString stringWithFormat:@"%lu methods · %lu classes · %lu pending",
+                (unsigned long)self.visibleEntryCount,
+                (unsigned long)self.visibleGroups.count,
+                (unsigned long)registry.pendingCount];
     }
 }
 
@@ -478,10 +792,10 @@ static NSComparisonResult FLEXCompareObjCEntries(FLEXHookEntry *left,
                 : [UIContentUnavailableConfiguration emptyConfiguration]);
         configuration.text = self.scanning
             ? @"Resolving Objective-C functions"
-            : @"No eligible Objective-C functions";
+            : @"No hookable Objective-C methods";
         configuration.secondaryText = self.scanning
-            ? @"FLEX supplies runtime metadata while AllFLEXing validates each method and resolves its supported ABI."
-            : @"Only methods with a structurally valid encoding and a supported resolved ABI are listed.";
+            ? @"Discovery and ABI validation run away from the main thread."
+            : @"Only methods accepted by the active Objective-C hook engine are shown.";
         self.contentUnavailableConfiguration = configuration;
     }
 }
@@ -489,95 +803,104 @@ static NSComparisonResult FLEXCompareObjCEntries(FLEXHookEntry *left,
 #pragma mark - UISearchResultsUpdating
 
 - (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
-    (void)searchController;
-    [self rebuildSections];
+    [self scheduleFilterForQuery:searchController.searchBar.text ?: @""
+                        immediate:NO];
 }
 
 #pragma mark - UITableViewDataSource
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
     (void)tableView;
-    return self.sectionKeys.count;
+    return self.visibleGroups.count;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     (void)tableView;
-    if (section < 0 || section >= (NSInteger)self.sectionKeys.count) {
+    if (section < 0 || section >= (NSInteger)self.visibleGroups.count) {
         return 0;
     }
-    return self.entriesBySection[self.sectionKeys[(NSUInteger)section]].count;
+    return self.visibleGroups[(NSUInteger)section].rows.count;
 }
 
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    (void)tableView;
-    if (section < 0 || section >= (NSInteger)self.sectionKeys.count) {
+- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
+    if (section < 0 || section >= (NSInteger)self.visibleGroups.count) {
         return nil;
     }
-    NSString *key = self.sectionKeys[(NSUInteger)section];
-    NSString *name = key.lastPathComponent;
-    return name.length ? name : key;
+
+    static NSString *identifier = @"AllFLEXingObjCClassHeader";
+    UITableViewHeaderFooterView *header =
+        [tableView dequeueReusableHeaderFooterViewWithIdentifier:identifier];
+    if (!header) {
+        header = [[UITableViewHeaderFooterView alloc] initWithReuseIdentifier:identifier];
+    }
+
+    FLEXObjCHookGroup *group = self.visibleGroups[(NSUInteger)section];
+    UIListContentConfiguration *content = [UIListContentConfiguration groupedHeaderConfiguration];
+    content.text = group.className;
+    content.textProperties.font = [UIFont systemFontOfSize:12.0
+                                                   weight:UIFontWeightSemibold];
+    content.secondaryText = [NSString stringWithFormat:@"%@ · %lu method%@",
+        group.imageName,
+        (unsigned long)group.rows.count,
+        group.rows.count == 1 ? @"" : @"s"];
+    content.secondaryTextProperties.font = [UIFont systemFontOfSize:10.0];
+    content.secondaryTextProperties.color = UIColor.secondaryLabelColor;
+    header.contentConfiguration = content;
+    return header;
 }
 
-- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
     (void)tableView;
-    if (section != (NSInteger)self.sectionKeys.count - 1) {
-        return nil;
-    }
-    return @"Objective-C ABIs are derived from the real method encoding and are read-only. Manual ABI selection belongs to C Symbol Patcher.";
+    (void)section;
+    return UITableViewAutomaticDimension;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView
          cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    static NSString *identifier = @"AllFLEXingEligibleObjCMethodCell";
+    static NSString *identifier = @"AllFLEXingCompactObjCMethodCell";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:identifier];
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
                                       reuseIdentifier:identifier];
     }
 
-    FLEXHookEntry *entry = [self entryAtIndexPath:indexPath];
-    if (!entry) {
+    FLEXObjCHookRow *row = [self rowAtIndexPath:indexPath];
+    if (!row) {
         return cell;
     }
+    FLEXHookEntry *entry = [FLEXHookRegistry.sharedRegistry
+        entryForIdentifier:row.entry.identifier] ?: row.entry;
+    row.entry = entry;
 
-    NSString *className = FLEXObjCEntryClassName(entry);
-    NSString *selector = FLEXObjCEntrySelector(entry);
-    NSString *encoding = FLEXObjCEntryEncoding(entry);
-    NSString *prefix = FLEXObjCEntryIsClassMethod(entry) ? @"+" : @"-";
-    NSString *displayName = [NSString stringWithFormat:@"%@[%@ %@]",
-        prefix,
-        className.length ? className : @"UnknownClass",
-        selector.length ? selector : @"unknownSelector"];
-
+    NSString *prefix = row.classMethod ? @"+" : @"-";
     UIListContentConfiguration *content = [cell defaultContentConfiguration];
-    content.text = displayName;
-    content.textProperties.font = [UIFont systemFontOfSize:14.0
-                                                   weight:UIFontWeightSemibold];
-    content.secondaryText = [NSString stringWithFormat:
-        @"ABI resolved: %@\n%@ · %@\n%@",
+    content.text = [NSString stringWithFormat:@"%@ %@", prefix, row.selectorName];
+    content.textProperties.font = [UIFont systemFontOfSize:13.0
+                                                   weight:UIFontWeightMedium];
+    content.secondaryText = [NSString stringWithFormat:@"ABI resolved: %@ · %@\n%@",
         FLEXHookABIName(entry.abi),
-        encoding.length ? encoding : @"No encoding",
-        FLEXHookBackendName(entry.backend),
+        row.encoding.length ? row.encoding : @"No encoding",
         entry.statusSummary];
-    content.secondaryTextProperties.numberOfLines = 0;
-    content.secondaryTextProperties.font = [UIFont systemFontOfSize:11.5];
-    content.image = [UIImage systemImageNamed:FLEXObjCEntryIsClassMethod(entry)
-        ? @"c.square"
-        : @"m.square"];
+    content.secondaryTextProperties.numberOfLines = 2;
+    content.secondaryTextProperties.font = [UIFont systemFontOfSize:10.5];
+    content.image = [UIImage systemImageNamed:row.classMethod ? @"c.square" : @"m.square"];
+    content.imageProperties.preferredSymbolConfiguration =
+        [UIImageSymbolConfiguration configurationWithPointSize:13.0
+                                                        weight:UIImageSymbolWeightRegular];
     content.imageProperties.tintColor = entry.effectiveEnabled
         ? (entry.overrideHitCount > 0 ? UIColor.systemGreenColor : UIColor.systemBlueColor)
-        : (entry.hookable ? self.view.tintColor : UIColor.secondaryLabelColor);
+        : self.view.tintColor;
     cell.contentConfiguration = content;
     cell.selectionStyle = UITableViewCellSelectionStyleDefault;
     cell.accessoryType = UITableViewCellAccessoryNone;
 
     UISwitch *toggle = [UISwitch new];
     toggle.on = entry.pendingEnabled;
-    toggle.enabled = ((entry.available && entry.hookable) || entry.pendingEnabled) &&
-                     !FLEXHookRegistry.sharedRegistry.isApplying;
+    toggle.enabled = (((entry.available && entry.hookable) || entry.pendingEnabled) &&
+                      !FLEXHookRegistry.sharedRegistry.isApplying);
     [toggle sizeToFit];
-    toggle.accessibilityLabel = [NSString stringWithFormat:
-        @"Objective-C runtime hook for %@", displayName];
+    toggle.accessibilityLabel = [NSString stringWithFormat:@"Runtime hook for %@ %@",
+        prefix, row.selectorName];
     toggle.accessibilityValue = entry.statusSummary;
     objc_setAssociatedObject(toggle,
                              kFLEXObjCBrowserEntryIDKey,
@@ -595,82 +918,17 @@ static NSComparisonResult FLEXCompareObjCEntries(FLEXHookEntry *left,
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    FLEXHookEntry *entry = [self entryAtIndexPath:indexPath];
+    FLEXObjCHookRow *row = [self rowAtIndexPath:indexPath];
+    FLEXHookEntry *entry = row
+        ? [FLEXHookRegistry.sharedRegistry entryForIdentifier:row.entry.identifier]
+        : nil;
     if (!entry) {
         return;
     }
+
     FLEXHookEntryDetailController *detail =
         [[FLEXHookEntryDetailController alloc] initWithEntry:entry];
     [self.navigationController pushViewController:detail animated:YES];
-}
-
-- (void)toggleChanged:(UISwitch *)toggle {
-    NSString *identifier = objc_getAssociatedObject(toggle, kFLEXObjCBrowserEntryIDKey);
-    FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
-    FLEXHookEntry *entry = [registry entryForIdentifier:identifier];
-    BOOL requestedState = toggle.isOn;
-
-    if (!entry || (requestedState && (!entry.available || !entry.hookable))) {
-        toggle.on = entry ? entry.pendingEnabled : NO;
-        UINotificationFeedbackGenerator *feedback = [UINotificationFeedbackGenerator new];
-        [feedback notificationOccurred:UINotificationFeedbackTypeError];
-        return;
-    }
-
-    toggle.enabled = NO;
-    if (requestedState && !entry.userConfigured) {
-        [registry stageForceValue:YES forEntryIdentifier:identifier];
-    }
-    [registry stageEnabled:requestedState forEntryIdentifier:identifier];
-
-    FLEXHookEntry *staged = [registry entryForIdentifier:identifier];
-    if (!staged || staged.pendingEnabled != requestedState) {
-        toggle.on = staged ? staged.pendingEnabled : NO;
-        toggle.enabled = YES;
-        UINotificationFeedbackGenerator *feedback = [UINotificationFeedbackGenerator new];
-        [feedback notificationOccurred:UINotificationFeedbackTypeError];
-        return;
-    }
-
-    __weak typeof(self) weakSelf = self;
-    [registry applyEntryIdentifier:identifier
-                        completion:^(NSArray<FLEXHookEntry *> *applied,
-                                     NSArray<FLEXHookEntry *> *failed) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            __strong typeof(weakSelf) self = weakSelf;
-            if (!self) {
-                return;
-            }
-
-            BOOL didFail = NO;
-            for (FLEXHookEntry *failedEntry in failed) {
-                if ([failedEntry.identifier isEqualToString:identifier]) {
-                    didFail = YES;
-                    break;
-                }
-            }
-
-            FLEXHookEntry *current = [registry entryForIdentifier:identifier];
-            if (didFail || !current) {
-                UINotificationFeedbackGenerator *feedback =
-                    [UINotificationFeedbackGenerator new];
-                [feedback notificationOccurred:UINotificationFeedbackTypeError];
-            } else if (!requestedState) {
-                UISelectionFeedbackGenerator *feedback =
-                    [UISelectionFeedbackGenerator new];
-                [feedback selectionChanged];
-            } else {
-                UINotificationFeedbackGenerator *feedback =
-                    [UINotificationFeedbackGenerator new];
-                [feedback notificationOccurred:current.overrideHitCount > 0
-                    ? UINotificationFeedbackTypeSuccess
-                    : UINotificationFeedbackTypeWarning];
-            }
-
-            (void)applied;
-            [self refreshCatalogStateFromRegistry];
-        });
-    }];
 }
 
 @end
