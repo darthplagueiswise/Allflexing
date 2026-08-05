@@ -27,14 +27,14 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"C Runtime";
+    self.title = @"C Symbol Patcher";
     self.tableView.rowHeight = UITableViewAutomaticDimension;
-    self.tableView.estimatedRowHeight = 74.0;
+    self.tableView.estimatedRowHeight = 82.0;
 
     self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
     self.searchController.obscuresBackgroundDuringPresentation = NO;
     self.searchController.searchResultsUpdater = self;
-    self.searchController.searchBar.placeholder = @"Symbol or image";
+    self.searchController.searchBar.placeholder = @"Symbol, image or ABI";
     self.navigationItem.searchController = self.searchController;
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;
@@ -91,6 +91,12 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
 
 - (void)registryChanged:(NSNotification *)notification {
     (void)notification;
+    if (!NSThread.isMainThread) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self reloadEntries];
+        });
+        return;
+    }
     [self reloadEntries];
 }
 
@@ -112,8 +118,13 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
             continue;
         }
         if (query.length) {
-            NSString *haystack = [NSString stringWithFormat:@"%@ %@ %@ %@",
-                entry.title, entry.detail, entry.imageName, entry.identifier].lowercaseString;
+            NSString *haystack = [NSString stringWithFormat:@"%@ %@ %@ %@ %@ %@",
+                entry.title ?: @"",
+                entry.detail ?: @"",
+                entry.imageName ?: @"",
+                entry.identifier ?: @"",
+                FLEXHookABIName(entry.abi),
+                FLEXHookBackendName(entry.backend)].lowercaseString;
             if ([haystack rangeOfString:query].location == NSNotFound) {
                 continue;
             }
@@ -171,8 +182,8 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
 - (void)addManualSymbol:(UIBarButtonItem *)sender {
     (void)sender;
     UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:@"Add inline C target"
-                         message:@"The symbol must resolve in the current process. Choose its exact ABI on the next screen."
+        alertControllerWithTitle:@"Add C symbol target"
+                         message:@"The symbol must resolve in the current process. C signatures are not inferable from the symbol name, so choose the exact ABI in the detail screen."
                   preferredStyle:UIAlertControllerStyleAlert];
     [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
         field.placeholder = @"Symbol name";
@@ -226,7 +237,7 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
 
 - (UITableViewCell *)tableView:(UITableView *)tableView
          cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    static NSString *identifier = @"AllFLEXingCRuntimeBrowserCell";
+    static NSString *identifier = @"AllFLEXingCSymbolPatcherCell";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:identifier];
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
@@ -235,9 +246,17 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
     FLEXHookEntry *entry = self.filteredEntries[indexPath.row];
     UIListContentConfiguration *content = [cell defaultContentConfiguration];
     content.text = entry.title;
-    content.secondaryText = [NSString stringWithFormat:@"%@\n%@ · %@",
-        entry.detail, entry.imageName, entry.statusSummary];
+    content.textProperties.font = [UIFont systemFontOfSize:14.0
+                                                   weight:UIFontWeightSemibold];
+    content.secondaryText = [NSString stringWithFormat:
+        @"%@\nABI: %@ · %@\n%@ · %@",
+        entry.detail,
+        FLEXHookABIName(entry.abi),
+        FLEXHookBackendName(entry.backend),
+        entry.imageName,
+        entry.statusSummary];
     content.secondaryTextProperties.numberOfLines = 0;
+    content.secondaryTextProperties.font = [UIFont systemFontOfSize:11.5];
     content.image = [UIImage systemImageNamed:entry.effectiveEnabled
         ? (entry.overrideHitCount > 0 ? @"checkmark.circle.fill" : @"bolt.circle.fill")
         : (entry.hookable ? @"circle.dashed" : @"eye")];
@@ -249,9 +268,10 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
 
     UISwitch *toggle = [UISwitch new];
     toggle.on = entry.pendingEnabled;
-    toggle.enabled = (entry.available && entry.hookable) || entry.pendingEnabled;
+    toggle.enabled = ((entry.available && entry.hookable) || entry.pendingEnabled) &&
+                     !FLEXHookRegistry.sharedRegistry.isApplying;
     [toggle sizeToFit];
-    toggle.accessibilityLabel = [NSString stringWithFormat:@"Runtime hook for %@", entry.title];
+    toggle.accessibilityLabel = [NSString stringWithFormat:@"C symbol patch for %@", entry.title];
     toggle.accessibilityValue = entry.statusSummary;
     objc_setAssociatedObject(toggle,
                              kFLEXRuntimeBrowserEntryIDKey,
@@ -268,8 +288,9 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
 - (void)updateNavigationStatus {
     NSString *status = self.scanning
         ? @"Scanning Mach-O imports in the background…"
-        : [NSString stringWithFormat:@"%lu discovered target(s)",
-            (unsigned long)self.filteredEntries.count];
+        : [NSString stringWithFormat:@"%lu C symbol target%@",
+            (unsigned long)self.filteredEntries.count,
+            self.filteredEntries.count == 1 ? @"" : @"s"];
     if (@available(iOS 26.0, *)) {
         self.navigationItem.subtitle = status;
     }
@@ -286,10 +307,10 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
             : (self.searchController.searchBar.text.length
                 ? [UIContentUnavailableConfiguration searchConfiguration]
                 : [UIContentUnavailableConfiguration emptyConfiguration]);
-        configuration.text = self.scanning ? @"Scanning C runtime" : @"No matching C targets";
+        configuration.text = self.scanning ? @"Scanning C symbols" : @"No matching C symbols";
         configuration.secondaryText = self.scanning
             ? @"Mach-O bind inspection is running away from the main thread."
-            : @"Change the search, then scan again.";
+            : @"Change the search or add a symbol manually. ABI selection remains explicit.";
         self.contentUnavailableConfiguration = configuration;
     }
 }
@@ -300,14 +321,15 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
     if (self.scanning) {
         return @"Scanning Mach-O imports…";
     }
-    return [NSString stringWithFormat:@"%lu C runtime entries",
-        (unsigned long)self.filteredEntries.count];
+    return [NSString stringWithFormat:@"%lu C symbol target%@",
+        (unsigned long)self.filteredEntries.count,
+        self.filteredEntries.count == 1 ? @"" : @"s"];
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
     (void)tableView;
     (void)section;
-    return @"Imported symbols come from Mach-O bind sections. Toggles change pending state only; Apply installs the selected ABI/backend.";
+    return @"C Symbol Patcher cannot infer a function signature from its name. Open a row, choose the exact ABI and valid backend, then Apply installs only that target.";
 }
 
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -321,21 +343,71 @@ static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKe
 - (void)toggleChanged:(UISwitch *)toggle {
     NSString *identifier = objc_getAssociatedObject(toggle, kFLEXRuntimeBrowserEntryIDKey);
     FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
-    BOOL requestedState = toggle.isOn;
     FLEXHookEntry *entry = [registry entryForIdentifier:identifier];
-    if (requestedState && entry && !entry.userConfigured) {
+    BOOL requestedState = toggle.isOn;
+
+    if (!entry || (requestedState && (!entry.available || !entry.hookable ||
+                                      entry.abi == FLEXHookABIUnknown))) {
+        toggle.on = entry ? entry.pendingEnabled : NO;
+        UINotificationFeedbackGenerator *feedback = [UINotificationFeedbackGenerator new];
+        [feedback notificationOccurred:UINotificationFeedbackTypeError];
+        return;
+    }
+
+    toggle.enabled = NO;
+    if (requestedState && !entry.userConfigured) {
         [registry stageForceValue:YES forEntryIdentifier:identifier];
     }
     [registry stageEnabled:requestedState forEntryIdentifier:identifier];
-    entry = [registry entryForIdentifier:identifier];
-    if (!entry || entry.pendingEnabled != requestedState) {
+
+    FLEXHookEntry *staged = [registry entryForIdentifier:identifier];
+    if (!staged || staged.pendingEnabled != requestedState) {
+        toggle.on = staged ? staged.pendingEnabled : NO;
+        toggle.enabled = YES;
         UINotificationFeedbackGenerator *feedback = [UINotificationFeedbackGenerator new];
         [feedback notificationOccurred:UINotificationFeedbackTypeError];
-    } else {
-        UISelectionFeedbackGenerator *feedback = [UISelectionFeedbackGenerator new];
-        [feedback selectionChanged];
+        return;
     }
-    [self reloadEntries];
+
+    __weak typeof(self) weakSelf = self;
+    [registry applyEntryIdentifier:identifier
+                        completion:^(NSArray<FLEXHookEntry *> *applied,
+                                     NSArray<FLEXHookEntry *> *failed) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self) {
+                return;
+            }
+
+            BOOL didFail = NO;
+            for (FLEXHookEntry *failedEntry in failed) {
+                if ([failedEntry.identifier isEqualToString:identifier]) {
+                    didFail = YES;
+                    break;
+                }
+            }
+
+            FLEXHookEntry *current = [registry entryForIdentifier:identifier];
+            if (didFail || !current) {
+                UINotificationFeedbackGenerator *feedback =
+                    [UINotificationFeedbackGenerator new];
+                [feedback notificationOccurred:UINotificationFeedbackTypeError];
+            } else if (!requestedState) {
+                UISelectionFeedbackGenerator *feedback =
+                    [UISelectionFeedbackGenerator new];
+                [feedback selectionChanged];
+            } else {
+                UINotificationFeedbackGenerator *feedback =
+                    [UINotificationFeedbackGenerator new];
+                [feedback notificationOccurred:current.overrideHitCount > 0
+                    ? UINotificationFeedbackTypeSuccess
+                    : UINotificationFeedbackTypeWarning];
+            }
+
+            (void)applied;
+            [self reloadEntries];
+        });
+    }];
 }
 
 @end
