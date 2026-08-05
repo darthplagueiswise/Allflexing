@@ -45,6 +45,12 @@ def body_for_void_method(text: str, selector: str) -> str:
     return match.group(1)
 
 
+def executable_code(text: str) -> str:
+    """Remove comments before checking whether a forbidden call is executable."""
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    return re.sub(r"//[^\n]*", "", text)
+
+
 def main() -> None:
     resolver = RESOLVER.read_text(encoding="utf-8")
     header = HEADER.read_text(encoding="utf-8")
@@ -102,11 +108,13 @@ def main() -> None:
     ]:
         require(controller, marker, "compact grouped browser contract")
 
-    search_body = body_for_void_method(controller, "updateSearchResultsForSearchController")
+    search_body = executable_code(
+        body_for_void_method(controller, "updateSearchResultsForSearchController")
+    )
     require(search_body, "scheduleFilterForQuery", "off-main indexed filter scheduling")
     forbid(search_body, "reloadData", "synchronous per-keystroke table rebuild")
 
-    toggle_body = body_for_void_method(controller, "toggleChanged")
+    toggle_body = executable_code(body_for_void_method(controller, "toggleChanged"))
     require(toggle_body, "stageEnabled:requestedState", "staged toggle")
     forbid(toggle_body, "applyEntryIdentifier", "immediate toggle install")
     forbid(toggle_body, "applyPendingWithCompletion", "immediate toggle batch install")
