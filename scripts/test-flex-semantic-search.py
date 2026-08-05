@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Executable contract tests for the FLEX-backed eligible Objective-C list."""
+"""Executable contract tests for the compact indexed Objective-C hook browser."""
 
 from __future__ import annotations
 
+import re
 import sys
 import unicodedata
 from pathlib import Path
@@ -26,9 +27,8 @@ def normalize(value: str) -> str:
                 output.append(" ")
             continue
 
-        is_upper = character.isupper()
         boundary = False
-        if index > 0 and is_upper:
+        if index > 0 and character.isupper():
             previous = value[index - 1]
             next_is_lower = index + 1 < len(value) and value[index + 1].islower()
             boundary = previous.islower() or previous.isdigit() or (
@@ -72,6 +72,17 @@ def forbid(text: str, marker: str, label: str) -> None:
         raise AssertionError(f"forbidden {label}: {marker}")
 
 
+def method_body(text: str, selector: str) -> str:
+    match = re.search(
+        rf"- \(void\){re.escape(selector)}:\([^)]*\)[^{{]*\{{(.*?)\n\}}",
+        text,
+        re.S,
+    )
+    if not match:
+        raise AssertionError(f"method body not found: {selector}:")
+    return match.group(1)
+
+
 def main() -> None:
     fields = [
         "FBConfigManager",
@@ -112,15 +123,36 @@ def main() -> None:
         "classesForToken:FLEXSearchToken.any",
         "methodsForToken:FLEXSearchToken.any",
         "entryForMethod:method",
+        "entry.available && entry.hookable",
         "entry.abi != FLEXHookABIUnknown",
         "mergeDiscoveredEntries:discovered",
         "surface:FLEXHookSurfaceObjectiveC",
+        "FLEXObjCBuildSearchFields",
+        "normalizedSearchFields",
+        "compactSearchFields",
+        "com.allflexing.flex-objc-search-index",
+        "delay = immediate ? 0.0 : 0.18",
+        "FLEXObjCHookGroup",
+        "group.className",
         "ABI resolved:",
         "Class, selector, ABI or image",
-        "applyEntryIdentifier:identifier",
-        "FLEXObjCSemanticCompactText",
+        "stageEnabled:requestedState",
+        "applyPendingWithCompletion",
+        "Apply and close app",
+        "UINavigationItemLargeTitleDisplayModeNever",
+        "estimatedRowHeight = 54.0",
     ]:
-        require(controller, marker, "direct eligible-method browser contract")
+        require(controller, marker, "indexed grouped Objective-C browser contract")
+
+    search_body = method_body(controller, "updateSearchResultsForSearchController")
+    require(search_body, "scheduleFilterForQuery", "debounced search dispatch")
+    forbid(search_body, "reloadData", "main-thread full-list filtering")
+    forbid(search_body, "FLEXObjCRowMatchesTerms", "main-thread row scan")
+
+    toggle_body = method_body(controller, "toggleChanged")
+    require(toggle_body, "stageEnabled:requestedState", "staged row state")
+    forbid(toggle_body, "applyEntryIdentifier", "immediate row apply")
+    forbid(toggle_body, "applyPendingWithCompletion", "immediate batch apply")
 
     for marker in [
         "C Symbol Patcher",
@@ -147,8 +179,8 @@ def main() -> None:
         forbid(scanner, forbidden, "parallel Objective-C scanner")
 
     print(
-        "FLEX-backed direct eligible Objective-C method list, resolved ABI display, "
-        "semantic AND matching, and explicit C Symbol Patcher ABI contract: OK"
+        "FLEX-backed indexed Objective-C discovery, off-main debounced search, "
+        "class/image grouping, staged Apply, and C Symbol Patcher ABI contract: OK"
     )
 
 
