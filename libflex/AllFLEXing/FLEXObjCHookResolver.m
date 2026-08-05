@@ -29,6 +29,8 @@ static BOOL FLEXHookSelectorIsSafeCandidate(SEL selector) {
     return strncmp(name, "set", 3) != 0 &&
            strncmp(name, "init", 4) != 0 &&
            strcmp(name, "dealloc") != 0 &&
+           strcmp(name, "forwardInvocation:") != 0 &&
+           strcmp(name, "methodSignatureForSelector:") != 0 &&
            strcmp(name, "isEqual:") != 0 &&
            strcmp(name, "respondsToSelector:") != 0;
 }
@@ -43,11 +45,9 @@ static NSUInteger FLEXHookSelectorArgumentCount(NSString *selectorName) {
     return count;
 }
 
-/// FLEX renders method rows by pairing selector components with the argument
-/// count supplied by the Objective-C runtime. Some runtime-generated or
-/// malformed methods expose a selector and type encoding that disagree. Those
-/// methods are valid enough to exist in the runtime, but not safe to render or
-/// hook through FLEX's metadata UI. Reject them before they enter the browser.
+/// Reject runtime-generated or malformed method metadata before it reaches the
+/// browser or hook provider. FLEX is used for discovery/reflection, but the
+/// runtime C metadata is the source of truth for hook eligibility.
 static BOOL FLEXHookMethodMetadataIsStructurallySafe(FLEXMethod *method) {
     Method runtimeMethod = method.objc_method;
     if (!runtimeMethod || !method.selector || method.selectorString.length == 0) {
@@ -69,8 +69,6 @@ static BOOL FLEXHookMethodMetadataIsStructurallySafe(FLEXMethod *method) {
         return NO;
     }
 
-    // Validate every runtime argument through the C runtime only. This avoids
-    // invoking FLEX's pretty-printer while deciding whether a row is safe.
     for (unsigned int index = 0; index < argumentCount; index++) {
         char argumentType[128] = {0};
         method_getArgumentType(runtimeMethod, index, argumentType, sizeof(argumentType));
@@ -89,7 +87,29 @@ static BOOL FLEXHookMethodMetadataIsStructurallySafe(FLEXMethod *method) {
         return NO;
     }
 
-    return YES;
+    return method_getImplementation(runtimeMethod) != NULL;
+}
+
+/// A FLEXMethod can be produced while walking a hierarchy. Before advertising
+/// it as hookable, confirm that the selected class actually resolves the same
+/// selector and exact encoding in the instance/class dispatch lane.
+static BOOL FLEXHookMethodResolvesInClass(FLEXMethod *method, Class targetClass) {
+    if (!targetClass || !method.selector || !method.objc_method) {
+        return NO;
+    }
+
+    BOOL classMethod = !method.isInstanceMethod;
+    Method resolved = classMethod
+        ? class_getClassMethod(targetClass, method.selector)
+        : class_getInstanceMethod(targetClass, method.selector);
+    if (!resolved || !method_getImplementation(resolved)) {
+        return NO;
+    }
+
+    const char *sourceEncoding = method_getTypeEncoding(method.objc_method);
+    const char *resolvedEncoding = method_getTypeEncoding(resolved);
+    return sourceEncoding && resolvedEncoding &&
+        strcmp(sourceEncoding, resolvedEncoding) == 0;
 }
 
 static FLEXHookABI FLEXHookABIForFLEXMethod(FLEXMethod *method) {
@@ -148,6 +168,7 @@ static NSString *FLEXHookStableObjectiveCIdentifier(NSString *image,
         return NO;
     }
     if (!FLEXHookMethodMetadataIsStructurallySafe(method) ||
+        !FLEXHookMethodResolvesInClass(method, targetClass) ||
         !FLEXHookSelectorIsSafeCandidate(method.selector) ||
         FLEXHookABIForFLEXMethod(method) == FLEXHookABIUnknown) {
         return NO;
@@ -180,12 +201,16 @@ static NSString *FLEXHookStableObjectiveCIdentifier(NSString *image,
 
     BOOL providerAvailable = FLEXMSHookMessageProviderAvailable();
     BOOL engineEnabled = FLEXFlag(@"engine.objc_ellekit");
+    BOOL executableNow = providerAvailable && engineEnabled;
 
     FLEXHookEntry *entry = [FLEXHookEntry new];
     entry.identifier = FLEXHookStableObjectiveCIdentifier(
         image, className, selectorName, classMethod
     );
-    entry.title = [method debugNameGivenClassName:className];
+    entry.title = [NSString stringWithFormat:@"%@[%@ %@]",
+        classMethod ? @"+" : @"-",
+        className ?: @"UnknownClass",
+        selectorName ?: @"unknownSelector"];
     entry.detail = [NSString stringWithFormat:@"%@ · %@",
         FLEXHookABIName(abi), encoding];
     entry.imageName = image.lastPathComponent ?: image;
@@ -199,8 +224,8 @@ static NSString *FLEXHookStableObjectiveCIdentifier(NSString *image,
         @"encoding": encoding,
         @"image": image ?: @"",
     });
-    entry.available = providerAvailable;
-    entry.hookable = providerAvailable && engineEnabled;
+    entry.available = executableNow;
+    entry.hookable = executableNow;
     entry.stale = NO;
     if (!providerAvailable) {
         entry.lastError = @"Substrate-compatible provider unavailable";
