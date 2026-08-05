@@ -68,10 +68,11 @@ jobs:
           path: ${{ env.THEOS }}/sdks
           key: iphoneos-26.2-sdk-v1
 
-      - name: Test FLEX semantic runtime search
+      - name: Test FLEX semantic and grouped Objective-C search
         run: |
           cd main
           python3 scripts/test-flex-semantic-search.py
+          python3 scripts/test-objc-browser-safety.py
 
       - name: Validate SDK and Liquid Glass integration
         run: |
