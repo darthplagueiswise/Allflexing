@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Source contract for the crash-safe grouped Objective-C hook browser."""
+"""Source contract for the crash-safe direct Objective-C hook browser."""
 
 from __future__ import annotations
 
@@ -8,9 +8,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RESOLVER = ROOT / "libflex/AllFLEXing/FLEXObjCHookResolver.m"
-EXPLORER = ROOT / "libflex/AllFLEXing/FLEXHookableObjectExplorerViewController.m"
+HEADER = ROOT / "libflex/AllFLEXing/FLEXHookableObjCRuntimeViewController.h"
+CONTROLLER = ROOT / "libflex/AllFLEXing/FLEXHookableObjCRuntimeViewController.m"
+MODULE = ROOT / "libflex/modules/HookRuntime/Module.mk"
 TRANSFORMER = ROOT / "scripts/apply-flex-method-rendering-safety.py"
 BUILD = ROOT / "build.sh"
+OBSOLETE_EXPLORER_M = ROOT / "libflex/AllFLEXing/FLEXHookableObjectExplorerViewController.m"
+OBSOLETE_EXPLORER_H = ROOT / "libflex/AllFLEXing/FLEXHookableObjectExplorerViewController.h"
 
 
 def require(text: str, marker: str, label: str) -> None:
@@ -31,7 +35,9 @@ def selector_is_structurally_safe(selector: str, runtime_argument_count: int) ->
 
 def main() -> None:
     resolver = RESOLVER.read_text(encoding="utf-8")
-    explorer = EXPLORER.read_text(encoding="utf-8")
+    header = HEADER.read_text(encoding="utf-8")
+    controller = CONTROLLER.read_text(encoding="utf-8")
+    module = MODULE.read_text(encoding="utf-8")
     transformer = TRANSFORMER.read_text(encoding="utf-8")
     build = BUILD.read_text(encoding="utf-8")
 
@@ -47,25 +53,36 @@ def main() -> None:
         "method.signature.numberOfArguments < argumentCount",
         "FLEXHookSelectorArgumentCount(method.selectorString) != explicitArguments",
         "method_getArgumentType(runtimeMethod, index",
+        "FLEXHookABIForFLEXMethod",
     ]:
         require(resolver, marker, "resolver safety contract")
 
     for marker in [
-        "FLEXHookableGroupSection",
-        "FLEXHookableEntryListController",
-        "Instance properties",
-        "Class properties",
-        "Instance methods",
-        "Class methods",
-        "Search name, selector, ABI or encoding",
-        "allflexing_goBack:",
-        "setNavigationBarHidden:NO",
-        "FLEXHookableEntryMatches",
+        "UITableViewController",
+        "lists only methods with",
+        "concrete supported ABI",
     ]:
-        require(explorer, marker, "grouped browser contract")
+        require(header, marker, "custom presentation interface")
 
-    forbid(explorer, "FLEXMetadataSection", "crash-prone FLEX metadata row renderer")
-    forbid(explorer, "method.description", "pretty-printer during list filtering")
+    for marker in [
+        "Objective-C Functions",
+        "Resolving eligible methods and Objective-C ABIs",
+        "FLEXObjCEntryEncoding",
+        "FLEXHookABIName(entry.abi)",
+        "entryForMethod:method",
+        "entryAtIndexPath:",
+        "ABI resolved:",
+        "applyEntryIdentifier:identifier",
+    ]:
+        require(controller, marker, "direct browser contract")
+
+    forbid(controller, "method.description", "FLEX pretty-printer during discovery or filtering")
+    forbid(controller, "FLEXMetadataSection", "crash-prone metadata renderer")
+    forbid(controller, "FLEXObjcRuntimeViewController", "native browser presentation inheritance")
+    forbid(module, "FLEXHookableObjectExplorerViewController.m", "obsolete explorer source")
+
+    if OBSOLETE_EXPLORER_M.exists() or OBSOLETE_EXPLORER_H.exists():
+        raise AssertionError("obsolete class-explorer presentation files still exist")
 
     for marker in [
         "AllFLEXing malformed selector/type-encoding rendering guard",
@@ -75,10 +92,11 @@ def main() -> None:
         require(transformer, marker, "pinned FLEX defensive rendering patch")
 
     require(build, "apply-flex-method-rendering-safety.py", "build transformer wiring")
+    forbid(build, "apply-flex-runtime-extension-v2.py", "native runtime-browser transformer")
 
     print(
-        "Objective-C browser structural filter, grouped submenus, semantic list "
-        "search, explicit back navigation, and FLEX fail-closed rendering: OK"
+        "Objective-C structural filter, direct ABI-resolved list, stable per-ID actions, "
+        "and FLEX fail-closed rendering: OK"
     )
 
 
