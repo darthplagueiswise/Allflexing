@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
-"""Executable contract tests for AllFLEXing's FLEX-backed search semantics."""
+"""Executable contract tests for the FLEX-backed eligible Objective-C list."""
 
 from __future__ import annotations
 
-import re
 import sys
 import unicodedata
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+HEADER = ROOT / "libflex/AllFLEXing/FLEXHookableObjCRuntimeViewController.h"
 CONTROLLER = ROOT / "libflex/AllFLEXing/FLEXHookableObjCRuntimeViewController.m"
+C_PATCHER = ROOT / "libflex/AllFLEXing/FLEXRuntimeBrowserController.m"
 SCANNER = ROOT / "libflex/AllFLEXing/FLEXRuntimeScanner.m"
-TRANSFORMER = ROOT / "scripts/apply-flex-runtime-extension-v2.py"
+BUILD = ROOT / "build.sh"
 
 
 def normalize(value: str) -> str:
@@ -52,23 +53,23 @@ def fields_match(fields: list[str], query: str) -> bool:
     normalized_fields = [normalize(field) for field in fields]
     compact_fields = [compact(field) for field in fields]
     for term in query_terms(query):
-        compact_term = compact(term)
+        packed_term = compact(term)
         if not any(
-            term in normalized or (compact_term and compact_term in packed)
+            term in normalized or (packed_term and packed_term in packed)
             for normalized, packed in zip(normalized_fields, compact_fields)
         ):
             return False
     return True
 
 
-def uses_plain_mode(query: str) -> bool:
-    trimmed = query.strip()
-    return bool(trimmed) and not any(token in trimmed for token in (".", "*", "\\")) and not trimmed.startswith(("+", "-"))
+def require(text: str, marker: str, label: str) -> None:
+    if marker not in text:
+        raise AssertionError(f"missing {label}: {marker}")
 
 
-def assert_true(condition: bool, label: str) -> None:
-    if not condition:
-        raise AssertionError(label)
+def forbid(text: str, marker: str, label: str) -> None:
+    if marker in text:
+        raise AssertionError(f"forbidden {label}: {marker}")
 
 
 def main() -> None:
@@ -77,10 +78,11 @@ def main() -> None:
         "is_employee_enable",
         "-[FBConfigManager is_employee_enable]",
         "B16@0:8",
+        "BOOL(id, SEL)",
         "HostFramework",
     ]
 
-    equivalent_queries = [
+    for query in [
         "FBConfigManager",
         "fbconfigmanager",
         "fb config manager",
@@ -88,45 +90,53 @@ def main() -> None:
         "employee enable",
         "employeeenable",
         "enable employee",
+        "bool sel",
         "e",
-    ]
-    for query in equivalent_queries:
-        assert_true(uses_plain_mode(query), f"plain mode rejected: {query}")
-        assert_true(fields_match(fields, query), f"semantic query failed: {query}")
-
-    for query in [
-        "*.FBConfigManager.*",
-        "*.*.-isEnabled",
-        "*.*.+sharedInstance",
-        "+sharedInstance",
-        "-isEnabled",
     ]:
-        assert_true(not uses_plain_mode(query), f"advanced FLEX query entered plain mode: {query}")
+        if not fields_match(fields, query):
+            raise AssertionError(f"semantic query failed: {query}")
 
-    assert_true(not fields_match(fields, "config disabled"), "AND semantics accepted a missing term")
-    assert_true(not fields_match(fields, "unrelated"), "unrelated query matched")
+    if fields_match(fields, "config disabled"):
+        raise AssertionError("AND semantics accepted a missing term")
+    if fields_match(fields, "unrelated"):
+        raise AssertionError("unrelated query matched")
 
+    header = HEADER.read_text(encoding="utf-8")
     controller = CONTROLLER.read_text(encoding="utf-8")
-    transformer = TRANSFORMER.read_text(encoding="utf-8")
+    c_patcher = C_PATCHER.read_text(encoding="utf-8")
     scanner = SCANNER.read_text(encoding="utf-8")
+    build = BUILD.read_text(encoding="utf-8")
 
     for marker in [
         "FLEXRuntimeClient.runtime",
         "classesForToken:FLEXSearchToken.any",
         "methodsForToken:FLEXSearchToken.any",
-        "FLEXSemanticCompactText",
-        "runtimeBrowserShouldUsePlainTextSearchForQuery",
-        "runtimeBrowserSearchPlainTextQuery",
-        "Sintaxe FLEX avançada",
+        "entryForMethod:method",
+        "entry.abi != FLEXHookABIUnknown",
+        "mergeDiscoveredEntries:discovered",
+        "surface:FLEXHookSurfaceObjectiveC",
+        "ABI resolved:",
+        "Class, selector, ABI or image",
+        "applyEntryIdentifier:identifier",
+        "FLEXObjCSemanticCompactText",
     ]:
-        assert_true(marker in controller, f"controller marker missing: {marker}")
+        require(controller, marker, "direct eligible-method browser contract")
 
     for marker in [
-        "runtimeBrowserShouldIncludeMethod",
-        "performPlainTextSearch",
-        "plainSearchGeneration",
+        "C Symbol Patcher",
+        "Symbol, image or ABI",
+        "C signatures are not inferable",
+        "FLEXHookABIName(entry.abi)",
+        "choose the exact ABI",
     ]:
-        assert_true(marker in transformer, f"transformer marker missing: {marker}")
+        require(c_patcher, marker, "C ABI patcher contract")
+
+    forbid(header, "FLEXObjcRuntimeViewController", "native FLEX browser inheritance")
+    forbid(controller, "didSelectClass:", "class-drilldown presentation")
+    forbid(controller, "FLEXHookableObjectExplorerViewController", "obsolete class explorer")
+    forbid(controller, "runtimeBrowserSearchPlainTextQuery", "patched FLEX presentation bridge")
+    forbid(controller, "Sintaxe FLEX avançada", "native key-path grammar UI")
+    forbid(build, "apply-flex-runtime-extension-v2.py", "native runtime presentation transformer")
 
     for forbidden in [
         "objc_copyClassList",
@@ -134,9 +144,12 @@ def main() -> None:
         "scanObjectiveCRuntime",
         "objectiveCEntryForClass",
     ]:
-        assert_true(forbidden not in scanner, f"parallel Objective-C scanner returned: {forbidden}")
+        forbid(scanner, forbidden, "parallel Objective-C scanner")
 
-    print("FLEX semantic search equivalence, AND matching, advanced syntax routing, and C-only scanner: OK")
+    print(
+        "FLEX-backed direct eligible Objective-C method list, resolved ABI display, "
+        "semantic AND matching, and explicit C Symbol Patcher ABI contract: OK"
+    )
 
 
 if __name__ == "__main__":
