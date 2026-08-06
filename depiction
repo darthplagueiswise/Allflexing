@@ -1,3 +1,1 @@
-A FLEX loader that supports triggering FLEX in SCInsta.
-
-Requires libFLEX.
+A standalone, single-dylib FLEX debugger with live persistent hook toggles and native UIKit 26 Liquid Glass controls for certificate-sideloaded apps.

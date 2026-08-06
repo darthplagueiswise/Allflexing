@@ -1,0 +1,120 @@
+name: Build AllFLEXing (SDK 26.2)
+
+on:
+  push:
+    branches:
+      - rootless
+      - dev
+      - 'agent/**'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Standalone arm64 dylib and deb
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    env:
+      SDK_NAME: iPhoneOS26.2.sdk
+      THEOS: ${{ github.workspace }}/theos
+
+    steps:
+      - name: Checkout AllFLEXing
+        uses: actions/checkout@v4
+        with:
+          path: main
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: brew install ldid dpkg make
+
+      - name: Prefer GNU make
+        run: echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
+
+      - name: Setup Theos
+        uses: actions/checkout@v4
+        with:
+          repository: theos/theos
+          ref: master
+          path: theos
+          submodules: recursive
+
+      - name: Cache iPhoneOS 26.2 SDK
+        id: sdk-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.THEOS }}/sdks
+          key: iphoneos-26.2-sdk-v1
+
+      - name: Download iPhoneOS 26.2 SDK
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --quiet -n --depth=1 --filter=tree:0 https://github.com/xybp888/iOS-SDKs sdk-source
+          cd sdk-source
+          git sparse-checkout set --no-cone "$SDK_NAME"
+          git checkout
+          mkdir -p "$THEOS/sdks"
+          mv *.sdk "$THEOS/sdks"
+
+      - name: Save iPhoneOS 26.2 SDK cache
+        if: steps.sdk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.THEOS }}/sdks
+          key: iphoneos-26.2-sdk-v1
+
+      - name: Test FLEX-backed eligible Objective-C functions
+        run: |
+          cd main
+          python3 scripts/test-flex-semantic-search.py
+          python3 scripts/test-objc-browser-safety.py
+
+      - name: Validate SDK and Liquid Glass integration
+        run: |
+          cd main
+          chmod +x build.sh scripts/*.sh
+          bash scripts/validate-sdk26-liquidglass.sh
+
+      - name: Validate runtime host isolation
+        run: |
+          cd main
+          bash scripts/validate-runtime-host-isolation.sh
+
+      - name: Build standalone package
+        id: build
+        run: |
+          cd main
+          ./build.sh package
+
+      - name: Validate runtime binary isolation
+        run: |
+          cd main
+          bash scripts/validate-runtime-binary-isolation.sh .theos/obj/AllFLEXing.dylib
+
+      - name: Verify Mach-O contract
+        run: |
+          cd main
+          bash scripts/verify-dylib.sh .theos/obj/AllFLEXing.dylib
+
+      - name: Collect artifacts
+        if: always() && steps.build.outcome == 'success'
+        run: |
+          cd main
+          test -f release/AllFLEXing.dylib
+          test -f release/AllFLEXing.deb
+          shasum -a 256 release/AllFLEXing.dylib release/AllFLEXing.deb
+
+      - name: Upload build
+        if: always() && steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: AllFLEXing-sdk26.2-arm64-${{ github.run_number }}
+          path: |
+            main/release/AllFLEXing.dylib
+            main/release/AllFLEXing.deb
+          if-no-files-found: error
