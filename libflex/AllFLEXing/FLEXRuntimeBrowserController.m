@@ -1,30 +1,30 @@
 #import "FLEXRuntimeBrowserController.h"
 
 #import "FLEXCHookEngine.h"
+#import "FLEXCompactRuntimeUI.h"
 #import "FLEXHookEntryDetailController.h"
 #import "FLEXHookRegistry.h"
+#import "FLEXHooking.h"
 #import "FLEXLiquidGlass.h"
 #import "FLEXRuntimeImageSession.h"
 #import "FLEXRuntimeScanner.h"
 
+#import <mach-o/loader.h>
 #import <objc/runtime.h>
+#import <string.h>
 
-static const void *kFLEXRuntimeBrowserEntryIDKey = &kFLEXRuntimeBrowserEntryIDKey;
+const char *FLEXLiveRuntimeBrowserABIVersion =
+    "AllFLEXing live class-first runtime browser ABI 1";
 
-@interface FLEXRuntimeSearchRecord : NSObject
-@property (nonatomic) FLEXHookEntry *entry;
-@property (nonatomic, copy) NSString *normalizedText;
-@property (nonatomic, copy) NSArray<NSString *> *tokens;
-@end
-@implementation FLEXRuntimeSearchRecord
-@end
+static const void *kFLEXRuntimeBrowserEntryKey =
+    &kFLEXRuntimeBrowserEntryKey;
 
-static dispatch_queue_t FLEXRuntimeBrowserSearchQueue(void) {
+static dispatch_queue_t FLEXRuntimeBrowserWorkQueue(void) {
     static dispatch_queue_t queue;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         queue = dispatch_queue_create(
-            "com.allflexing.runtime-browser-search",
+            "com.allflexing.live-runtime-browser",
             dispatch_queue_attr_make_with_qos_class(
                 DISPATCH_QUEUE_SERIAL,
                 QOS_CLASS_USER_INITIATED,
@@ -33,6 +33,173 @@ static dispatch_queue_t FLEXRuntimeBrowserSearchQueue(void) {
         );
     });
     return queue;
+}
+
+static NSString *FLEXRuntimeCanonicalPath(NSString *path) {
+    if (!path.length) return @"";
+    NSString *resolved = path.stringByResolvingSymlinksInPath;
+    NSString *standardized = resolved.stringByStandardizingPath;
+    return standardized.length ? standardized : path;
+}
+
+static BOOL FLEXRuntimeClassBelongsToImage(Class targetClass,
+                                            FLEXRuntimeImageDescriptor *image) {
+    if (!targetClass || !image.path.length) return NO;
+    const char *rawImage = class_getImageName(targetClass);
+    if (!rawImage) return NO;
+    NSString *classImage = FLEXRuntimeCanonicalPath(
+        [NSString stringWithUTF8String:rawImage]
+    );
+    return classImage.length &&
+        [classImage isEqualToString:FLEXRuntimeCanonicalPath(image.path)];
+}
+
+static const char *FLEXRuntimeSkipQualifiers(const char *type) {
+    if (!type) return "";
+    while (*type == 'r' || *type == 'n' || *type == 'N' || *type == 'o' ||
+           *type == 'O' || *type == 'R' || *type == 'V') {
+        type++;
+    }
+    return type;
+}
+
+static FLEXHookABI FLEXRuntimeExactObjectiveCABI(Method method) {
+    if (!method) return FLEXHookABIUnknown;
+    char returnType[64] = {0};
+    method_getReturnType(method, returnType, sizeof(returnType));
+    if (*FLEXRuntimeSkipQualifiers(returnType) != 'B') {
+        return FLEXHookABIUnknown;
+    }
+
+    unsigned int count = method_getNumberOfArguments(method);
+    if (count == 2) return FLEXHookABIObjCBoolNoArguments;
+    if (count != 3) return FLEXHookABIUnknown;
+
+    char argumentType[64] = {0};
+    method_getArgumentType(method, 2, argumentType, sizeof(argumentType));
+    const char *code = FLEXRuntimeSkipQualifiers(argumentType);
+    if (*code == '@' || *code == '#' || *code == ':') {
+        return FLEXHookABIObjCBoolObjectArgument;
+    }
+    if (strchr("BcCsSiIlLqQ", *code)) {
+        return FLEXHookABIObjCBoolIntegerArgument;
+    }
+    return FLEXHookABIUnknown;
+}
+
+static NSString *FLEXRuntimeObjectiveCIdentifier(
+    FLEXRuntimeImageDescriptor *image,
+    NSString *className,
+    NSString *selectorName,
+    BOOL classMethod
+) {
+    return [NSString stringWithFormat:@"objc|%@|%@|%@|%@",
+        image.path.lastPathComponent ?: @"image",
+        className ?: @"",
+        classMethod ? @"+" : @"-",
+        selectorName ?: @""];
+}
+
+static FLEXHookEntry *FLEXRuntimeEntryForMethod(
+    Class targetClass,
+    Method method,
+    BOOL classMethod,
+    FLEXRuntimeImageDescriptor *image
+) {
+    if (!targetClass || !method || !image) return nil;
+    const char *rawClassName = class_getName(targetClass);
+    SEL selector = method_getName(method);
+    const char *rawSelectorName = selector ? sel_getName(selector) : NULL;
+    if (!rawClassName || !rawSelectorName) return nil;
+
+    NSString *className = [NSString stringWithUTF8String:rawClassName];
+    NSString *selectorName = [NSString stringWithUTF8String:rawSelectorName];
+    const char *rawEncoding = method_getTypeEncoding(method);
+    NSString *encoding = rawEncoding
+        ? [NSString stringWithUTF8String:rawEncoding] : @"";
+    FLEXHookABI abi = FLEXRuntimeExactObjectiveCABI(method);
+    BOOL provider = FLEXMSHookMessageProviderAvailable();
+
+    FLEXHookEntry *entry = [FLEXHookEntry new];
+    entry.identifier = FLEXRuntimeObjectiveCIdentifier(
+        image, className, selectorName, classMethod);
+    entry.title = [NSString stringWithFormat:@"%@[%@ %@]",
+        classMethod ? @"+" : @"-", className, selectorName];
+    entry.imageName = image.displayName;
+    entry.surface = FLEXHookSurfaceObjectiveC;
+    entry.backend = FLEXHookBackendObjectiveCElleKit;
+    entry.abi = abi;
+    entry.available = YES;
+    entry.hookable = provider && abi != FLEXHookABIUnknown;
+    entry.stale = NO;
+    entry.detail = abi == FLEXHookABIUnknown
+        ? [NSString stringWithFormat:@"%@ · inspect only",
+            encoding.length ? encoding : @"type encoding unavailable"]
+        : [NSString stringWithFormat:@"%@ · %@",
+            FLEXHookABIName(abi),
+            encoding.length ? encoding : @"type encoding unavailable"];
+    entry.locator = @{
+        @"source": @"live-objc-runtime",
+        @"class": className ?: @"",
+        @"selector": selectorName ?: @"",
+        @"classMethod": @(classMethod),
+        @"encoding": encoding ?: @"",
+        @"image": image.path ?: @"",
+        @"imageUUID": image.uuid ?: @"",
+        @"methodAddress": @((uintptr_t)method_getImplementation(method)),
+        @"backendEvidence": provider
+            ? @"MSHookMessageEx-live-provider"
+            : @"MSHookMessageEx-provider-unavailable",
+        @"abiEvidence": abi == FLEXHookABIUnknown
+            ? @"unresolved"
+            : @"objc-type-encoding-live",
+    };
+    if (!provider && abi != FLEXHookABIUnknown) {
+        entry.lastError = @"MSHookMessageEx provider unavailable";
+    }
+
+    FLEXHookEntry *existing = [FLEXHookRegistry.sharedRegistry
+        entryForIdentifier:entry.identifier];
+    if (existing) {
+        NSString *existingImage = [existing.locator[@"image"]
+            isKindOfClass:NSString.class] ? existing.locator[@"image"] : @"";
+        if (!existingImage.length ||
+            [FLEXRuntimeCanonicalPath(existingImage)
+                isEqualToString:FLEXRuntimeCanonicalPath(image.path)]) {
+            return existing;
+        }
+    }
+    return entry;
+}
+
+static NSArray<NSString *> *FLEXRuntimeLiveClassNames(
+    FLEXRuntimeImageDescriptor *image,
+    BOOL (^cancelled)(void)
+) {
+    if (!image || !image.headerAddress) return @[];
+    const struct mach_header_64 *header =
+        (const struct mach_header_64 *)image.headerAddress;
+    if (!header || header->magic != MH_MAGIC_64) return @[];
+
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    objc_enumerateClasses(
+        (const void *)header,
+        NULL,
+        NULL,
+        Nil,
+        ^(Class targetClass, BOOL *stop) {
+            if (cancelled && cancelled()) {
+                *stop = YES;
+                return;
+            }
+            const char *rawName = class_getName(targetClass);
+            if (!rawName || rawName[0] == '\0') return;
+            NSString *name = [NSString stringWithUTF8String:rawName];
+            if (name.length) [names addObject:name];
+        }
+    );
+    [names sortUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
+    return names.copy;
 }
 
 static NSString *FLEXRuntimeNormalizedText(NSString *source) {
@@ -48,7 +215,8 @@ static NSString *FLEXRuntimeNormalizedText(NSString *source) {
         BOOL alphanumeric = [letters characterIsMember:current] ||
                             [digits characterIsMember:current];
         if (!alphanumeric) {
-            if (spaced.length && [spaced characterAtIndex:spaced.length - 1] != ' ') {
+            if (spaced.length &&
+                [spaced characterAtIndex:spaced.length - 1] != ' ') {
                 [spaced appendString:@" "];
             }
             continue;
@@ -75,69 +243,590 @@ static NSString *FLEXRuntimeNormalizedText(NSString *source) {
     NSArray<NSString *> *parts = [folded.lowercaseString
         componentsSeparatedByCharactersInSet:
             NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    NSMutableArray<NSString *> *tokens = [NSMutableArray arrayWithCapacity:parts.count];
+    NSMutableArray<NSString *> *tokens = [NSMutableArray array];
     for (NSString *part in parts) {
         if (part.length) [tokens addObject:part];
     }
     return [tokens componentsJoinedByString:@" "];
 }
 
-static NSArray<NSString *> *FLEXRuntimeTokens(NSString *normalized) {
-    return normalized.length ? [normalized componentsSeparatedByString:@" "] : @[];
+static NSArray<NSString *> *FLEXRuntimeQueryTokens(NSString *query) {
+    NSString *normalized = FLEXRuntimeNormalizedText(query);
+    return normalized.length
+        ? [normalized componentsSeparatedByString:@" "] : @[];
 }
 
-static BOOL FLEXRuntimeTokenMatches(NSString *query,
-                                    NSArray<NSString *> *candidateTokens,
-                                    NSString *fullText) {
-    if (!query.length) return YES;
-    if (query.length >= 3) {
-        for (NSString *candidate in candidateTokens) {
-            if ([candidate hasPrefix:query] || [query hasPrefix:candidate]) return YES;
-        }
+static BOOL FLEXRuntimeValuesMatchTokens(NSArray<NSString *> *tokens,
+                                         NSArray<NSString *> *values) {
+    if (!tokens.count) return YES;
+    NSMutableArray<NSString *> *normalizedValues =
+        [NSMutableArray arrayWithCapacity:values.count];
+    for (NSString *value in values) {
+        NSString *normalized = FLEXRuntimeNormalizedText(value ?: @"");
+        if (normalized.length) [normalizedValues addObject:normalized];
     }
-    return [fullText rangeOfString:query].location != NSNotFound;
+    for (NSString *token in tokens) {
+        BOOL matched = NO;
+        for (NSString *candidate in normalizedValues) {
+            if ([candidate containsString:token]) {
+                matched = YES;
+                break;
+            }
+        }
+        if (!matched) return NO;
+    }
+    return YES;
 }
 
-static NSInteger FLEXRuntimeSearchScore(FLEXRuntimeSearchRecord *record,
-                                        NSArray<NSString *> *queryTokens,
-                                        NSString *normalizedQuery) {
-    for (NSString *token in queryTokens) {
-        if (!FLEXRuntimeTokenMatches(token, record.tokens, record.normalizedText)) {
-            return -1;
-        }
-    }
-    NSString *title = FLEXRuntimeNormalizedText(record.entry.title);
-    NSInteger score = 0;
-    if ([title isEqualToString:normalizedQuery]) score += 500;
-    else if ([title hasPrefix:normalizedQuery]) score += 300;
-    else if ([title containsString:normalizedQuery]) score += 160;
-    for (NSString *token in queryTokens) {
-        if ([title hasPrefix:token]) score += 40;
-        else if ([title containsString:token]) score += 15;
-    }
-    return score;
+typedef NS_ENUM(NSInteger, FLEXRuntimeSearchHitKind) {
+    FLEXRuntimeSearchHitKindClass = 0,
+    FLEXRuntimeSearchHitKindMethod,
+    FLEXRuntimeSearchHitKindProperty,
+};
+
+@interface FLEXRuntimePropertyRecord : NSObject
+@property (nonatomic, copy) NSString *name;
+@property (nonatomic, copy) NSString *attributes;
+@property (nonatomic) BOOL classProperty;
+@end
+@implementation FLEXRuntimePropertyRecord
+@end
+
+@interface FLEXRuntimeSearchHit : NSObject
+@property (nonatomic) FLEXRuntimeSearchHitKind kind;
+@property (nonatomic, copy) NSString *className;
+@property (nonatomic, copy) NSString *title;
+@property (nonatomic, copy) NSString *detail;
+@property (nonatomic) FLEXHookEntry *entry;
+@property (nonatomic) FLEXRuntimePropertyRecord *property;
+@end
+@implementation FLEXRuntimeSearchHit
+@end
+
+@interface FLEXRuntimeSearchGroup : NSObject
+@property (nonatomic, copy) NSString *className;
+@property (nonatomic, copy) NSArray<FLEXRuntimeSearchHit *> *hits;
+@end
+@implementation FLEXRuntimeSearchGroup
+@end
+
+@interface FLEXRuntimeGlassHeaderView : UITableViewHeaderFooterView
+@property (nonatomic) UIView *panel;
+@property (nonatomic) UILabel *titleLabel;
+@property (nonatomic) UILabel *detailLabel;
+- (void)configureTitle:(NSString *)title detail:(NSString *)detail;
+@end
+
+@implementation FLEXRuntimeGlassHeaderView
+
+- (instancetype)initWithReuseIdentifier:(NSString *)reuseIdentifier {
+    self = [super initWithReuseIdentifier:reuseIdentifier];
+    if (!self) return nil;
+
+    self.contentView.backgroundColor = UIColor.clearColor;
+    _panel = [UIView new];
+    _panel.translatesAutoresizingMaskIntoConstraints = NO;
+    [FLEXLiquidGlass stylePanelView:_panel interactive:NO radius:16.0];
+
+    _titleLabel = [UILabel new];
+    _titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+    _titleLabel.numberOfLines = 0;
+    _detailLabel = [UILabel new];
+    _detailLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
+    _detailLabel.textColor = UIColor.secondaryLabelColor;
+    _detailLabel.numberOfLines = 0;
+
+    UIStackView *stack = [[UIStackView alloc]
+        initWithArrangedSubviews:@[_titleLabel, _detailLabel]];
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.spacing = 2.0;
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+
+    [self.contentView addSubview:_panel];
+    [_panel addSubview:stack];
+    [NSLayoutConstraint activateConstraints:@[
+        [_panel.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor
+                                             constant:4.0],
+        [_panel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor
+                                              constant:-4.0],
+        [_panel.topAnchor constraintEqualToAnchor:self.contentView.topAnchor
+                                         constant:3.0],
+        [_panel.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor
+                                            constant:-3.0],
+        [stack.leadingAnchor constraintEqualToAnchor:_panel.leadingAnchor
+                                            constant:12.0],
+        [stack.trailingAnchor constraintEqualToAnchor:_panel.trailingAnchor
+                                             constant:-12.0],
+        [stack.topAnchor constraintEqualToAnchor:_panel.topAnchor
+                                        constant:8.0],
+        [stack.bottomAnchor constraintEqualToAnchor:_panel.bottomAnchor
+                                           constant:-8.0],
+    ]];
+    return self;
 }
+
+- (void)configureTitle:(NSString *)title detail:(NSString *)detail {
+    self.titleLabel.text = title;
+    self.detailLabel.text = detail;
+    self.detailLabel.hidden = !detail.length;
+    [FLEXLiquidGlass stylePanelView:self.panel interactive:NO radius:16.0];
+}
+
+@end
+
+static NSArray<FLEXHookEntry *> *FLEXRuntimeMethodsForClass(
+    NSString *className,
+    BOOL classMethods,
+    FLEXRuntimeImageDescriptor *image
+) {
+    Class targetClass = NSClassFromString(className);
+    if (!targetClass || !FLEXRuntimeClassBelongsToImage(targetClass, image)) {
+        return @[];
+    }
+    Class owner = classMethods ? object_getClass(targetClass) : targetClass;
+    if (!owner) return @[];
+
+    unsigned int count = 0;
+    Method *methods = class_copyMethodList(owner, &count);
+    NSMutableArray<FLEXHookEntry *> *entries =
+        [NSMutableArray arrayWithCapacity:count];
+    for (unsigned int index = 0; index < count; index++) {
+        FLEXHookEntry *entry = FLEXRuntimeEntryForMethod(
+            targetClass, methods[index], classMethods, image);
+        if (entry) [entries addObject:entry];
+    }
+    if (methods) free(methods);
+    [entries sortUsingComparator:^NSComparisonResult(
+        FLEXHookEntry *left,
+        FLEXHookEntry *right
+    ) {
+        NSString *l = [left.locator[@"selector"] isKindOfClass:NSString.class]
+            ? left.locator[@"selector"] : left.title;
+        NSString *r = [right.locator[@"selector"] isKindOfClass:NSString.class]
+            ? right.locator[@"selector"] : right.title;
+        return [l localizedCaseInsensitiveCompare:r];
+    }];
+    return entries.copy;
+}
+
+static NSArray<FLEXRuntimePropertyRecord *> *FLEXRuntimePropertiesForClass(
+    NSString *className,
+    BOOL classProperties,
+    FLEXRuntimeImageDescriptor *image
+) {
+    Class targetClass = NSClassFromString(className);
+    if (!targetClass || !FLEXRuntimeClassBelongsToImage(targetClass, image)) {
+        return @[];
+    }
+    Class owner = classProperties ? object_getClass(targetClass) : targetClass;
+    if (!owner) return @[];
+
+    unsigned int count = 0;
+    objc_property_t *properties = class_copyPropertyList(owner, &count);
+    NSMutableArray<FLEXRuntimePropertyRecord *> *records =
+        [NSMutableArray arrayWithCapacity:count];
+    for (unsigned int index = 0; index < count; index++) {
+        const char *rawName = property_getName(properties[index]);
+        const char *rawAttributes = property_getAttributes(properties[index]);
+        if (!rawName) continue;
+        FLEXRuntimePropertyRecord *record = [FLEXRuntimePropertyRecord new];
+        record.name = [NSString stringWithUTF8String:rawName];
+        record.attributes = rawAttributes
+            ? [NSString stringWithUTF8String:rawAttributes] : @"";
+        record.classProperty = classProperties;
+        [records addObject:record];
+    }
+    if (properties) free(properties);
+    [records sortUsingComparator:^NSComparisonResult(
+        FLEXRuntimePropertyRecord *left,
+        FLEXRuntimePropertyRecord *right
+    ) {
+        return [left.name localizedCaseInsensitiveCompare:right.name];
+    }];
+    return records.copy;
+}
+
+static void FLEXRuntimeApplyGlassSurface(UIViewController *controller,
+                                         UITableView *tableView,
+                                         UISearchBar *searchBar) {
+    [FLEXLiquidGlass applyToViewController:controller];
+    [FLEXLiquidGlass styleSearchBar:searchBar];
+    FLEXConfigureCompactRuntimeTable(tableView);
+    if (FLEXLiquidGlass.isGlassAvailable && FLEXLiquidGlass.isEnabled) {
+        controller.view.backgroundColor = UIColor.systemBackgroundColor;
+        tableView.backgroundColor = UIColor.clearColor;
+        tableView.opaque = NO;
+        tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
+    }
+}
+
+@interface FLEXRuntimeClassDetailController : UITableViewController
+    <UISearchResultsUpdating>
+@property (nonatomic, copy) NSString *className;
+@property (nonatomic) FLEXRuntimeImageDescriptor *image;
+@property (nonatomic) UISearchController *memberSearchController;
+@property (nonatomic, copy) NSArray<FLEXHookEntry *> *instanceMethods;
+@property (nonatomic, copy) NSArray<FLEXHookEntry *> *classMethods;
+@property (nonatomic, copy) NSArray<FLEXRuntimePropertyRecord *> *instanceProperties;
+@property (nonatomic, copy) NSArray<FLEXRuntimePropertyRecord *> *classProperties;
+@property (nonatomic, copy) NSArray *visibleSections;
+@property (nonatomic) NSUInteger generation;
+@property (nonatomic) BOOL loading;
+@end
+
+@implementation FLEXRuntimeClassDetailController
+
+- (instancetype)initWithClassName:(NSString *)className
+                            image:(FLEXRuntimeImageDescriptor *)image {
+    self = [super initWithStyle:UITableViewStyleInsetGrouped];
+    if (self) {
+        _className = className.copy;
+        _image = [image copy];
+        _instanceMethods = @[];
+        _classMethods = @[];
+        _instanceProperties = @[];
+        _classProperties = @[];
+        _visibleSections = @[];
+    }
+    return self;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = self.className;
+    self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
+    [self.tableView registerClass:FLEXRuntimeGlassHeaderView.class
+           forHeaderFooterViewReuseIdentifier:@"FLEXRuntimeGlassHeader"];
+    self.tableView.estimatedRowHeight = 62.0;
+    self.tableView.rowHeight = UITableViewAutomaticDimension;
+
+    self.memberSearchController = [[UISearchController alloc]
+        initWithSearchResultsController:nil];
+    self.memberSearchController.obscuresBackgroundDuringPresentation = NO;
+    self.memberSearchController.searchResultsUpdater = self;
+    self.memberSearchController.searchBar.placeholder = @"Filter live members";
+    self.navigationItem.searchController = self.memberSearchController;
+    self.navigationItem.hidesSearchBarWhenScrolling = NO;
+    self.definesPresentationContext = YES;
+
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc]
+        initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh
+                             target:self
+                             action:@selector(reloadLiveMembers)];
+    if (@available(iOS 26.0, *)) {
+        self.navigationItem.subtitle = self.image.displayName;
+    }
+    FLEXRuntimeApplyGlassSurface(
+        self, self.tableView, self.memberSearchController.searchBar);
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    FLEXRuntimeApplyGlassSurface(
+        self, self.tableView, self.memberSearchController.searchBar);
+    [self reloadLiveMembers];
+}
+
+- (void)reloadLiveMembers {
+    NSUInteger generation = ++self.generation;
+    self.loading = YES;
+    NSString *className = self.className.copy;
+    FLEXRuntimeImageDescriptor *image = [self.image copy];
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(FLEXRuntimeBrowserWorkQueue(), ^{
+        NSArray *instanceMethods = FLEXRuntimeMethodsForClass(className, NO, image);
+        NSArray *classMethods = FLEXRuntimeMethodsForClass(className, YES, image);
+        NSArray *instanceProperties = FLEXRuntimePropertiesForClass(className, NO, image);
+        NSArray *classProperties = FLEXRuntimePropertiesForClass(className, YES, image);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self || generation != self.generation) return;
+            self.instanceMethods = instanceMethods;
+            self.classMethods = classMethods;
+            self.instanceProperties = instanceProperties;
+            self.classProperties = classProperties;
+            self.loading = NO;
+            [self rebuildVisibleSections];
+        });
+    });
+}
+
+- (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
+    (void)searchController;
+    [self rebuildVisibleSections];
+}
+
+- (BOOL)object:(id)object matchesTokens:(NSArray<NSString *> *)tokens {
+    if (!tokens.count) return YES;
+    if ([object isKindOfClass:FLEXHookEntry.class]) {
+        FLEXHookEntry *entry = object;
+        NSString *selector = [entry.locator[@"selector"] isKindOfClass:NSString.class]
+            ? entry.locator[@"selector"] : entry.title;
+        NSString *encoding = [entry.locator[@"encoding"] isKindOfClass:NSString.class]
+            ? entry.locator[@"encoding"] : entry.detail;
+        return FLEXRuntimeValuesMatchTokens(tokens, @[
+            self.className ?: @"", selector ?: @"", encoding ?: @""]);
+    }
+    if ([object isKindOfClass:FLEXRuntimePropertyRecord.class]) {
+        FLEXRuntimePropertyRecord *property = object;
+        return FLEXRuntimeValuesMatchTokens(tokens, @[
+            self.className ?: @",", property.name ?: @"",
+            property.attributes ?: @""]);
+    }
+    return NO;
+}
+
+- (NSArray *)filteredArray:(NSArray *)source tokens:(NSArray<NSString *> *)tokens {
+    if (!tokens.count) return source ?: @[];
+    NSMutableArray *filtered = [NSMutableArray array];
+    for (id object in source ?: @[]) {
+        if ([self object:object matchesTokens:tokens]) [filtered addObject:object];
+    }
+    return filtered.copy;
+}
+
+- (void)rebuildVisibleSections {
+    NSArray<NSString *> *tokens = FLEXRuntimeQueryTokens(
+        self.memberSearchController.searchBar.text ?: @"");
+    NSArray *instanceMethods = [self filteredArray:self.instanceMethods tokens:tokens];
+    NSArray *classMethods = [self filteredArray:self.classMethods tokens:tokens];
+    NSArray *instanceProperties = [self filteredArray:self.instanceProperties tokens:tokens];
+    NSArray *classProperties = [self filteredArray:self.classProperties tokens:tokens];
+
+    NSMutableArray *sections = [NSMutableArray array];
+    if (instanceMethods.count) {
+        [sections addObject:@{
+            @"title": @"Instance methods",
+            @"detail": [NSString stringWithFormat:@"%lu live method%@",
+                (unsigned long)instanceMethods.count,
+                instanceMethods.count == 1 ? @"" : @"s"],
+            @"kind": @"method",
+            @"items": instanceMethods,
+        }];
+    }
+    if (classMethods.count) {
+        [sections addObject:@{
+            @"title": @"Class methods",
+            @"detail": [NSString stringWithFormat:@"%lu live method%@",
+                (unsigned long)classMethods.count,
+                classMethods.count == 1 ? @"" : @"s"],
+            @"kind": @"method",
+            @"items": classMethods,
+        }];
+    }
+    if (instanceProperties.count) {
+        [sections addObject:@{
+            @"title": @"Properties",
+            @"detail": [NSString stringWithFormat:@"%lu runtime propert%@",
+                (unsigned long)instanceProperties.count,
+                instanceProperties.count == 1 ? @"y" : @"ies"],
+            @"kind": @"property",
+            @"items": instanceProperties,
+        }];
+    }
+    if (classProperties.count) {
+        [sections addObject:@{
+            @"title": @"Class properties",
+            @"detail": [NSString stringWithFormat:@"%lu runtime propert%@",
+                (unsigned long)classProperties.count,
+                classProperties.count == 1 ? @"y" : @"ies"],
+            @"kind": @"property",
+            @"items": classProperties,
+        }];
+    }
+    self.visibleSections = sections.copy;
+    [self.tableView reloadData];
+    [self updateUnavailableConfiguration];
+}
+
+- (void)updateUnavailableConfiguration {
+    if (@available(iOS 17.0, *)) {
+        if (self.visibleSections.count) {
+            self.contentUnavailableConfiguration = nil;
+            return;
+        }
+        if (self.loading) {
+            UIContentUnavailableConfiguration *configuration =
+                [UIContentUnavailableConfiguration loadingConfiguration];
+            configuration.text = @"Reading live class members";
+            configuration.secondaryText =
+                @"Methods and properties are enumerated from the Objective-C runtime now; nothing is preclassified.";
+            self.contentUnavailableConfiguration = configuration;
+            return;
+        }
+        UIContentUnavailableConfiguration *configuration =
+            self.memberSearchController.searchBar.text.length
+                ? [UIContentUnavailableConfiguration searchConfiguration]
+                : [UIContentUnavailableConfiguration emptyConfiguration];
+        configuration.text = self.memberSearchController.searchBar.text.length
+            ? @"No live member matches" : @"No runtime members";
+        self.contentUnavailableConfiguration = configuration;
+    }
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
+    (void)tableView;
+    return self.visibleSections.count;
+}
+
+- (NSInteger)tableView:(UITableView *)tableView
+ numberOfRowsInSection:(NSInteger)section {
+    (void)tableView;
+    if (section < 0 || section >= (NSInteger)self.visibleSections.count) return 0;
+    return [self.visibleSections[(NSUInteger)section][@"items"] count];
+}
+
+- (UIView *)tableView:(UITableView *)tableView
+ viewForHeaderInSection:(NSInteger)section {
+    FLEXRuntimeGlassHeaderView *header = [tableView
+        dequeueReusableHeaderFooterViewWithIdentifier:@"FLEXRuntimeGlassHeader"];
+    NSDictionary *descriptor = self.visibleSections[(NSUInteger)section];
+    [header configureTitle:descriptor[@"title"] detail:descriptor[@"detail"]];
+    return header;
+}
+
+- (CGFloat)tableView:(UITableView *)tableView
+ heightForHeaderInSection:(NSInteger)section {
+    (void)tableView;
+    (void)section;
+    return UITableViewAutomaticDimension;
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView
+         cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    static NSString *identifier = @"FLEXLiveClassMemberCell";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:identifier];
+    if (!cell) {
+        cell = [[UITableViewCell alloc]
+            initWithStyle:UITableViewCellStyleSubtitle
+          reuseIdentifier:identifier];
+    }
+    NSDictionary *section = self.visibleSections[indexPath.section];
+    NSArray *items = section[@"items"];
+    NSString *kind = section[@"kind"];
+    cell.accessoryView = nil;
+    cell.accessoryType = UITableViewCellAccessoryNone;
+
+    if ([kind isEqualToString:@"method"]) {
+        FLEXHookEntry *entry = items[indexPath.row];
+        NSString *selector = [entry.locator[@"selector"] isKindOfClass:NSString.class]
+            ? entry.locator[@"selector"] : FLEXRuntimeMemberTitleForEntry(entry);
+        BOOL classMethod = [entry.locator[@"classMethod"] boolValue];
+        FLEXConfigureCompactRuntimeContent(
+            cell,
+            [NSString stringWithFormat:@"%@ %@",
+                classMethod ? @"+" : @"-", selector],
+            entry.detail,
+            entry.hookable ? @"switch.2" : @"function",
+            entry.hookable ? self.view.tintColor : UIColor.secondaryLabelColor
+        );
+        if (entry.hookable || entry.pendingEnabled) {
+            UISwitch *toggle = [UISwitch new];
+            toggle.on = entry.pendingEnabled;
+            objc_setAssociatedObject(
+                toggle,
+                kFLEXRuntimeBrowserEntryKey,
+                entry,
+                OBJC_ASSOCIATION_RETAIN_NONATOMIC
+            );
+            [toggle addTarget:self
+                       action:@selector(toggleChanged:)
+             forControlEvents:UIControlEventValueChanged];
+            cell.accessoryView = toggle;
+        } else {
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        }
+    } else {
+        FLEXRuntimePropertyRecord *property = items[indexPath.row];
+        FLEXConfigureCompactRuntimeContent(
+            cell,
+            property.name,
+            property.attributes.length ? property.attributes : @"Runtime property",
+            @"p.square",
+            UIColor.secondaryLabelColor
+        );
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    }
+    FLEXStyleCompactRuntimeCell(
+        cell,
+        FLEXCompactPositionForRow(indexPath.row, items.count)
+    );
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView
+ didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    NSDictionary *section = self.visibleSections[indexPath.section];
+    NSArray *items = section[@"items"];
+    if ([section[@"kind"] isEqualToString:@"method"]) {
+        FLEXHookEntry *entry = items[indexPath.row];
+        FLEXHookEntry *canonical = [FLEXHookRegistry.sharedRegistry
+            upsertDiscoveredEntry:entry];
+        FLEXHookEntryDetailController *detail =
+            [[FLEXHookEntryDetailController alloc]
+                initWithEntry:canonical ?: entry];
+        [self.navigationController pushViewController:detail animated:YES];
+        return;
+    }
+    FLEXRuntimePropertyRecord *property = items[indexPath.row];
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:property.name
+                         message:property.attributes.length
+                            ? property.attributes : @"No runtime attributes"
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Done"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)toggleChanged:(UISwitch *)toggle {
+    FLEXHookEntry *discovered = objc_getAssociatedObject(
+        toggle, kFLEXRuntimeBrowserEntryKey);
+    if (!discovered) return;
+    FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
+    FLEXHookEntry *entry = [registry upsertDiscoveredEntry:discovered];
+    BOOL requested = toggle.isOn;
+    if (requested && !entry.userConfigured) {
+        [registry stageForceValue:YES forEntryIdentifier:entry.identifier];
+    }
+    [registry stageEnabled:requested forEntryIdentifier:entry.identifier];
+    FLEXHookEntry *resolved = [registry entryForIdentifier:entry.identifier];
+    BOOL accepted = resolved && resolved.pendingEnabled == requested;
+    [toggle setOn:accepted ? requested : !requested animated:YES];
+    [accepted ? UISelectionFeedbackGenerator.new : UINotificationFeedbackGenerator.new
+        respondsToSelector:@selector(selectionChanged)];
+    if (accepted) {
+        [UISelectionFeedbackGenerator.new selectionChanged];
+    } else {
+        [UINotificationFeedbackGenerator.new
+            notificationOccurred:UINotificationFeedbackTypeError];
+    }
+    // Intentionally stage only. The Hook Center remains the single explicit
+    // Apply owner, so browsing the live runtime never mutates code on toggle.
+}
+
+@end
 
 @interface FLEXRuntimeBrowserController () <UISearchResultsUpdating>
 @property (nonatomic) FLEXRuntimeBrowserKind kind;
 @property (nonatomic) BOOL scanning;
-@property (nonatomic) BOOL indexing;
+@property (nonatomic) BOOL searching;
+@property (nonatomic) BOOL initialLoadStarted;
 @property (nonatomic) UISearchController *searchController;
-@property (nonatomic, copy) NSArray<FLEXHookEntry *> *allEntries;
-@property (nonatomic, copy) NSArray<FLEXHookEntry *> *filteredEntries;
-@property (nonatomic, copy) NSArray<FLEXRuntimeSearchRecord *> *searchIndex;
 @property (nonatomic) FLEXRuntimeImageDescriptor *selectedImage;
 @property (nonatomic) FLEXRuntimeImageSession *session;
-@property (nonatomic) FLEXRuntimeImageSnapshot *snapshot;
-@property (nonatomic) NSUInteger searchGeneration;
+@property (nonatomic, copy) NSArray<NSString *> *liveClassNames;
+@property (nonatomic, copy) NSArray<FLEXRuntimeSearchGroup *> *searchGroups;
+@property (nonatomic, copy) NSArray<FLEXHookEntry *> *cEntries;
+@property (nonatomic, copy) NSArray<FLEXRuntimeEntryGroup *> *cGroups;
+@property (nonatomic) NSUInteger generation;
 @property (nonatomic) UIBarButtonItem *scopeItem;
 @property (nonatomic) UIBarButtonItem *reloadItem;
-@property (nonatomic) UIBarButtonItem *progressItem;
-@property (nonatomic) UIProgressView *progressView;
-@property (nonatomic) UIActivityIndicatorView *progressSpinner;
-@property (nonatomic, copy) NSString *progressPhase;
-@property (nonatomic) NSUInteger progressCompleted;
-@property (nonatomic) NSUInteger progressTotal;
+@property (nonatomic) UIBarButtonItem *spinnerItem;
+@property (nonatomic) UIActivityIndicatorView *spinner;
+@property (nonatomic, copy) NSString *statusText;
 @end
 
 @implementation FLEXRuntimeBrowserController
@@ -146,9 +835,10 @@ static NSInteger FLEXRuntimeSearchScore(FLEXRuntimeSearchRecord *record,
     self = [super initWithStyle:UITableViewStyleInsetGrouped];
     if (self) {
         _kind = kind;
-        _allEntries = @[];
-        _filteredEntries = @[];
-        _searchIndex = @[];
+        _liveClassNames = @[];
+        _searchGroups = @[];
+        _cEntries = @[];
+        _cGroups = @[];
     }
     return self;
 }
@@ -157,14 +847,19 @@ static NSInteger FLEXRuntimeSearchScore(FLEXRuntimeSearchRecord *record,
     [super viewDidLoad];
     self.title = self.kind == FLEXRuntimeBrowserKindObjectiveC
         ? @"Objective-C Runtime" : @"C Runtime";
+    self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
+    [self.tableView registerClass:FLEXRuntimeGlassHeaderView.class
+           forHeaderFooterViewReuseIdentifier:@"FLEXRuntimeGlassHeader"];
+    self.tableView.estimatedRowHeight = 64.0;
     self.tableView.rowHeight = UITableViewAutomaticDimension;
-    self.tableView.estimatedRowHeight = 72.0;
 
-    self.searchController = [[UISearchController alloc] initWithSearchResultsController:nil];
+    self.searchController = [[UISearchController alloc]
+        initWithSearchResultsController:nil];
     self.searchController.obscuresBackgroundDuringPresentation = NO;
     self.searchController.searchResultsUpdater = self;
-    self.searchController.searchBar.placeholder = @"Scan an image before searching";
-    self.searchController.searchBar.userInteractionEnabled = NO;
+    self.searchController.searchBar.placeholder = self.kind == FLEXRuntimeBrowserKindObjectiveC
+        ? @"Search live classes, methods and properties"
+        : @"Filter live Mach-O symbols";
     self.navigationItem.searchController = self.searchController;
     self.navigationItem.hidesSearchBarWhenScrolling = NO;
     self.definesPresentationContext = YES;
@@ -174,41 +869,48 @@ static NSInteger FLEXRuntimeSearchScore(FLEXRuntimeSearchRecord *record,
     self.reloadItem = [[UIBarButtonItem alloc]
         initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh
                              target:self
-                             action:@selector(reloadScan)];
+                             action:@selector(reloadLiveRuntime)];
     self.scopeItem = [[UIBarButtonItem alloc]
         initWithTitle:@"Image"
                  menu:[self scopeMenu]];
-    [self buildProgressItem];
-    [self installNavigationItemsScanning:NO];
+    self.spinner = [[UIActivityIndicatorView alloc]
+        initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+    self.spinnerItem = [[UIBarButtonItem alloc] initWithCustomView:self.spinner];
+    [self installNavigationItems];
 
-    NSArray<FLEXRuntimeImageDescriptor *> *images =
-        FLEXRuntimeImageSession.loadedAppImages;
-    self.selectedImage = images.firstObject;
+    self.selectedImage = FLEXRuntimeImageSession.loadedAppImages.firstObject;
     [self updateScopeItem];
 
-    [NSNotificationCenter.defaultCenter
-        addObserver:self
-           selector:@selector(registryChanged:)
-               name:FLEXHookRegistryDidChangeNotification
-             object:nil];
     [NSNotificationCenter.defaultCenter
         addObserver:self
            selector:@selector(runtimeImagesChanged:)
                name:FLEXRuntimeImagesDidChangeNotification
              object:nil];
+    [NSNotificationCenter.defaultCenter
+        addObserver:self
+           selector:@selector(registryChanged:)
+               name:FLEXHookRegistryDidChangeNotification
+             object:nil];
 
-    [FLEXLiquidGlass applyToViewController:self];
-    if (self.selectedImage) {
-        [self reloadScan];
-    } else {
-        [self updateUnavailableConfigurationWithError:nil];
-    }
+    FLEXRuntimeApplyGlassSurface(
+        self, self.tableView, self.searchController.searchBar);
+    [self updateUnavailableConfigurationWithError:nil];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    [self refreshCanonicalEntries];
-    [FLEXLiquidGlass applyToViewController:self];
+    FLEXRuntimeApplyGlassSurface(
+        self, self.tableView, self.searchController.searchBar);
+    if (self.initialLoadStarted && self.selectedImage && !self.scanning) {
+        [self reloadLiveRuntime];
+    }
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    if (self.initialLoadStarted || !self.selectedImage) return;
+    self.initialLoadStarted = YES;
+    [self reloadLiveRuntime];
 }
 
 - (void)dealloc {
@@ -216,34 +918,20 @@ static NSInteger FLEXRuntimeSearchScore(FLEXRuntimeSearchRecord *record,
     [NSNotificationCenter.defaultCenter removeObserver:self];
 }
 
-- (void)buildProgressItem {
-    self.progressSpinner = [[UIActivityIndicatorView alloc]
-        initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
-    self.progressView = [[UIProgressView alloc]
-        initWithProgressViewStyle:UIProgressViewStyleDefault];
-    self.progressView.translatesAutoresizingMaskIntoConstraints = NO;
-    self.progressView.progress = 0;
-
-    UIStackView *stack = [[UIStackView alloc]
-        initWithArrangedSubviews:@[self.progressSpinner, self.progressView]];
-    stack.axis = UILayoutConstraintAxisHorizontal;
-    stack.alignment = UIStackViewAlignmentCenter;
-    stack.spacing = 8.0;
-    [self.progressView.widthAnchor constraintEqualToConstant:72.0].active = YES;
-    self.progressItem = [[UIBarButtonItem alloc] initWithCustomView:stack];
-    self.progressItem.accessibilityLabel = @"Runtime image scan progress";
+- (void)installNavigationItems {
+    self.navigationItem.rightBarButtonItems = self.scanning || self.searching
+        ? @[self.spinnerItem, self.reloadItem, self.scopeItem]
+        : @[self.reloadItem, self.scopeItem];
+    self.reloadItem.enabled = !self.scanning;
+    self.scopeItem.enabled = YES;
 }
 
-- (void)installNavigationItemsScanning:(BOOL)scanning {
-    UIBarButtonItem *separator = [[UIBarButtonItem alloc]
-        initWithBarButtonSystemItem:UIBarButtonSystemItemFixedSpace
-                             target:nil
-                             action:nil];
-    separator.width = 8.0;
-    if (@available(iOS 26.0, *)) separator.hidesSharedBackground = YES;
-    self.navigationItem.rightBarButtonItems = scanning
-        ? @[self.progressItem, separator, self.scopeItem]
-        : @[self.reloadItem, separator, self.scopeItem];
+- (void)setBusy:(BOOL)busy searching:(BOOL)searching {
+    self.scanning = busy;
+    self.searching = searching;
+    if (busy || searching) [self.spinner startAnimating];
+    else [self.spinner stopAnimating];
+    [self installNavigationItems];
 }
 
 - (void)updateScopeItem {
@@ -254,21 +942,28 @@ static NSInteger FLEXRuntimeSearchScore(FLEXRuntimeSearchRecord *record,
 - (UIMenu *)scopeMenu {
     __weak typeof(self) weakSelf = self;
     NSMutableArray<UIMenuElement *> *actions = [NSMutableArray array];
-    for (FLEXRuntimeImageDescriptor *image in FLEXRuntimeImageSession.loadedAppImages) {
+    for (FLEXRuntimeImageDescriptor *image in
+         FLEXRuntimeImageSession.loadedAppImages) {
         NSString *subtitle = image.mainExecutable
             ? @"Main executable"
             : [image.path stringByAbbreviatingWithTildeInPath];
         UIAction *action = [UIAction actionWithTitle:image.displayName
                                            subtitle:subtitle
                                               image:[UIImage systemImageNamed:
-                                                  image.mainExecutable ? @"terminal" : @"shippingbox"]
+                                                  image.mainExecutable
+                                                    ? @"terminal"
+                                                    : @"shippingbox"]
                                          identifier:nil
                                             handler:^(__unused UIAction *menuAction) {
             __strong typeof(weakSelf) self = weakSelf;
-            if (!self || [self.selectedImage.path isEqualToString:image.path]) return;
-            self.selectedImage = image;
+            if (!self) return;
+            if ([self.selectedImage.path isEqualToString:image.path] &&
+                [self.selectedImage.uuid isEqualToString:image.uuid]) {
+                return;
+            }
+            self.selectedImage = [image copy];
             [self updateScopeItem];
-            [self reloadScan];
+            [self reloadLiveRuntime];
         }];
         action.state = [self.selectedImage.path isEqualToString:image.path]
             ? UIMenuElementStateOn : UIMenuElementStateOff;
@@ -276,13 +971,14 @@ static NSInteger FLEXRuntimeSearchScore(FLEXRuntimeSearchRecord *record,
     }
     if (!actions.count) {
         UIAction *empty = [UIAction actionWithTitle:@"No app image is loaded"
-                                             image:[UIImage systemImageNamed:@"exclamationmark.triangle"]
+                                             image:[UIImage systemImageNamed:
+                                                 @"exclamationmark.triangle"]
                                         identifier:nil
                                            handler:^(__unused UIAction *action) {}];
         empty.attributes = UIMenuElementAttributesDisabled;
         [actions addObject:empty];
     }
-    return [UIMenu menuWithTitle:@"Runtime image"
+    return [UIMenu menuWithTitle:@"Live runtime image"
                            image:nil
                       identifier:nil
                          options:UIMenuOptionsDisplayInline
@@ -302,403 +998,634 @@ static NSInteger FLEXRuntimeSearchScore(FLEXRuntimeSearchRecord *record,
     }
     self.selectedImage = matching ?: images.firstObject;
     [self updateScopeItem];
+    if (self.viewIfLoaded.window && self.selectedImage) {
+        [self reloadLiveRuntime];
+    }
 }
 
 - (void)registryChanged:(NSNotification *)notification {
     (void)notification;
-    [self refreshCanonicalEntries];
-}
-
-- (void)refreshCanonicalEntries {
-    if (!self.allEntries.count) return;
-    FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
-    NSMutableArray<FLEXHookEntry *> *canonical =
-        [NSMutableArray arrayWithCapacity:self.allEntries.count];
-    for (FLEXHookEntry *entry in self.allEntries) {
-        [canonical addObject:[registry entryForIdentifier:entry.identifier] ?: entry];
+    if (self.kind == FLEXRuntimeBrowserKindC && self.cEntries.count) {
+        NSMutableArray *updated = [NSMutableArray arrayWithCapacity:self.cEntries.count];
+        FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
+        for (FLEXHookEntry *entry in self.cEntries) {
+            [updated addObject:[registry entryForIdentifier:entry.identifier] ?: entry];
+        }
+        self.cEntries = updated.copy;
+        [self filterCEntriesForQuery:self.searchController.searchBar.text ?: @""];
+    } else {
+        [self.tableView reloadData];
     }
-    self.allEntries = canonical.copy;
-    [self buildSearchIndexForEntries:self.allEntries];
 }
 
-- (void)reloadScan {
-    if (!self.selectedImage) return;
+- (void)reloadLiveRuntime {
+    if (!self.selectedImage || self.scanning) return;
     [self.session cancel];
-    self.searchGeneration++;
-    self.scanning = YES;
-    self.indexing = NO;
-    self.snapshot = nil;
-    self.allEntries = @[];
-    self.filteredEntries = @[];
-    self.searchIndex = @[];
-    self.searchController.searchBar.text = @"";
-    self.searchController.searchBar.userInteractionEnabled = NO;
-    self.reloadItem.enabled = NO;
-    self.scopeItem.enabled = NO;
-    self.progressPhase = @"Opening selected image";
-    self.progressCompleted = 0;
-    self.progressTotal = 0;
-    self.progressView.progress = 0;
-    [self.progressSpinner startAnimating];
-    [self installNavigationItemsScanning:YES];
-    [self.tableView reloadData];
+    NSUInteger generation = ++self.generation;
+    self.statusText = self.kind == FLEXRuntimeBrowserKindObjectiveC
+        ? @"Reading live classes"
+        : @"Reading current Mach-O image";
+    [self setBusy:YES searching:NO];
     [self updateNavigationStatus];
-    [self updateUnavailableConfigurationWithError:nil];
+
+    if (self.kind == FLEXRuntimeBrowserKindObjectiveC) {
+        FLEXRuntimeImageDescriptor *image = [self.selectedImage copy];
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(FLEXRuntimeBrowserWorkQueue(), ^{
+            NSArray<NSString *> *names = FLEXRuntimeLiveClassNames(
+                image,
+                ^BOOL{
+                    __strong typeof(weakSelf) self = weakSelf;
+                    return !self || generation != self.generation;
+                }
+            );
+            dispatch_async(dispatch_get_main_queue(), ^{
+                __strong typeof(weakSelf) self = weakSelf;
+                if (!self || generation != self.generation) return;
+                self.liveClassNames = names;
+                self.searchGroups = @[];
+                [self setBusy:NO searching:NO];
+                [self.tableView reloadData];
+                [self updateNavigationStatus];
+                [self updateUnavailableConfigurationWithError:nil];
+                if (self.searchController.searchBar.text.length) {
+                    [self scheduleObjectiveCSearch:
+                        self.searchController.searchBar.text immediate:YES];
+                }
+            });
+        });
+        return;
+    }
 
     self.session = [[FLEXRuntimeImageSession alloc]
         initWithImage:self.selectedImage];
     __weak typeof(self) weakSelf = self;
-    [self.session scanKind:self.kind
+    [self.session scanKind:FLEXRuntimeBrowserKindC
                   progress:^(NSString *phase, NSUInteger completed, NSUInteger total) {
+        (void)completed;
+        (void)total;
         __strong typeof(weakSelf) self = weakSelf;
-        if (!self || !self.scanning) return;
-        self.progressPhase = phase;
-        self.progressCompleted = completed;
-        self.progressTotal = total;
-        self.progressView.progress = total
-            ? MIN(1.0, (float)completed / (float)total)
-            : 0.05;
+        if (!self || generation != self.generation) return;
+        self.statusText = phase ?: @"Reading current Mach-O image";
         [self updateNavigationStatus];
-        [self updateUnavailableConfigurationWithError:nil];
     } completion:^(FLEXRuntimeImageSnapshot *snapshot, NSError *error) {
         __strong typeof(weakSelf) self = weakSelf;
-        if (!self) return;
-        self.scanning = NO;
-        [self.progressSpinner stopAnimating];
-        self.reloadItem.enabled = YES;
-        self.scopeItem.enabled = YES;
-        [self installNavigationItemsScanning:NO];
+        if (!self || generation != self.generation) return;
+        [self setBusy:NO searching:NO];
         if (!snapshot || error) {
-            self.allEntries = @[];
-            self.filteredEntries = @[];
+            self.cEntries = @[];
+            self.cGroups = @[];
             [self.tableView reloadData];
             [self updateNavigationStatus];
             [self updateUnavailableConfigurationWithError:error];
             return;
         }
-
-        self.snapshot = snapshot;
         FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
-        NSMutableArray<FLEXHookEntry *> *canonical =
-            [NSMutableArray arrayWithCapacity:snapshot.entries.count];
+        NSMutableArray *entries = [NSMutableArray arrayWithCapacity:snapshot.entries.count];
         for (FLEXHookEntry *entry in snapshot.entries) {
-            FLEXHookEntry *merged = [registry upsertDiscoveredEntry:entry];
-            [canonical addObject:merged ?: entry];
+            [entries addObject:[registry entryForIdentifier:entry.identifier] ?: entry];
         }
-        self.allEntries = canonical.copy;
-        [self buildSearchIndexForEntries:self.allEntries];
+        self.cEntries = entries.copy;
+        [self filterCEntriesForQuery:self.searchController.searchBar.text ?: @""];
     }];
-}
-
-- (void)buildSearchIndexForEntries:(NSArray<FLEXHookEntry *> *)entries {
-    NSUInteger generation = ++self.searchGeneration;
-    self.indexing = YES;
-    self.searchController.searchBar.userInteractionEnabled = NO;
-    self.progressPhase = @"Building complete search index";
-    [self.progressSpinner startAnimating];
-    [self installNavigationItemsScanning:YES];
-    [self updateNavigationStatus];
-    [self updateUnavailableConfigurationWithError:nil];
-
-    dispatch_async(FLEXRuntimeBrowserSearchQueue(), ^{
-        NSMutableArray<FLEXRuntimeSearchRecord *> *records =
-            [NSMutableArray arrayWithCapacity:entries.count];
-        NSUInteger completed = 0;
-        for (FLEXHookEntry *entry in entries) {
-            @autoreleasepool {
-                NSMutableString *raw = [NSMutableString stringWithFormat:
-                    @"%@ %@ %@ %@ %@",
-                    entry.title ?: @"",
-                    entry.detail ?: @"",
-                    entry.imageName ?: @"",
-                    entry.identifier ?: @"",
-                    entry.locator ?: @{}];
-                FLEXRuntimeSearchRecord *record = [FLEXRuntimeSearchRecord new];
-                record.entry = entry;
-                record.normalizedText = FLEXRuntimeNormalizedText(raw);
-                record.tokens = FLEXRuntimeTokens(record.normalizedText);
-                [records addObject:record];
-            }
-            completed++;
-            if ((completed & 1023) == 0) {
-                dispatch_async(dispatch_get_main_queue(), ^{
-                    if (generation != self.searchGeneration) return;
-                    self.progressCompleted = completed;
-                    self.progressTotal = entries.count;
-                    self.progressView.progress = entries.count
-                        ? (float)completed / (float)entries.count : 1.0;
-                    [self updateNavigationStatus];
-                });
-            }
-        }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (generation != self.searchGeneration) return;
-            self.searchIndex = records.copy;
-            self.indexing = NO;
-            [self.progressSpinner stopAnimating];
-            [self installNavigationItemsScanning:NO];
-            self.searchController.searchBar.userInteractionEnabled = YES;
-            self.searchController.searchBar.placeholder = [NSString stringWithFormat:
-                @"Search %lu indexed %@",
-                (unsigned long)records.count,
-                self.kind == FLEXRuntimeBrowserKindObjectiveC ? @"methods" : @"functions"];
-            [self reloadEntries];
-        });
-    });
-}
-
-- (void)reloadEntries {
-    [self scheduleSearchForText:self.searchController.searchBar.text ?: @"" immediate:YES];
 }
 
 - (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
-    [self scheduleSearchForText:searchController.searchBar.text ?: @"" immediate:NO];
+    NSString *text = searchController.searchBar.text ?: @"";
+    if (self.kind == FLEXRuntimeBrowserKindObjectiveC) {
+        [self scheduleObjectiveCSearch:text immediate:NO];
+    } else {
+        [self scheduleCSearch:text];
+    }
 }
 
-- (void)scheduleSearchForText:(NSString *)text immediate:(BOOL)immediate {
-    if (self.scanning || self.indexing || !self.searchIndex.count) return;
-    NSUInteger generation = ++self.searchGeneration;
-    NSString *query = FLEXRuntimeNormalizedText(text);
-    NSTimeInterval delay = immediate ? 0 : 0.16;
-    NSArray<FLEXRuntimeSearchRecord *> *index = self.searchIndex;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                 (int64_t)(delay * NSEC_PER_SEC)),
-                   FLEXRuntimeBrowserSearchQueue(), ^{
-        if (generation != self.searchGeneration) return;
-        NSArray<NSString *> *queryTokens = FLEXRuntimeTokens(query);
-        NSMutableArray<NSDictionary *> *ranked = [NSMutableArray array];
-        for (FLEXRuntimeSearchRecord *record in index) {
-            if (generation != self.searchGeneration) return;
-            NSInteger score = query.length
-                ? FLEXRuntimeSearchScore(record, queryTokens, query) : 1;
-            if (score < 0) continue;
-            [ranked addObject:@{ @"entry": record.entry, @"score": @(score) }];
-        }
-        if (query.length) {
-            [ranked sortUsingComparator:^NSComparisonResult(
-                NSDictionary *left, NSDictionary *right
-            ) {
-                NSInteger leftScore = [left[@"score"] integerValue];
-                NSInteger rightScore = [right[@"score"] integerValue];
-                if (leftScore != rightScore) {
-                    return leftScore > rightScore ? NSOrderedAscending : NSOrderedDescending;
+- (void)scheduleObjectiveCSearch:(NSString *)text immediate:(BOOL)immediate {
+    NSString *query = text.copy ?: @"";
+    if (!query.length) {
+        ++self.generation;
+        self.searchGroups = @[];
+        [self setBusy:NO searching:NO];
+        [self.tableView reloadData];
+        [self updateNavigationStatus];
+        [self updateUnavailableConfigurationWithError:nil];
+        return;
+    }
+
+    NSUInteger generation = ++self.generation;
+    FLEXRuntimeImageDescriptor *image = [self.selectedImage copy];
+    NSArray<NSString *> *classNames = self.liveClassNames.copy;
+    NSArray<NSString *> *tokens = FLEXRuntimeQueryTokens(query);
+    NSTimeInterval delay = immediate ? 0.0 : 0.14;
+    [self setBusy:NO searching:YES];
+    self.statusText = @"Searching live Objective-C runtime";
+    [self updateNavigationStatus];
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+        FLEXRuntimeBrowserWorkQueue(),
+        ^{
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            if (!strongSelf || generation != strongSelf.generation) return;
+            NSMutableArray<FLEXRuntimeSearchGroup *> *groups = [NSMutableArray array];
+
+            for (NSString *className in classNames) {
+                if (generation != strongSelf.generation) return;
+                @autoreleasepool {
+                    NSMutableArray<FLEXRuntimeSearchHit *> *hits = [NSMutableArray array];
+                    BOOL classMatches = FLEXRuntimeValuesMatchTokens(
+                        tokens, @[className]);
+                    if (classMatches) {
+                        FLEXRuntimeSearchHit *hit = [FLEXRuntimeSearchHit new];
+                        hit.kind = FLEXRuntimeSearchHitKindClass;
+                        hit.className = className;
+                        hit.title = className;
+                        hit.detail = @"Live Objective-C class";
+                        [hits addObject:hit];
+                    }
+
+                    Class targetClass = NSClassFromString(className);
+                    if (!targetClass ||
+                        !FLEXRuntimeClassBelongsToImage(targetClass, image)) {
+                        continue;
+                    }
+
+                    for (NSUInteger pass = 0; pass < 2; pass++) {
+                        BOOL classMethod = pass == 1;
+                        Class owner = classMethod
+                            ? object_getClass(targetClass) : targetClass;
+                        if (!owner) continue;
+                        unsigned int methodCount = 0;
+                        Method *methods = class_copyMethodList(owner, &methodCount);
+                        for (unsigned int methodIndex = 0;
+                             methodIndex < methodCount;
+                             methodIndex++) {
+                            if (generation != strongSelf.generation) {
+                                if (methods) free(methods);
+                                return;
+                            }
+                            Method method = methods[methodIndex];
+                            SEL selector = method_getName(method);
+                            const char *rawSelector = selector
+                                ? sel_getName(selector) : NULL;
+                            if (!rawSelector) continue;
+                            NSString *selectorName =
+                                [NSString stringWithUTF8String:rawSelector];
+                            const char *rawEncoding = method_getTypeEncoding(method);
+                            NSString *encoding = rawEncoding
+                                ? [NSString stringWithUTF8String:rawEncoding] : @"";
+                            if (!FLEXRuntimeValuesMatchTokens(tokens, @[
+                                    className, selectorName ?: @"", encoding ?: @""])) {
+                                continue;
+                            }
+                            FLEXHookEntry *entry = FLEXRuntimeEntryForMethod(
+                                targetClass, method, classMethod, image);
+                            if (!entry) continue;
+                            FLEXRuntimeSearchHit *hit = [FLEXRuntimeSearchHit new];
+                            hit.kind = FLEXRuntimeSearchHitKindMethod;
+                            hit.className = className;
+                            hit.entry = entry;
+                            hit.title = FLEXRuntimeMemberTitleForEntry(entry);
+                            hit.detail = entry.detail;
+                            [hits addObject:hit];
+                        }
+                        if (methods) free(methods);
+                    }
+
+                    for (NSUInteger pass = 0; pass < 2; pass++) {
+                        BOOL classProperty = pass == 1;
+                        Class owner = classProperty
+                            ? object_getClass(targetClass) : targetClass;
+                        if (!owner) continue;
+                        unsigned int propertyCount = 0;
+                        objc_property_t *properties =
+                            class_copyPropertyList(owner, &propertyCount);
+                        for (unsigned int propertyIndex = 0;
+                             propertyIndex < propertyCount;
+                             propertyIndex++) {
+                            if (generation != strongSelf.generation) {
+                                if (properties) free(properties);
+                                return;
+                            }
+                            const char *rawName = property_getName(properties[propertyIndex]);
+                            const char *rawAttributes =
+                                property_getAttributes(properties[propertyIndex]);
+                            if (!rawName) continue;
+                            NSString *name = [NSString stringWithUTF8String:rawName];
+                            NSString *attributes = rawAttributes
+                                ? [NSString stringWithUTF8String:rawAttributes] : @"";
+                            if (!FLEXRuntimeValuesMatchTokens(tokens, @[
+                                    className, name ?: @"", attributes ?: @""])) {
+                                continue;
+                            }
+                            FLEXRuntimePropertyRecord *property =
+                                [FLEXRuntimePropertyRecord new];
+                            property.name = name;
+                            property.attributes = attributes;
+                            property.classProperty = classProperty;
+                            FLEXRuntimeSearchHit *hit = [FLEXRuntimeSearchHit new];
+                            hit.kind = FLEXRuntimeSearchHitKindProperty;
+                            hit.className = className;
+                            hit.property = property;
+                            hit.title = [NSString stringWithFormat:@"%@ %@",
+                                classProperty ? @"+" : @"@property", name];
+                            hit.detail = attributes;
+                            [hits addObject:hit];
+                        }
+                        if (properties) free(properties);
+                    }
+
+                    if (hits.count) {
+                        FLEXRuntimeSearchGroup *group = [FLEXRuntimeSearchGroup new];
+                        group.className = className;
+                        group.hits = hits.copy;
+                        [groups addObject:group];
+                    }
                 }
-                return [((FLEXHookEntry *)left[@"entry"]).title
-                    localizedCaseInsensitiveCompare:((FLEXHookEntry *)right[@"entry"]).title];
-            }];
-        }
+            }
 
-        NSUInteger materializationLimit = query.length <= 1 ? 2048 : 8192;
-        NSUInteger count = MIN(materializationLimit, ranked.count);
-        NSMutableArray<FLEXHookEntry *> *results =
-            [NSMutableArray arrayWithCapacity:count];
-        for (NSUInteger indexPosition = 0; indexPosition < count; indexPosition++) {
-            [results addObject:ranked[indexPosition][@"entry"]];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                __strong typeof(weakSelf) self = weakSelf;
+                if (!self || generation != self.generation) return;
+                self.searchGroups = groups.copy;
+                [self setBusy:NO searching:NO];
+                [self.tableView reloadData];
+                [self updateNavigationStatus];
+                [self updateUnavailableConfigurationWithError:nil];
+            });
         }
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (generation != self.searchGeneration) return;
-            self.filteredEntries = results.copy;
-            [self.tableView reloadData];
-            [self updateNavigationStatusWithTotalMatches:ranked.count];
-            [self updateUnavailableConfigurationWithError:nil];
-        });
-    });
+    );
 }
 
-- (void)addManualSymbol:(UIBarButtonItem *)sender {
-    (void)sender;
-    UIAlertController *alert = [UIAlertController
-        alertControllerWithTitle:@"Add symbol in selected image"
-                         message:self.selectedImage.displayName
-                  preferredStyle:UIAlertControllerStyleAlert];
-    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
-        field.placeholder = @"Exact symbol name";
-        field.autocapitalizationType = UITextAutocapitalizationTypeNone;
-        field.autocorrectionType = UITextAutocorrectionTypeNo;
-    }];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                              style:UIAlertActionStyleCancel
-                                            handler:nil]];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Resolve"
-                                              style:UIAlertActionStyleDefault
-                                            handler:^(__unused UIAlertAction *action) {
-        NSString *symbol = [alert.textFields.firstObject.text
-            stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-        if (!symbol.length) return;
-        FLEXHookEntry *entry = [FLEXRuntimeScanner manualCEntryForSymbol:symbol
-                                                               imageName:self.selectedImage.path];
-        [FLEXCHookEngine refreshAvailabilityForEntry:entry];
-        FLEXHookEntry *canonical = [FLEXHookRegistry.sharedRegistry
-            upsertDiscoveredEntry:entry];
-        FLEXHookEntryDetailController *detail =
-            [[FLEXHookEntryDetailController alloc] initWithEntry:canonical ?: entry];
-        [self.navigationController pushViewController:detail animated:YES];
-    }]];
-    [self presentViewController:alert animated:YES completion:nil];
+- (void)scheduleCSearch:(NSString *)text {
+    NSString *query = text.copy ?: @"";
+    NSUInteger generation = ++self.generation;
+    NSArray<FLEXHookEntry *> *entries = self.cEntries.copy;
+    NSArray<NSString *> *tokens = FLEXRuntimeQueryTokens(query);
+    [self setBusy:NO searching:query.length > 0];
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.10 * NSEC_PER_SEC)),
+        FLEXRuntimeBrowserWorkQueue(),
+        ^{
+            NSMutableArray<FLEXHookEntry *> *filtered = [NSMutableArray array];
+            for (FLEXHookEntry *entry in entries) {
+                __strong typeof(weakSelf) self = weakSelf;
+                if (!self || generation != self.generation) return;
+                NSString *symbol = [entry.locator[@"symbol"] isKindOfClass:NSString.class]
+                    ? entry.locator[@"symbol"] : entry.title;
+                if (FLEXRuntimeValuesMatchTokens(tokens, @[
+                        symbol ?: @"", entry.detail ?: @"", entry.imageName ?: @""])) {
+                    [filtered addObject:entry];
+                }
+            }
+            dispatch_async(dispatch_get_main_queue(), ^{
+                __strong typeof(weakSelf) self = weakSelf;
+                if (!self || generation != self.generation) return;
+                self.cGroups = FLEXRuntimeGroupEntries(filtered);
+                [self setBusy:NO searching:NO];
+                [self.tableView reloadData];
+                [self updateNavigationStatus];
+                [self updateUnavailableConfigurationWithError:nil];
+            });
+        }
+    );
+}
+
+- (void)filterCEntriesForQuery:(NSString *)query {
+    NSArray<NSString *> *tokens = FLEXRuntimeQueryTokens(query ?: @"");
+    NSMutableArray<FLEXHookEntry *> *filtered = [NSMutableArray array];
+    for (FLEXHookEntry *entry in self.cEntries) {
+        NSString *symbol = [entry.locator[@"symbol"] isKindOfClass:NSString.class]
+            ? entry.locator[@"symbol"] : entry.title;
+        if (FLEXRuntimeValuesMatchTokens(tokens, @[
+                symbol ?: @"", entry.detail ?: @"", entry.imageName ?: @""])) {
+            [filtered addObject:entry];
+        }
+    }
+    self.cGroups = FLEXRuntimeGroupEntries(filtered);
+    [self.tableView reloadData];
+    [self updateNavigationStatus];
+    [self updateUnavailableConfigurationWithError:nil];
+}
+
+- (BOOL)objectiveCSearchActive {
+    return self.kind == FLEXRuntimeBrowserKindObjectiveC &&
+        self.searchController.searchBar.text.length > 0;
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
     (void)tableView;
-    return 1;
+    if (self.kind == FLEXRuntimeBrowserKindObjectiveC) {
+        return self.objectiveCSearchActive ? self.searchGroups.count
+            : (self.liveClassNames.count ? 1 : 0);
+    }
+    return self.cGroups.count;
 }
 
-- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+- (NSInteger)tableView:(UITableView *)tableView
+ numberOfRowsInSection:(NSInteger)section {
+    (void)tableView;
+    if (self.kind == FLEXRuntimeBrowserKindObjectiveC) {
+        if (!self.objectiveCSearchActive) return self.liveClassNames.count;
+        if (section < 0 || section >= (NSInteger)self.searchGroups.count) return 0;
+        return self.searchGroups[(NSUInteger)section].hits.count;
+    }
+    if (section < 0 || section >= (NSInteger)self.cGroups.count) return 0;
+    return self.cGroups[(NSUInteger)section].entries.count;
+}
+
+- (UIView *)tableView:(UITableView *)tableView
+ viewForHeaderInSection:(NSInteger)section {
+    FLEXRuntimeGlassHeaderView *header = [tableView
+        dequeueReusableHeaderFooterViewWithIdentifier:@"FLEXRuntimeGlassHeader"];
+    if (self.kind == FLEXRuntimeBrowserKindObjectiveC) {
+        if (self.objectiveCSearchActive) {
+            FLEXRuntimeSearchGroup *group = self.searchGroups[(NSUInteger)section];
+            [header configureTitle:group.className
+                            detail:[NSString stringWithFormat:@"%lu live match%@",
+                (unsigned long)group.hits.count,
+                group.hits.count == 1 ? @"" : @"es"]];
+        } else {
+            [header configureTitle:@"Classes"
+                            detail:[NSString stringWithFormat:@"%lu loaded in %@",
+                (unsigned long)self.liveClassNames.count,
+                self.selectedImage.displayName ?: @"selected image"]];
+        }
+        return header;
+    }
+    FLEXRuntimeEntryGroup *group = self.cGroups[(NSUInteger)section];
+    [header configureTitle:group.title
+                    detail:[NSString stringWithFormat:@"%lu live symbol%@",
+        (unsigned long)group.entries.count,
+        group.entries.count == 1 ? @"" : @"s"]];
+    return header;
+}
+
+- (CGFloat)tableView:(UITableView *)tableView
+ heightForHeaderInSection:(NSInteger)section {
     (void)tableView;
     (void)section;
-    return self.filteredEntries.count;
+    return UITableViewAutomaticDimension;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView
          cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    static NSString *identifier = @"AllFLEXingRuntimeBrowserCell";
+    static NSString *identifier = @"FLEXLiveRuntimeCell";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:identifier];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
-                                      reuseIdentifier:identifier];
+        cell = [[UITableViewCell alloc]
+            initWithStyle:UITableViewCellStyleSubtitle
+          reuseIdentifier:identifier];
     }
-    FLEXHookEntry *entry = self.filteredEntries[indexPath.row];
-    UIListContentConfiguration *content = [cell defaultContentConfiguration];
-    content.text = entry.title;
-    content.textProperties.numberOfLines = 0;
-    content.textProperties.lineBreakMode = NSLineBreakByCharWrapping;
-    content.secondaryText = [NSString stringWithFormat:@"%@\n%@ · %@",
-        entry.detail, entry.imageName, entry.statusSummary];
-    content.secondaryTextProperties.numberOfLines = 0;
-    content.secondaryTextProperties.lineBreakMode = NSLineBreakByWordWrapping;
-    content.image = [UIImage systemImageNamed:entry.effectiveEnabled
-        ? (entry.overrideHitCount > 0 ? @"checkmark.circle.fill" : @"bolt.circle.fill")
-        : (entry.hookable ? @"circle.dashed" : @"waveform.path.ecg")];
-    content.imageProperties.tintColor = entry.effectiveEnabled
-        ? (entry.overrideHitCount > 0 ? UIColor.systemGreenColor : UIColor.systemBlueColor)
-        : (entry.hookable ? self.view.tintColor : UIColor.secondaryLabelColor);
-    cell.contentConfiguration = content;
+    cell.accessoryView = nil;
     cell.accessoryType = UITableViewCellAccessoryNone;
 
-    UISwitch *toggle = [UISwitch new];
-    toggle.on = entry.pendingEnabled;
-    toggle.enabled = (entry.available && entry.hookable) || entry.pendingEnabled;
-    toggle.accessibilityLabel = [NSString stringWithFormat:@"Runtime hook for %@", entry.title];
-    toggle.accessibilityValue = entry.statusSummary;
-    objc_setAssociatedObject(toggle,
-                             kFLEXRuntimeBrowserEntryIDKey,
-                             entry.identifier,
-                             OBJC_ASSOCIATION_COPY_NONATOMIC);
-    [toggle addTarget:self
-               action:@selector(toggleChanged:)
-     forControlEvents:UIControlEventValueChanged];
-    cell.accessoryView = toggle;
-    [FLEXLiquidGlass styleTableCell:cell];
+    if (self.kind == FLEXRuntimeBrowserKindObjectiveC) {
+        if (!self.objectiveCSearchActive) {
+            NSString *className = self.liveClassNames[indexPath.row];
+            FLEXConfigureCompactRuntimeContent(
+                cell,
+                className,
+                @"Live Objective-C class · tap to enumerate current methods and properties",
+                @"curlybraces.square",
+                self.view.tintColor
+            );
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            FLEXStyleCompactRuntimeCell(
+                cell,
+                FLEXCompactPositionForRow(indexPath.row, self.liveClassNames.count)
+            );
+            return cell;
+        }
+
+        FLEXRuntimeSearchGroup *group = self.searchGroups[indexPath.section];
+        FLEXRuntimeSearchHit *hit = group.hits[indexPath.row];
+        if (hit.kind == FLEXRuntimeSearchHitKindClass) {
+            FLEXConfigureCompactRuntimeContent(
+                cell, hit.title, hit.detail,
+                @"curlybraces.square", self.view.tintColor);
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        } else if (hit.kind == FLEXRuntimeSearchHitKindProperty) {
+            FLEXConfigureCompactRuntimeContent(
+                cell, hit.title, hit.detail,
+                @"p.square", UIColor.secondaryLabelColor);
+            cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+        } else {
+            FLEXHookEntry *entry = hit.entry;
+            FLEXConfigureCompactRuntimeContent(
+                cell,
+                FLEXRuntimeMemberTitleForEntry(entry),
+                entry.detail,
+                entry.hookable ? @"switch.2" : @"function",
+                entry.hookable ? self.view.tintColor : UIColor.secondaryLabelColor
+            );
+            if (entry.hookable || entry.pendingEnabled) {
+                UISwitch *toggle = [UISwitch new];
+                toggle.on = entry.pendingEnabled;
+                objc_setAssociatedObject(
+                    toggle,
+                    kFLEXRuntimeBrowserEntryKey,
+                    entry,
+                    OBJC_ASSOCIATION_RETAIN_NONATOMIC
+                );
+                [toggle addTarget:self
+                           action:@selector(toggleChanged:)
+                 forControlEvents:UIControlEventValueChanged];
+                cell.accessoryView = toggle;
+            } else {
+                cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+            }
+        }
+        FLEXStyleCompactRuntimeCell(
+            cell,
+            FLEXCompactPositionForRow(indexPath.row, group.hits.count)
+        );
+        return cell;
+    }
+
+    FLEXRuntimeEntryGroup *group = self.cGroups[indexPath.section];
+    FLEXHookEntry *entry = group.entries[indexPath.row];
+    FLEXConfigureCompactRuntimeContent(
+        cell,
+        FLEXRuntimeMemberTitleForEntry(entry),
+        entry.detail,
+        entry.hookable ? @"switch.2" : @"function",
+        entry.hookable ? self.view.tintColor : UIColor.secondaryLabelColor
+    );
+    if (entry.hookable || entry.pendingEnabled) {
+        UISwitch *toggle = [UISwitch new];
+        toggle.on = entry.pendingEnabled;
+        objc_setAssociatedObject(
+            toggle,
+            kFLEXRuntimeBrowserEntryKey,
+            entry,
+            OBJC_ASSOCIATION_RETAIN_NONATOMIC
+        );
+        [toggle addTarget:self
+                   action:@selector(toggleChanged:)
+         forControlEvents:UIControlEventValueChanged];
+        cell.accessoryView = toggle;
+    } else {
+        cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    }
+    FLEXStyleCompactRuntimeCell(
+        cell,
+        FLEXCompactPositionForRow(indexPath.row, group.entries.count)
+    );
     return cell;
 }
 
-- (void)updateNavigationStatus {
-    [self updateNavigationStatusWithTotalMatches:self.filteredEntries.count];
+- (void)tableView:(UITableView *)tableView
+ didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    if (self.kind == FLEXRuntimeBrowserKindObjectiveC) {
+        if (!self.objectiveCSearchActive) {
+            NSString *className = self.liveClassNames[indexPath.row];
+            FLEXRuntimeClassDetailController *detail =
+                [[FLEXRuntimeClassDetailController alloc]
+                    initWithClassName:className image:self.selectedImage];
+            [self.navigationController pushViewController:detail animated:YES];
+            return;
+        }
+        FLEXRuntimeSearchHit *hit =
+            self.searchGroups[indexPath.section].hits[indexPath.row];
+        if (hit.kind == FLEXRuntimeSearchHitKindClass) {
+            FLEXRuntimeClassDetailController *detail =
+                [[FLEXRuntimeClassDetailController alloc]
+                    initWithClassName:hit.className image:self.selectedImage];
+            [self.navigationController pushViewController:detail animated:YES];
+            return;
+        }
+        if (hit.kind == FLEXRuntimeSearchHitKindProperty) {
+            UIAlertController *alert = [UIAlertController
+                alertControllerWithTitle:hit.property.name
+                                 message:hit.property.attributes.length
+                                    ? hit.property.attributes : @"No runtime attributes"
+                          preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"Done"
+                                                      style:UIAlertActionStyleCancel
+                                                    handler:nil]];
+            [self presentViewController:alert animated:YES completion:nil];
+            return;
+        }
+        FLEXHookEntry *canonical = [FLEXHookRegistry.sharedRegistry
+            upsertDiscoveredEntry:hit.entry];
+        FLEXHookEntryDetailController *detail =
+            [[FLEXHookEntryDetailController alloc]
+                initWithEntry:canonical ?: hit.entry];
+        [self.navigationController pushViewController:detail animated:YES];
+        return;
+    }
+
+    FLEXHookEntry *entry = self.cGroups[indexPath.section].entries[indexPath.row];
+    FLEXHookEntry *canonical = [FLEXHookRegistry.sharedRegistry
+        upsertDiscoveredEntry:entry];
+    if (entry.surface != FLEXHookSurfaceObjectiveC && !entry.hookable) {
+        [FLEXCHookEngine refreshAvailabilityForEntry:canonical ?: entry];
+    }
+    FLEXHookEntryDetailController *detail =
+        [[FLEXHookEntryDetailController alloc]
+            initWithEntry:canonical ?: entry];
+    [self.navigationController pushViewController:detail animated:YES];
 }
 
-- (void)updateNavigationStatusWithTotalMatches:(NSUInteger)totalMatches {
-    NSString *status = nil;
-    if (self.scanning || self.indexing) {
-        if (self.progressTotal) {
-            status = [NSString stringWithFormat:@"%@ · %lu/%lu",
-                self.progressPhase ?: @"Working",
-                (unsigned long)self.progressCompleted,
-                (unsigned long)self.progressTotal];
-        } else {
-            status = self.progressPhase ?: @"Working…";
-        }
-    } else if (self.snapshot) {
-        status = [NSString stringWithFormat:@"%@ · %lu indexed · %lu shown",
-            self.selectedImage.displayName,
-            (unsigned long)self.searchIndex.count,
-            (unsigned long)MIN(totalMatches, self.filteredEntries.count)];
+- (void)toggleChanged:(UISwitch *)toggle {
+    FLEXHookEntry *discovered = objc_getAssociatedObject(
+        toggle, kFLEXRuntimeBrowserEntryKey);
+    if (!discovered) return;
+    FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
+    FLEXHookEntry *entry = [registry upsertDiscoveredEntry:discovered];
+    BOOL requested = toggle.isOn;
+    if (requested && !entry.userConfigured) {
+        [registry stageForceValue:YES forEntryIdentifier:entry.identifier];
+    }
+    [registry stageEnabled:requested forEntryIdentifier:entry.identifier];
+    FLEXHookEntry *resolved = [registry entryForIdentifier:entry.identifier];
+    BOOL accepted = resolved && resolved.pendingEnabled == requested;
+    [toggle setOn:accepted ? requested : !requested animated:YES];
+    if (accepted) {
+        [UISelectionFeedbackGenerator.new selectionChanged];
     } else {
-        status = @"Select an image and scan";
+        [UINotificationFeedbackGenerator.new
+            notificationOccurred:UINotificationFeedbackTypeError];
+    }
+}
+
+- (void)updateNavigationStatus {
+    NSString *status = nil;
+    if (self.scanning || self.searching) {
+        status = self.statusText ?: @"Reading live runtime";
+    } else if (!self.selectedImage) {
+        status = @"No app image loaded";
+    } else if (self.kind == FLEXRuntimeBrowserKindObjectiveC) {
+        if (self.objectiveCSearchActive) {
+            NSUInteger hitCount = 0;
+            for (FLEXRuntimeSearchGroup *group in self.searchGroups) {
+                hitCount += group.hits.count;
+            }
+            status = [NSString stringWithFormat:@"%@ · %lu live match%@",
+                self.selectedImage.displayName,
+                (unsigned long)hitCount,
+                hitCount == 1 ? @"" : @"es"];
+        } else {
+            status = [NSString stringWithFormat:@"%@ · %lu live classes",
+                self.selectedImage.displayName,
+                (unsigned long)self.liveClassNames.count];
+        }
+    } else {
+        NSUInteger count = 0;
+        for (FLEXRuntimeEntryGroup *group in self.cGroups) count += group.entries.count;
+        status = [NSString stringWithFormat:@"%@ · %lu live symbols",
+            self.selectedImage.displayName,
+            (unsigned long)count];
     }
     if (@available(iOS 26.0, *)) self.navigationItem.subtitle = status;
 }
 
 - (void)updateUnavailableConfigurationWithError:(NSError *)error {
     if (@available(iOS 17.0, *)) {
-        if (self.filteredEntries.count) {
+        BOOL hasContent = self.kind == FLEXRuntimeBrowserKindObjectiveC
+            ? (self.objectiveCSearchActive
+                ? self.searchGroups.count > 0
+                : self.liveClassNames.count > 0)
+            : self.cGroups.count > 0;
+        if (hasContent) {
             self.contentUnavailableConfiguration = nil;
             return;
         }
+
         UIContentUnavailableConfiguration *configuration = nil;
-        if (self.scanning || self.indexing) {
+        if (self.scanning) {
             configuration = [UIContentUnavailableConfiguration loadingConfiguration];
-            configuration.text = self.progressPhase ?: @"Scanning selected image";
-            configuration.secondaryText = @"Mach-O, Objective-C metadata, symbols, function starts and ABI evidence are resolved off the main thread.";
+            configuration.text = self.statusText ?: @"Reading live runtime";
+            configuration.secondaryText = self.kind == FLEXRuntimeBrowserKindObjectiveC
+                ? @"Only current class names are enumerated now. Methods and properties are read when you open a class or search."
+                : @"The current selected Mach-O image is being read off the main thread.";
+        } else if (self.searching) {
+            configuration = [UIContentUnavailableConfiguration loadingConfiguration];
+            configuration.text = @"Searching current runtime";
+            configuration.secondaryText =
+                @"This search enumerates the runtime on demand; there is no prebuilt feature classification.";
         } else if (error) {
             configuration = [UIContentUnavailableConfiguration emptyConfiguration];
-            configuration.image = [UIImage systemImageNamed:@"exclamationmark.triangle"];
-            configuration.text = @"Runtime scan failed";
+            configuration.image = [UIImage systemImageNamed:
+                @"exclamationmark.triangle"];
+            configuration.text = @"Runtime read failed";
             configuration.secondaryText = error.localizedDescription;
         } else if (self.searchController.searchBar.text.length) {
             configuration = [UIContentUnavailableConfiguration searchConfiguration];
-            configuration.text = @"No result in the selected image";
-            configuration.secondaryText = @"The completed image index was searched; refresh only when the loaded image changes.";
+            configuration.text = @"No live runtime match";
+            configuration.secondaryText = @"Try another class, method, property or symbol term.";
         } else {
             configuration = [UIContentUnavailableConfiguration emptyConfiguration];
-            configuration.text = self.selectedImage ? @"No runtime entries" : @"No app image loaded";
+            configuration.text = self.selectedImage
+                ? @"No live runtime entries" : @"No app image loaded";
             configuration.secondaryText = self.selectedImage
-                ? @"Refresh the selected image or choose another framework."
-                : @"Load the application executable or a framework first.";
+                ? @"Choose another loaded framework or refresh the current image."
+                : @"Load the app executable or an embedded framework first.";
         }
         self.contentUnavailableConfiguration = configuration;
     }
-}
-
-- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    (void)tableView;
-    (void)section;
-    return self.selectedImage.displayName;
-}
-
-- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    (void)tableView;
-    (void)section;
-    return nil;
-}
-
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    FLEXHookEntry *entry = self.filteredEntries[indexPath.row];
-    FLEXHookEntryDetailController *detail =
-        [[FLEXHookEntryDetailController alloc] initWithEntry:entry];
-    [self.navigationController pushViewController:detail animated:YES];
-}
-
-- (void)toggleChanged:(UISwitch *)toggle {
-    NSString *identifier = objc_getAssociatedObject(toggle, kFLEXRuntimeBrowserEntryIDKey);
-    FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
-    BOOL requestedState = toggle.isOn;
-    FLEXHookEntry *entry = [registry entryForIdentifier:identifier];
-    if (requestedState && entry && !entry.userConfigured) {
-        [registry stageForceValue:YES forEntryIdentifier:identifier];
-    }
-    [registry stageEnabled:requestedState forEntryIdentifier:identifier];
-    entry = [registry entryForIdentifier:identifier];
-    if (!entry || entry.pendingEnabled != requestedState) {
-        [UINotificationFeedbackGenerator.new
-            notificationOccurred:UINotificationFeedbackTypeError];
-        [self refreshCanonicalEntries];
-        return;
-    }
-    [UISelectionFeedbackGenerator.new selectionChanged];
-    __weak typeof(self) weakSelf = self;
-    [registry applyEntryIdentifier:identifier completion:^(
-        __unused NSArray<FLEXHookEntry *> *applied,
-        NSArray<FLEXHookEntry *> *failed
-    ) {
-        FLEXHookEntry *resolved = [registry entryForIdentifier:identifier];
-        UINotificationFeedbackType type = failed.count
-            ? UINotificationFeedbackTypeError
-            : (resolved.overrideHitCount > 0
-                ? UINotificationFeedbackTypeSuccess
-                : UINotificationFeedbackTypeWarning);
-        [UINotificationFeedbackGenerator.new notificationOccurred:type];
-        [weakSelf refreshCanonicalEntries];
-    }];
 }
 
 @end
