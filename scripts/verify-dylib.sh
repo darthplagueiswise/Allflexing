@@ -115,14 +115,8 @@ require_text "nonretaining Objective-C class enumeration" \
     "AllFLEXing image-scoped nonretaining Objective-C class enumeration ABI 1" "$string_dump"
 require_text "host/image-scoped transient bridge" \
     "AllFLEXing host/image-scoped transient runtime bridge ABI 4" "$string_dump"
-require_text "complete-image substring search" \
-    "AllFLEXing complete-image substring-index search ABI 1" "$string_dump"
 require_text "field-scoped compact-token search" \
     "AllFLEXing field-scoped compact-token search ABI 1" "$string_dump"
-require_text "operational Objective-C projection" \
-    "AllFLEXing operational Objective-C hook-target projection ABI 1" "$string_dump"
-require_text "operational Objective-C ABI evidence" \
-    "objc-type-encoding-operational-profile" "$string_dump"
 require_text "live Objective-C provider evidence" \
     "MSHookMessageEx-live-provider" "$string_dump"
 require_text "image-address C hook engine" \
@@ -133,9 +127,20 @@ require_text "strict Objective-C BOOL classification" \
     "AllFLEXing exact-B Objective-C runtime classification ABI 1" "$string_dump"
 require_text "ARM64 evidence resolver" \
     "AllFLEXing image-scoped ARM64 evidence ABI resolver ABI 2" "$string_dump"
-require_text "complete snapshot index phase" \
-    "Indexing complete image snapshot" "$string_dump"
-require_text "image selection menu" "Runtime image" "$string_dump"
+
+# The runtime browser is intentionally live and hierarchical. Do not validate
+# the obsolete eager index/flat projection path here.
+require_text "live class-first runtime browser" \
+    "AllFLEXing live class-first runtime browser ABI 1" "$string_dump"
+require_text "live Objective-C locator" "live-objc-runtime" "$string_dump"
+require_text "on-demand runtime search" \
+    "This search enumerates the runtime on demand; there is no prebuilt feature classification." "$string_dump"
+require_text "live runtime image menu" "Live runtime image" "$string_dump"
+require_text "live class hierarchy rendering" \
+    "AllFLEXing native grouped UIKit table ABI 3 live-class-hierarchy" "$string_dump"
+require_text "runtime ownership boundary" \
+    "AllFLEXing compact UI hook-center-only runtime-browser ownership ABI 1" "$string_dump"
+
 require_text "Mach-O import parsing" "mach-o-indirect-symbols" "$string_dump"
 require_text "Mach-O executable symbols" "mach-o-symbol-table" "$string_dump"
 require_text "function-start parsing" "LC_FUNCTION_STARTS" "$string_dump"
@@ -145,8 +150,6 @@ require_text "inline backend evidence" "MSHookFunction-executable-address" "$str
 require_text "host executable UUID stamp" "hostExecutableUUID" "$string_dump"
 require_text "runtime session image UUID stamp" "runtimeSessionImageUUID" "$string_dump"
 require_text "runtime session image path stamp" "runtimeSessionImagePath" "$string_dump"
-require_text "full symbol-name layout" \
-    "AllFLEXing native grouped UIKit table ABI 2 full-symbol-names" "$string_dump"
 require_text "native grouped rendering" \
     "AllFLEXing native UIKit rendering bootstrap ABI 1" "$string_dump"
 require_text "adaptive workspace" "FLEXHookWorkspaceController" "$string_dump"
@@ -161,7 +164,8 @@ for forbidden in \
     FLEXGlassAutostyle \
     FLEXCompactGroupBackgroundView \
     AllFLEXingCompactRuntimeCell \
-    AllFLEXingCompactHookCenterCell \
+    AllFLEXingNativeRuntimeCell \
+    "AllFLEXing native grouped UIKit table ABI 2 full-symbol-names" \
     "AllFLEXing tokenized AND search ABI 2" \
     "AllFLEXing full-snapshot async indexed cancellable search ABI 4" \
     "AllFLEXing selected-image transient-snapshot prefix-index search ABI 7" \
