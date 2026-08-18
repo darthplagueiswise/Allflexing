@@ -4,14 +4,17 @@
 #import "FLEXHookRegistry.h"
 #import "FLEXHookToggles.h"
 #import "FLEXHooking.h"
-#import "FLEXRuntimeBrowserController.h"
 #import "FLEXSymbolRebind.h"
 
 #import <objc/runtime.h>
 
+// This module now owns only the compact Hook Center presentation. Runtime
+// browsing is owned exclusively by FLEXRuntimeBrowserController so an old
+// category cannot replace its live class hierarchy with a cached flat table.
+__attribute__((used)) static const char kFLEXCompactRuntimeOwnershipMarker[] =
+    "AllFLEXing compact UI hook-center-only runtime-browser ownership ABI 1";
+
 static const void *kFLEXCompactEntryIdentifierKey = &kFLEXCompactEntryIdentifierKey;
-static const void *kFLEXRuntimeGroupSourceKey = &kFLEXRuntimeGroupSourceKey;
-static const void *kFLEXRuntimeGroupsKey = &kFLEXRuntimeGroupsKey;
 static const void *kFLEXHookPendingSourceKey = &kFLEXHookPendingSourceKey;
 static const void *kFLEXHookActiveSourceKey = &kFLEXHookActiveSourceKey;
 static const void *kFLEXHookSectionsKey = &kFLEXHookSectionsKey;
@@ -23,197 +26,6 @@ static void FLEXCompactExchangeInstanceMethods(Class cls, SEL original, SEL repl
         method_exchangeImplementations(originalMethod, replacementMethod);
     }
 }
-
-@interface FLEXRuntimeBrowserController (AllFLEXingCompactPrivate)
-- (void)reloadEntries;
-@end
-
-@implementation FLEXRuntimeBrowserController (AllFLEXingCompactGroups)
-
-+ (void)load {
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        Class cls = FLEXRuntimeBrowserController.class;
-        FLEXCompactExchangeInstanceMethods(cls, @selector(initWithKind:),
-                                            @selector(af_compact_initWithKind:));
-        FLEXCompactExchangeInstanceMethods(cls, @selector(viewDidLoad),
-                                            @selector(af_compact_viewDidLoad));
-        FLEXCompactExchangeInstanceMethods(cls, @selector(numberOfSectionsInTableView:),
-                                            @selector(af_compact_numberOfSectionsInTableView:));
-        FLEXCompactExchangeInstanceMethods(cls, @selector(tableView:numberOfRowsInSection:),
-                                            @selector(af_compact_tableView:numberOfRowsInSection:));
-        FLEXCompactExchangeInstanceMethods(cls, @selector(tableView:cellForRowAtIndexPath:),
-                                            @selector(af_compact_tableView:cellForRowAtIndexPath:));
-        FLEXCompactExchangeInstanceMethods(cls, @selector(tableView:didSelectRowAtIndexPath:),
-                                            @selector(af_compact_tableView:didSelectRowAtIndexPath:));
-        FLEXCompactExchangeInstanceMethods(cls, @selector(tableView:titleForHeaderInSection:),
-                                            @selector(af_compact_tableView:titleForHeaderInSection:));
-        FLEXCompactExchangeInstanceMethods(cls, @selector(tableView:titleForFooterInSection:),
-                                            @selector(af_compact_tableView:titleForFooterInSection:));
-    });
-}
-
-- (instancetype)af_compact_initWithKind:(FLEXRuntimeBrowserKind)kind {
-    return [self af_compact_initWithKind:kind];
-}
-
-- (void)af_compact_viewDidLoad {
-    [self af_compact_viewDidLoad];
-    FLEXConfigureCompactRuntimeTable(self.tableView);
-    self.navigationItem.largeTitleDisplayMode = UINavigationItemLargeTitleDisplayModeNever;
-}
-
-- (NSArray<FLEXRuntimeEntryGroup *> *)af_compact_runtimeGroups {
-    NSArray<FLEXHookEntry *> *entries = nil;
-    @try {
-        entries = [self valueForKey:@"filteredEntries"] ?: @[];
-    } @catch (__unused NSException *exception) {
-        entries = @[];
-    }
-
-    NSArray *cachedSource = objc_getAssociatedObject(self, kFLEXRuntimeGroupSourceKey);
-    NSArray<FLEXRuntimeEntryGroup *> *cachedGroups =
-        objc_getAssociatedObject(self, kFLEXRuntimeGroupsKey);
-    if (cachedSource == entries && cachedGroups) {
-        return cachedGroups;
-    }
-
-    NSArray<FLEXRuntimeEntryGroup *> *groups = FLEXRuntimeGroupEntries(entries);
-    objc_setAssociatedObject(self,
-                             kFLEXRuntimeGroupSourceKey,
-                             entries,
-                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(self,
-                             kFLEXRuntimeGroupsKey,
-                             groups,
-                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    return groups;
-}
-
-- (NSInteger)af_compact_numberOfSectionsInTableView:(UITableView *)tableView {
-    (void)tableView;
-    return self.af_compact_runtimeGroups.count;
-}
-
-- (NSInteger)af_compact_tableView:(UITableView *)tableView
-            numberOfRowsInSection:(NSInteger)section {
-    (void)tableView;
-    NSArray<FLEXRuntimeEntryGroup *> *groups = self.af_compact_runtimeGroups;
-    return section >= 0 && section < (NSInteger)groups.count
-        ? groups[section].entries.count : 0;
-}
-
-- (UITableViewCell *)af_compact_tableView:(UITableView *)tableView
-                    cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    static NSString *identifier = @"AllFLEXingNativeRuntimeCell";
-    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:identifier];
-    if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
-                                      reuseIdentifier:identifier];
-    }
-
-    NSArray<FLEXRuntimeEntryGroup *> *groups = self.af_compact_runtimeGroups;
-    FLEXRuntimeEntryGroup *group = groups[indexPath.section];
-    FLEXHookEntry *entry = group.entries[indexPath.row];
-
-    NSString *icon = entry.effectiveEnabled
-        ? (entry.overrideHitCount > 0 ? @"checkmark.circle.fill" : @"bolt.circle.fill")
-        : (entry.hookable ? @"circle.dashed" : @"eye");
-    UIColor *tint = entry.effectiveEnabled
-        ? (entry.overrideHitCount > 0 ? UIColor.systemGreenColor : UIColor.systemBlueColor)
-        : (entry.hookable ? self.view.tintColor : UIColor.secondaryLabelColor);
-    FLEXConfigureCompactRuntimeContent(
-        cell,
-        FLEXRuntimeMemberTitleForEntry(entry),
-        FLEXRuntimeCompactSummaryForEntry(entry),
-        icon,
-        tint
-    );
-    FLEXStyleCompactRuntimeCell(
-        cell,
-        FLEXCompactPositionForRow(indexPath.row, group.entries.count)
-    );
-
-    UISwitch *toggle = [UISwitch new];
-    toggle.on = entry.pendingEnabled;
-    toggle.enabled = (entry.available && entry.hookable) || entry.pendingEnabled;
-    toggle.accessibilityLabel = [NSString stringWithFormat:@"Runtime hook for %@",
-        entry.title];
-    toggle.accessibilityValue = entry.statusSummary;
-    objc_setAssociatedObject(toggle,
-                             kFLEXCompactEntryIdentifierKey,
-                             entry.identifier,
-                             OBJC_ASSOCIATION_COPY_NONATOMIC);
-    [toggle addTarget:self
-               action:@selector(af_compactRuntimeToggleChanged:)
-     forControlEvents:UIControlEventValueChanged];
-    cell.accessoryView = toggle;
-    cell.accessoryType = UITableViewCellAccessoryNone;
-    return cell;
-}
-
-- (NSString *)af_compact_tableView:(UITableView *)tableView
-           titleForHeaderInSection:(NSInteger)section {
-    (void)tableView;
-    NSArray<FLEXRuntimeEntryGroup *> *groups = self.af_compact_runtimeGroups;
-    if (section < 0 || section >= (NSInteger)groups.count) {
-        return nil;
-    }
-    return groups[section].title;
-}
-
-- (NSString *)af_compact_tableView:(UITableView *)tableView
-           titleForFooterInSection:(NSInteger)section {
-    (void)tableView;
-    (void)section;
-    return nil;
-}
-
-- (void)af_compact_tableView:(UITableView *)tableView
- didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    NSArray<FLEXRuntimeEntryGroup *> *groups = self.af_compact_runtimeGroups;
-    FLEXHookEntry *entry = groups[indexPath.section].entries[indexPath.row];
-    FLEXHookEntryDetailController *detail =
-        [[FLEXHookEntryDetailController alloc] initWithEntry:entry];
-    [self.navigationController pushViewController:detail animated:YES];
-}
-
-- (void)af_compactRuntimeToggleChanged:(UISwitch *)toggle {
-    NSString *identifier = objc_getAssociatedObject(toggle, kFLEXCompactEntryIdentifierKey);
-    FLEXHookRegistry *registry = FLEXHookRegistry.sharedRegistry;
-    BOOL requestedState = toggle.isOn;
-    FLEXHookEntry *entry = [registry entryForIdentifier:identifier];
-    if (requestedState && entry && !entry.userConfigured) {
-        [registry stageForceValue:YES forEntryIdentifier:identifier];
-    }
-    [registry stageEnabled:requestedState forEntryIdentifier:identifier];
-    entry = [registry entryForIdentifier:identifier];
-    if (!entry || entry.pendingEnabled != requestedState) {
-        [UINotificationFeedbackGenerator.new
-            notificationOccurred:UINotificationFeedbackTypeError];
-        [self reloadEntries];
-        return;
-    }
-
-    [UISelectionFeedbackGenerator.new selectionChanged];
-    __weak typeof(self) weakSelf = self;
-    [registry applyEntryIdentifier:identifier completion:^(
-        __unused NSArray<FLEXHookEntry *> *applied,
-        NSArray<FLEXHookEntry *> *failed
-    ) {
-        FLEXHookEntry *resolved = [registry entryForIdentifier:identifier];
-        UINotificationFeedbackType type = failed.count
-            ? UINotificationFeedbackTypeError
-            : (resolved.overrideHitCount > 0
-                ? UINotificationFeedbackTypeSuccess
-                : UINotificationFeedbackTypeWarning);
-        [UINotificationFeedbackGenerator.new notificationOccurred:type];
-        [weakSelf reloadEntries];
-    }];
-}
-
-@end
 
 typedef NS_ENUM(NSInteger, FLEXCompactHookSectionKind) {
     FLEXCompactHookSectionEngines = 0,
@@ -588,21 +400,10 @@ static NSArray<FLEXCompactHookSection *> *FLEXCompactHookSections(FLEXHookToggle
         return;
     }
 
+    // Stage only. Hook installation remains an explicit Apply action owned by
+    // the Hook Center; changing a switch must never mutate executable code.
     [UISelectionFeedbackGenerator.new selectionChanged];
-    __weak typeof(self) weakSelf = self;
-    [registry applyEntryIdentifier:identifier completion:^(
-        __unused NSArray<FLEXHookEntry *> *applied,
-        NSArray<FLEXHookEntry *> *failed
-    ) {
-        FLEXHookEntry *resolved = [registry entryForIdentifier:identifier];
-        UINotificationFeedbackType type = failed.count
-            ? UINotificationFeedbackTypeError
-            : (resolved.overrideHitCount > 0
-                ? UINotificationFeedbackTypeSuccess
-                : UINotificationFeedbackTypeWarning);
-        [UINotificationFeedbackGenerator.new notificationOccurred:type];
-        [weakSelf reloadState];
-    }];
+    [self reloadState];
 }
 
 @end
